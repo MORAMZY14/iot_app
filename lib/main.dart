@@ -3,7 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'dashboard_page.dart';
 
 
-const String appVersion = '1.0.9';
+const String appVersion = '1.0.10';
 
 void main() {
   runApp(const ProviderScope(child: MyApp()));
