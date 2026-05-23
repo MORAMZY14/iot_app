@@ -82,9 +82,15 @@
 	<key>NSMicrophoneUsageDescription</key>
 	<string>This app needs microphone access.</string>
 
-	<!-- NOTIFICATIONS -->
-	<key>FirebaseAppDelegateProxyEnabled</key>
-	<false/>
+	<!-- LOCAL NETWORK -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>This app needs local network access to connect to smart home devices.</string>
+
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_http._tcp</string>
+		<string>_hap._tcp</string>
+	</array>
 
 	<!-- INTERNET -->
 	<key>NSAppTransportSecurity</key>
