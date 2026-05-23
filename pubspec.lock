@@ -414,6 +414,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "0.20.5"
+  flutter_lints:
+    dependency: "direct dev"
+    description:
+      name: flutter_lints
+      sha256: "3f41d009ba7172d5ff9be5f6e6e6abb4300e263aab8866d2a0842ed2a70f8f0c"
+      url: "https://pub.dev"
+    source: hosted
+    version: "4.0.0"
   flutter_plugin_android_lifecycle:
     dependency: transitive
     description:
@@ -439,7 +447,7 @@ packages:
     source: hosted
     version: "2.3.0"
   flutter_test:
-    dependency: transitive
+    dependency: "direct dev"
     description: flutter
     source: sdk
     version: "0.0.0"
@@ -592,14 +600,6 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "1.0.1"
-  js:
-    dependency: transitive
-    description:
-      name: js
-      sha256: f2c445dce49627136094980615a031419f7f3eb393237e4ecd97ac15dea343f3
-      url: "https://pub.dev"
-    source: hosted
-    version: "0.6.7"
   leak_tracker:
     dependency: transitive
     description:
@@ -624,6 +624,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "3.0.2"
+  lints:
+    dependency: transitive
+    description:
+      name: lints
+      sha256: "976c774dd944a42e83e2467f4cc670daef7eed6295b10b36ae8c85bcbf828235"
+      url: "https://pub.dev"
+    source: hosted
+    version: "4.0.0"
   logging:
     dependency: transitive
     description:
@@ -848,14 +856,6 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "6.1.5+1"
-  pwa_install:
-    dependency: "direct main"
-    description:
-      name: pwa_install
-      sha256: "79a6c38e67db12da98489258ead7e025ce4860c9010cde226d0b53ad6d403fd9"
-      url: "https://pub.dev"
-    source: hosted
-    version: "0.0.5"
   riverpod:
     dependency: transitive
     description:
@@ -872,14 +872,6 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "0.28.0"
-  screen_retriever:
-    dependency: transitive
-    description:
-      name: screen_retriever
-      sha256: "6ee02c8a1158e6dae7ca430da79436e3b1c9563c8cf02f524af997c201ac2b90"
-      url: "https://pub.dev"
-    source: hosted
-    version: "0.1.9"
   shared_preferences:
     dependency: "direct main"
     description:
@@ -1189,22 +1181,6 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "1.1.1"
-  wifi_iot:
-    dependency: "direct main"
-    description:
-      name: wifi_iot
-      sha256: "0861aed0c0afd6031b4337811d31cdd181c594a8a2c73e94826ea21d2cb4707b"
-      url: "https://pub.dev"
-    source: hosted
-    version: "0.3.19+2"
-  wifi_scan:
-    dependency: "direct main"
-    description:
-      name: wifi_scan
-      sha256: "78896ea3db8838769053accd47cab02a62ead6480557e235295320603f84c9c7"
-      url: "https://pub.dev"
-    source: hosted
-    version: "0.4.1+2"
   win32:
     dependency: transitive
     description:
@@ -1213,14 +1189,6 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "5.15.0"
-  window_manager:
-    dependency: "direct main"
-    description:
-      name: window_manager
-      sha256: "8699323b30da4cdbe2aa2e7c9de567a6abd8a97d9a5c850a3c86dcd0b34bbfbf"
-      url: "https://pub.dev"
-    source: hosted
-    version: "0.3.9"
   xdg_directories:
     dependency: transitive
     description:
