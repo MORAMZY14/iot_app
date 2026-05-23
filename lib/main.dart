@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
- const String appVersion = '1.0.4'; 
+ const String appVersion = '1.0.5'; 
 
 void main() {
   runApp(const MyApp());
