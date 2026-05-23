@@ -138,14 +138,14 @@ jobs:
         working-directory: build/ios/iphoneos
 
       - name: Zip IPA
-        run: zip -qq -r -9 Bid-Game.ipa Payload
+        run: zip -qq -r -9 iot.ipa Payload
         working-directory: build/ios/iphoneos
 
       - name: Upload IPA to Release
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: build/ios/iphoneos/Bid-Game.ipa
+          file: build/ios/iphoneos/iot.ipa
           tag: ${{ needs.update-version.outputs.new_tag }}
           overwrite: true
           body: "Version ${{ needs.update-version.outputs.new_version }} – Android APK + iOS IPA"
