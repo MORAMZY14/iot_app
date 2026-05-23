@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'dashboard_page.dart';
 
- const String appVersion = '1.0.5'; 
+
+const String appVersion = '1.0.9';
 
 void main() {
-  runApp(const MyApp());
+  runApp(const ProviderScope(child: MyApp()));
 }
 
 class MyApp extends StatelessWidget {
@@ -12,18 +15,13 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      debugShowCheckedModeBanner: false,
-      home: Scaffold(
-        appBar: AppBar(
-          title: const Text('iOS Test'),
-        ),
-        body: const Center(
-          child: Text(
-            'App Started Successfully',
-            style: TextStyle(fontSize: 24),
-          ),
-        ),
-      ),
+      title: 'Smart Home',
+      theme: ThemeData(useMaterial3: true),
+      home: const DashboardPage(),
+      routes: {
+        '/provision': (context) => const Placeholder(),
+        '/wifiConfig': (context) => const Placeholder(),
+      },
     );
   }
 }

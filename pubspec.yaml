@@ -36,6 +36,8 @@ dependencies:
   # Network / HTTP
   http: ^1.2.2
   url_launcher: ^6.1.7
+  wifi_iot: ^0.3.19
+  wifi_scan: ^0.4.1
 
   # UI
   carousel_slider: ^5.0.0
