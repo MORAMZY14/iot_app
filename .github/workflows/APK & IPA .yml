@@ -102,35 +102,50 @@ jobs:
   # ---------------------------
   # 3. Build iOS IPA
   # ---------------------------
-build-ios:
-  name: 🍎 iOS IPA
-  runs-on: macos-latest
-  needs: update-version
+  build-ios:
+    name: 🍎 iOS IPA
+    runs-on: macos-latest
+    needs: update-version
+    steps:
+      - name: Checkout at new tag
+        uses: actions/checkout@v3
+        with:
+          ref: ${{ needs.update-version.outputs.new_tag }}
+          fetch-depth: 0
 
-  steps:
-    - name: Checkout at new tag
-      uses: actions/checkout@v3
-      with:
-        ref: ${{ needs.update-version.outputs.new_tag }}
-        fetch-depth: 0
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          architecture: x64
 
-    - name: Setup Flutter
-      uses: subosito/flutter-action@v2
-      with:
-        channel: stable
-        architecture: x64
+      - name: Flutter Pub Get
+        run: flutter pub get
 
-    - name: Flutter Pub Get
-      run: flutter pub get
+      - name: Update CocoaPods
+        run: pod repo update
+        working-directory: ios
 
-    - name: Build IPA
-      run: flutter build ipa --release --no-codesign
+      - name: Build iOS (no codesign)
+        run: flutter build ios --release --no-codesign
 
-    - name: Upload IPA to Release
-      uses: svenstaro/upload-release-action@v2
-      with:
-        repo_token: ${{ secrets.GITHUB_TOKEN }}
-        file: build/ios/ipa/*.ipa
-        tag: ${{ needs.update-version.outputs.new_tag }}
-        overwrite: true
-        body: "Version ${{ needs.update-version.outputs.new_version }} – Android APK + iOS IPA"
+      - name: Create Payload folder
+        run: mkdir Payload
+        working-directory: build/ios/iphoneos
+
+      - name: Move app into Payload
+        run: mv Runner.app Payload
+        working-directory: build/ios/iphoneos
+
+      - name: Zip IPA
+        run: zip -qq -r -9 Bid-Game.ipa Payload
+        working-directory: build/ios/iphoneos
+
+      - name: Upload IPA to Release
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: build/ios/iphoneos/Bid-Game.ipa
+          tag: ${{ needs.update-version.outputs.new_tag }}
+          overwrite: true
+          body: "Version ${{ needs.update-version.outputs.new_version }} – Android APK + iOS IPA"
