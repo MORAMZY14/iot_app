@@ -5,7 +5,7 @@ import 'dart:io' show Platform;
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'dashboard_page.dart';
 
-const String appVersion = '1.1.0';
+const String appVersion = '1.0.10';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
