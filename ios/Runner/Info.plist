@@ -92,6 +92,17 @@
 		<string>_hap._tcp</string>
 	</array>
 
+	<!-- ========== ADDED FOR BLE AND Wi‑Fi SCANNING ========== -->
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>This app uses Bluetooth to connect to and control your ESP32 smart home device.</string>
+
+	<key>NSBluetoothPeripheralUsageDescription</key>
+	<string>This app uses Bluetooth to connect to and control your ESP32 smart home device.</string>
+
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>This app needs location access to scan for nearby Wi-Fi networks when provisioning the ESP32.</string>
+	<!-- ===================================================== -->
+
 	<!-- INTERNET -->
 	<key>NSAppTransportSecurity</key>
 	<dict>

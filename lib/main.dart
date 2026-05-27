@@ -4,12 +4,14 @@ import 'package:permission_handler/permission_handler.dart';
 import 'dart:io' show Platform;
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'dashboard_page.dart';
+import 'provisioning_page.dart';
+import 'wifi_config_page.dart';      // <-- import your WiFi config page
+// If you also have WifiSetupPage, import it too
 
-const String appVersion = '1.0.10';
+const String appVersion = '1.0.11';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  // ✅ Only request permissions on mobile (Android/iOS)
   if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
     await [
       Permission.bluetoothScan,
@@ -30,8 +32,10 @@ class MyApp extends StatelessWidget {
       theme: ThemeData(useMaterial3: true),
       home: const DashboardPage(),
       routes: {
-        '/provision': (context) => const Placeholder(),
-        '/wifiConfig': (context) => const Placeholder(),
+        '/provision': (context) => const ProvisionPage(),     // ✅ replaced
+        '/wifiConfig': (context) => const WifiConfigPage(),   // ✅ replaced
+        // If you have a separate setup page:
+        // '/wifiSetup': (context) => const WifiSetupPage(),
       },
     );
   }
