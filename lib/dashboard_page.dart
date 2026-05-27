@@ -5,14 +5,15 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 import 'package:shimmer/shimmer.dart';
+import 'ble_service.dart';
 
 // ============================================================
-// 1. HTTP POLLING SERVICE (like original, but reactive with Riverpod)
+// 1. HTTP POLLING SERVICE (fallback)
 // ============================================================
 final databaseUrlProvider = Provider((ref) =>
 'https://iot-smart-home-81abd-default-rtdb.europe-west1.firebasedatabase.app');
 
-final smartHomeDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
+final httpDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
   final url = ref.watch(databaseUrlProvider);
   final controller = StreamController<Map<String, dynamic>>();
 
@@ -37,13 +38,12 @@ final smartHomeDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
         }
       }
     } catch (e) {
-      // ignore errors silently, keep old data
+      // ignore
     } finally {
       isFetching = false;
     }
   }
 
-  // Start polling
   fetchData();
   timer = Timer.periodic(const Duration(seconds: 2), (_) => fetchData());
 
@@ -55,7 +55,77 @@ final smartHomeDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
   return controller.stream;
 });
 
-// Provider for toggling lights with optimistic update & haptic
+// ============================================================
+// 2. BLE + HTTP MERGED DATA PROVIDER
+// ============================================================
+final bleServiceProvider = Provider<BleService>((ref) => BleService());
+
+final smartHomeDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
+  final bleService = ref.watch(bleServiceProvider);
+  final httpStream = ref.watch(httpDataProvider.stream);
+
+  final controller = StreamController<Map<String, dynamic>>();
+  late StreamSubscription bleStatusSub;
+  late StreamSubscription httpSub;
+
+  Map<String, dynamic> currentData = {
+    'sensors': {'temperature': 0.0, 'humidity': 0.0, 'flame': false},
+    'lights': {'room1': false, 'room2': false, 'room3': false},
+    'status': {'online': false},
+  };
+
+  void updateFromBle() {
+    if (bleService.currentStatus == BleStatus.connected) {
+      currentData['sensors'] = {
+        'temperature': bleService.temperature,
+        'humidity': bleService.humidity,
+        'flame': bleService.flameDetected,
+      };
+      currentData['lights'] = Map.from(bleService.lights);
+      currentData['status']['online'] = true;
+      controller.add(currentData);
+    }
+  }
+
+  void updateFromHttp(Map<String, dynamic> httpData) {
+    if (bleService.currentStatus != BleStatus.connected) {
+      currentData = httpData;
+      controller.add(currentData);
+    } else {
+      if (httpData.containsKey('status')) {
+        currentData['status'] = httpData['status'];
+        controller.add(currentData);
+      }
+    }
+  }
+
+  bleStatusSub = bleService.statusStream.listen((status) {
+    if (status == BleStatus.connected || status == BleStatus.dataUpdated) {
+      updateFromBle();
+    } else if (status == BleStatus.disconnected) {
+      ref.invalidate(httpDataProvider);
+    }
+  });
+
+  httpSub = httpStream.listen((httpData) {
+    updateFromHttp(httpData);
+  });
+
+  bleService.connect();
+
+  ref.onDispose(() {
+    bleStatusSub.cancel();
+    httpSub.cancel();
+    controller.close();
+    bleService.dispose();
+  });
+
+  return controller.stream;
+});
+
+// ============================================================
+// 3. LIGHT TOGGLE SERVICE (BLE first, HTTP fallback)
+// ============================================================
 final lightToggleProvider = Provider((ref) => LightToggleService(ref));
 
 class LightToggleService {
@@ -63,7 +133,24 @@ class LightToggleService {
   LightToggleService(this._ref);
 
   Future<void> toggle(String room, bool value, BuildContext context) async {
+    final bleService = _ref.read(bleServiceProvider);
     final url = _ref.read(databaseUrlProvider);
+
+    if (bleService.currentStatus == BleStatus.connected) {
+      try {
+        await bleService.setLightState(room, value);
+        HapticFeedback.lightImpact();
+        return;
+      } catch (e) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('BLE error, using Wi-Fi: $e'), backgroundColor: Colors.orange),
+          );
+        }
+      }
+    }
+
+    // Fallback to HTTP
     try {
       final response = await http.patch(
         Uri.parse('$url/smartHome/lights.json'),
@@ -71,11 +158,9 @@ class LightToggleService {
       );
       if (response.statusCode == 200) {
         HapticFeedback.lightImpact();
-        // No need to manually update UI – the poll will refresh in <2s,
-        // but for instant feedback we can also update the local cache via ref.
-        // However, the stream will auto-update on next poll.
+        _ref.invalidate(httpDataProvider);
       } else {
-        throw Exception('Failed to toggle');
+        throw Exception('HTTP toggle failed');
       }
     } catch (e) {
       if (context.mounted) {
@@ -88,7 +173,7 @@ class LightToggleService {
 }
 
 // ============================================================
-// 2. MAIN DASHBOARD (ConsumerWidget)
+// 4. MAIN DASHBOARD PAGE
 // ============================================================
 class DashboardPage extends ConsumerWidget {
   const DashboardPage({super.key});
@@ -96,14 +181,19 @@ class DashboardPage extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final dataAsync = ref.watch(smartHomeDataProvider);
+    final bleService = ref.watch(bleServiceProvider);
 
     Future<void> manualRefresh() async {
-      // Force refetch by invalidating the provider (restarts stream)
-      ref.invalidate(smartHomeDataProvider);
+      await bleService.connect();
+      ref.invalidate(httpDataProvider);
     }
 
     return Scaffold(
-      appBar: _ModernAppBar(onRefresh: manualRefresh),
+      appBar: _ModernAppBar(
+        onRefresh: manualRefresh,
+        bleStatus: bleService.currentStatus,
+        onConnectBLE: () => bleService.connect(),
+      ),
       body: dataAsync.when(
         data: (data) => RefreshIndicator(
           onRefresh: manualRefresh,
@@ -119,7 +209,7 @@ class DashboardPage extends ConsumerWidget {
               Text('Error: ${err.toString()}'),
               const SizedBox(height: 16),
               ElevatedButton(
-                onPressed: () => ref.invalidate(smartHomeDataProvider),
+                onPressed: () => manualRefresh(),
                 child: const Text('Retry'),
               ),
             ],
@@ -131,11 +221,18 @@ class DashboardPage extends ConsumerWidget {
 }
 
 // ============================================================
-// 3. APP BAR
+// 5. APP BAR WITH BLE STATUS
 // ============================================================
 class _ModernAppBar extends StatelessWidget implements PreferredSizeWidget {
   final Future<void> Function() onRefresh;
-  const _ModernAppBar({required this.onRefresh});
+  final BleStatus bleStatus;
+  final VoidCallback onConnectBLE;
+
+  const _ModernAppBar({
+    required this.onRefresh,
+    required this.bleStatus,
+    required this.onConnectBLE,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -144,6 +241,23 @@ class _ModernAppBar extends StatelessWidget implements PreferredSizeWidget {
       centerTitle: false,
       elevation: 0,
       actions: [
+        if (bleStatus == BleStatus.connected)
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 8),
+            child: Icon(Icons.bluetooth_connected, color: Colors.green),
+          )
+        else if (bleStatus == BleStatus.connecting)
+          const SizedBox(
+            width: 24,
+            height: 24,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          )
+        else
+          IconButton(
+            icon: const Icon(Icons.bluetooth_disabled, color: Colors.grey),
+            onPressed: onConnectBLE,
+            tooltip: 'Connect Bluetooth',
+          ),
         IconButton(
           icon: const Icon(Icons.wifi_find),
           tooltip: 'Provision ESP32',
@@ -174,7 +288,7 @@ class _ModernAppBar extends StatelessWidget implements PreferredSizeWidget {
 }
 
 // ============================================================
-// 4. DASHBOARD CONTENT (same modern widgets as before)
+// 6. DASHBOARD CONTENT (UI – same as your original)
 // ============================================================
 class _DashboardContent extends StatelessWidget {
   final Map<String, dynamic> data;
@@ -221,7 +335,7 @@ class _DashboardContent extends StatelessWidget {
   }
 }
 
-// ----- SENSOR CARD (glass morphism) -----
+// ----- SENSOR CARD -----
 class _SensorCard extends StatelessWidget {
   final String title;
   final String value;
@@ -278,7 +392,7 @@ class _SensorCard extends StatelessWidget {
   }
 }
 
-// ----- FLAME CARD with warning animation -----
+// ----- FLAME CARD -----
 class _FlameCard extends StatelessWidget {
   final bool flame;
   const _FlameCard({required this.flame});
@@ -341,7 +455,7 @@ class _FlameCard extends StatelessWidget {
   }
 }
 
-// ----- LIGHTS CARD with toggle using Riverpod -----
+// ----- LIGHTS CARD -----
 class _LightsCard extends ConsumerWidget {
   final bool room1;
   final bool room2;
@@ -420,7 +534,7 @@ class _LightSwitchTile extends StatelessWidget {
   }
 }
 
-// ----- STATUS CARD with pulsing dot -----
+// ----- STATUS CARD -----
 class _StatusCard extends StatelessWidget {
   final bool online;
   const _StatusCard({required this.online});
@@ -474,7 +588,7 @@ class _StatusCard extends StatelessWidget {
   }
 }
 
-// ----- SKELETON LOADER (shimmer) -----
+// ----- SKELETON LOADER -----
 class _SkeletonLoader extends StatelessWidget {
   const _SkeletonLoader();
 

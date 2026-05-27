@@ -14,42 +14,61 @@ class SensorCard extends StatelessWidget {
     required this.color,
   });
 
+  // Pre‑compute the shadow once (avoids rebuilding in every frame)
+  static final BoxDecoration _cardDecoration = BoxDecoration(
+    color: Colors.white,
+    borderRadius: BorderRadius.circular(20),
+    boxShadow: [
+      BoxShadow(
+        color: Colors.grey.withOpacity(0.1),
+        spreadRadius: 2,
+        blurRadius: 5,
+        offset: const Offset(0, 2),
+      ),
+    ],
+  );
+
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    // Use theme color if the given color is not specified (fallback)
+    final effectiveColor = color ?? theme.primaryColor;
+
     return Container(
       padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(20),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.grey.withOpacity(0.1),
-            spreadRadius: 2,
-            blurRadius: 5,
-            offset: const Offset(0, 2),
-          ),
-        ],
-      ),
+      decoration: _cardDecoration,
       child: Column(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, size: 40, color: color),
+          Icon(icon, size: 40, color: effectiveColor),
           const SizedBox(height: 10),
           Text(
             title,
             style: TextStyle(
               fontSize: 14,
-              color: Colors.grey[600],
+              color: theme.brightness == Brightness.dark
+                  ? Colors.grey.shade400
+                  : Colors.grey.shade600,
             ),
           ),
           const SizedBox(height: 5),
-          Text(
-            value,
-            style: TextStyle(
-              fontSize: 24,
-              fontWeight: FontWeight.bold,
-              color: color,
+          // Animated value changes for smoother UI updates
+          AnimatedSwitcher(
+            duration: const Duration(milliseconds: 200),
+            transitionBuilder: (child, animation) => FadeTransition(
+              opacity: animation,
+              child: ScaleTransition(scale: animation, child: child),
             ),
-            textAlign: TextAlign.center,
+            child: Text(
+              value,
+              key: ValueKey(value), // forces animation when value changes
+              style: TextStyle(
+                fontSize: 24,
+                fontWeight: FontWeight.bold,
+                color: effectiveColor,
+              ),
+              textAlign: TextAlign.center,
+            ),
           ),
         ],
       ),

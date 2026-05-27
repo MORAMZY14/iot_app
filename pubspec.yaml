@@ -38,6 +38,7 @@ dependencies:
   url_launcher: ^6.1.7
   wifi_iot: ^0.3.19
   wifi_scan: ^0.4.1
+  flutter_blue_plus: ^1.32.11
 
   # UI
   carousel_slider: ^5.0.0
