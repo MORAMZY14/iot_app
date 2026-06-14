@@ -484,7 +484,7 @@ class _GlassAppBar extends StatelessWidget implements PreferredSizeWidget {
               ),
               _AppBarIconButton(
                 onTap: () => Navigator.pushNamed(context, '/wifiConfig'),
-                child: const Icon(Icons. , size: 22),
+                child: const Icon(Icons.wifi, size: 22),
               ),
               _AppBarIconButton(
                 onTap: () async {
