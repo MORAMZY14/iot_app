@@ -8,25 +8,16 @@ import 'package:http/http.dart' as http;
 import 'package:shimmer/shimmer.dart';
 import 'ble_service.dart';
 
-// ============================================================
-// 0. THEME MANAGEMENT
-// ============================================================
+// ────────────────────────────────────────────────────────────
+// 0. THEME MANAGEMENT – FIXED & SIMPLIFIED
+// ────────────────────────────────────────────────────────────
 final themeModeProvider = StateProvider<ThemeMode>((ref) => ThemeMode.system);
 
-final themeProvider = Provider<ThemeData>((ref) {
-  final mode = ref.watch(themeModeProvider);
-  final isDark = mode == ThemeMode.dark ||
-      (mode == ThemeMode.system &&
-          WidgetsBinding.instance.platformDispatcher.platformBrightness ==
-              Brightness.dark);
-  return isDark ? _darkTheme : _lightTheme;
-});
-
-// Light theme — soft warm white, like a sunlit frosted window
-final _lightTheme = ThemeData(
+// Light theme – soft warm white with iOS‑27 accents
+final lightTheme = ThemeData(
   useMaterial3: true,
   brightness: Brightness.light,
-  colorSchemeSeed: const Color(0xFF2979FF),
+  colorSchemeSeed: const Color(0xFF007AFF), // iOS blue
   scaffoldBackgroundColor: const Color(0xFFE8EAF6),
   appBarTheme: const AppBarTheme(
     backgroundColor: Colors.transparent,
@@ -36,11 +27,11 @@ final _lightTheme = ThemeData(
   dividerTheme: const DividerThemeData(color: Color(0x22000000)),
 );
 
-// Dark theme — deep space gradient base
-final _darkTheme = ThemeData(
+// Dark theme – deep navy with vibrant accents
+final darkTheme = ThemeData(
   useMaterial3: true,
   brightness: Brightness.dark,
-  colorSchemeSeed: const Color(0xFF64B5F6),
+  colorSchemeSeed: const Color(0xFF0A84FF), // iOS dark blue
   scaffoldBackgroundColor: const Color(0xFF080C18),
   appBarTheme: const AppBarTheme(
     backgroundColor: Colors.transparent,
@@ -50,9 +41,9 @@ final _darkTheme = ThemeData(
   dividerTheme: const DividerThemeData(color: Color(0x22FFFFFF)),
 );
 
-// ============================================================
-// 1. HTTP POLLING SERVICE
-// ============================================================
+// ────────────────────────────────────────────────────────────
+// 1. HTTP POLLING SERVICE (unchanged)
+// ────────────────────────────────────────────────────────────
 final databaseUrlProvider = Provider((ref) =>
 'https://iot-smart-home-81abd-default-rtdb.europe-west1.firebasedatabase.app');
 
@@ -80,9 +71,8 @@ final httpDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
           controller.add(jsonData);
         }
       }
-    } catch (e) {
-      // ignore
-    } finally {
+    } catch (_) {}
+    finally {
       isFetching = false;
     }
   }
@@ -98,9 +88,9 @@ final httpDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
   return controller.stream;
 });
 
-// ============================================================
-// 2. BLE + HTTP MERGED DATA PROVIDER
-// ============================================================
+// ────────────────────────────────────────────────────────────
+// 2. BLE + HTTP MERGED DATA PROVIDER (unchanged)
+// ────────────────────────────────────────────────────────────
 final bleServiceProvider = Provider<BleService>((ref) => BleService());
 
 final smartHomeDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
@@ -166,9 +156,9 @@ final smartHomeDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
   return controller.stream;
 });
 
-// ============================================================
-// 3. LIGHT TOGGLE SERVICE
-// ============================================================
+// ────────────────────────────────────────────────────────────
+// 3. LIGHT TOGGLE SERVICE (unchanged)
+// ────────────────────────────────────────────────────────────
 final lightToggleProvider = Provider((ref) => LightToggleService(ref));
 
 class LightToggleService {
@@ -226,10 +216,9 @@ void _showGlassSnackBar(BuildContext context, String message,
   );
 }
 
-// ============================================================
-// 4. WALLPAPER GRADIENT BACKGROUND
-// Wrap your Scaffold's body with this for the iOS wallpaper effect.
-// ============================================================
+// ────────────────────────────────────────────────────────────
+// 4. WALLPAPER GRADIENT BACKGROUND (responsive blobs)
+// ────────────────────────────────────────────────────────────
 class _WallpaperBackground extends StatelessWidget {
   final Widget child;
   const _WallpaperBackground({required this.child});
@@ -237,9 +226,14 @@ class _WallpaperBackground extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
+    final screenWidth = MediaQuery.of(context).size.width;
+    // Scale glow blobs relative to screen width
+    final blobSize1 = screenWidth * 0.8;
+    final blobSize2 = screenWidth * 0.7;
+    final blobSize3 = screenWidth * 0.6;
+
     return Stack(
       children: [
-        // Deep-space gradient (dark) / soft pastel (light)
         Container(
           decoration: BoxDecoration(
             gradient: isDark
@@ -263,35 +257,28 @@ class _WallpaperBackground extends StatelessWidget {
             ),
           ),
         ),
-        // Ambient colour blobs (mimic iOS wallpaper depth)
         Positioned(
           top: -80,
           left: -60,
           child: _GlowBlob(
-            color: isDark
-                ? const Color(0xFF1A3A7A)
-                : const Color(0xFFB3C8F0),
-            size: 280,
+            color: isDark ? const Color(0xFF1A3A7A) : const Color(0xFFB3C8F0),
+            size: blobSize1,
           ),
         ),
         Positioned(
           top: 200,
           right: -80,
           child: _GlowBlob(
-            color: isDark
-                ? const Color(0xFF3A1A6A)
-                : const Color(0xFFD4B8F0),
-            size: 240,
+            color: isDark ? const Color(0xFF3A1A6A) : const Color(0xFFD4B8F0),
+            size: blobSize2,
           ),
         ),
         Positioned(
           bottom: 100,
           left: 20,
           child: _GlowBlob(
-            color: isDark
-                ? const Color(0xFF0A3A2A)
-                : const Color(0xFFB8E8D8),
-            size: 200,
+            color: isDark ? const Color(0xFF0A3A2A) : const Color(0xFFB8E8D8),
+            size: blobSize3,
           ),
         ),
         child,
@@ -320,9 +307,9 @@ class _GlowBlob extends StatelessWidget {
   }
 }
 
-// ============================================================
+// ────────────────────────────────────────────────────────────
 // 5. DASHBOARD PAGE
-// ============================================================
+// ────────────────────────────────────────────────────────────
 class DashboardPage extends ConsumerStatefulWidget {
   const DashboardPage({super.key});
 
@@ -331,20 +318,13 @@ class DashboardPage extends ConsumerStatefulWidget {
 }
 
 class _DashboardPageState extends ConsumerState<DashboardPage> {
-  late final PageController _pageController;
   int _selectedIndex = 0;
-
-  @override
-  void initState() {
-    super.initState();
-    _pageController = PageController();
-  }
-
-  @override
-  void dispose() {
-    _pageController.dispose();
-    super.dispose();
-  }
+  final List<Widget> _pages = const [
+    _HomeContentWrapper(),
+    _EnergyScreen(),
+    _AlertsScreen(),
+    _SettingsScreenWrapper(),
+  ];
 
   Future<void> _manualRefresh() async {
     final bleService = ref.read(bleServiceProvider);
@@ -354,18 +334,11 @@ class _DashboardPageState extends ConsumerState<DashboardPage> {
 
   void _onTabTapped(int index) {
     setState(() => _selectedIndex = index);
-    _pageController.animateToPage(
-      index,
-      duration: const Duration(milliseconds: 380),
-      curve: Curves.easeInOutCubic,
-    );
   }
 
   @override
   Widget build(BuildContext context) {
-    final dataAsync = ref.watch(smartHomeDataProvider);
     final bleService = ref.watch(bleServiceProvider);
-    final themeMode = ref.watch(themeModeProvider);
 
     return Scaffold(
       backgroundColor: Colors.transparent,
@@ -376,28 +349,13 @@ class _DashboardPageState extends ConsumerState<DashboardPage> {
         onConnectBLE: () => bleService.connect(),
       ),
       body: _WallpaperBackground(
-        child: PageView(
-          controller: _pageController,
-          physics: const BouncingScrollPhysics(),
-          onPageChanged: (index) => setState(() => _selectedIndex = index),
-          children: [
-            _HomeContent(
-              dataAsync: dataAsync,
-              onRefresh: _manualRefresh,
-              bleStatus: bleService.currentStatus,
-              onConnectBLE: () => bleService.connect(),
-            ),
-            const _EnergyScreen(),
-            const _AlertsScreen(),
-            _SettingsScreen(
-              themeMode: themeMode,
-              onThemeModeChanged: (mode) =>
-              ref.read(themeModeProvider.notifier).state = mode,
-              bleStatus: bleService.currentStatus,
-              onConnectBLE: () => bleService.connect(),
-              onRefresh: _manualRefresh,
-            ),
-          ],
+        child: AnimatedSwitcher(
+          duration: const Duration(milliseconds: 400),
+          switchInCurve: Curves.easeOutCubic,
+          switchOutCurve: Curves.easeInCubic,
+          transitionBuilder: (child, animation) =>
+              FadeTransition(opacity: animation, child: child),
+          child: _pages[_selectedIndex],
         ),
       ),
       bottomNavigationBar: _GlassBottomNavBar(
@@ -408,9 +366,66 @@ class _DashboardPageState extends ConsumerState<DashboardPage> {
   }
 }
 
-// ============================================================
-// 6. GLASS APP BAR
-// ============================================================
+// Wrappers to pass data
+class _HomeContentWrapper extends ConsumerStatefulWidget {
+  const _HomeContentWrapper();
+
+  @override
+  ConsumerState<_HomeContentWrapper> createState() => _HomeContentWrapperState();
+}
+
+class _HomeContentWrapperState extends ConsumerState<_HomeContentWrapper> {
+  Future<void> _manualRefresh() async {
+    final bleService = ref.read(bleServiceProvider);
+    await bleService.connect();
+    ref.invalidate(httpDataProvider);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final dataAsync = ref.watch(smartHomeDataProvider);
+    final bleService = ref.watch(bleServiceProvider);
+    return _HomeContent(
+      dataAsync: dataAsync,
+      onRefresh: _manualRefresh,
+      bleStatus: bleService.currentStatus,
+      onConnectBLE: () => bleService.connect(),
+    );
+  }
+}
+
+class _SettingsScreenWrapper extends ConsumerStatefulWidget {
+  const _SettingsScreenWrapper();
+
+  @override
+  ConsumerState<_SettingsScreenWrapper> createState() => _SettingsScreenWrapperState();
+}
+
+class _SettingsScreenWrapperState extends ConsumerState<_SettingsScreenWrapper> {
+  Future<void> _manualRefresh() async {
+    final bleService = ref.read(bleServiceProvider);
+    await bleService.connect();
+    ref.invalidate(httpDataProvider);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final themeMode = ref.watch(themeModeProvider);
+    final bleService = ref.watch(bleServiceProvider);
+    return _SettingsScreen(
+      themeMode: themeMode,
+      onThemeModeChanged: (mode) =>
+      ref.read(themeModeProvider.notifier).state = mode,
+      bleStatus: bleService.currentStatus,
+      onConnectBLE: () => bleService.connect(),
+      onRefresh: _manualRefresh,
+    );
+  }
+}
+
+// ────────────────────────────────────────────────────────────
+// 6. GLASS APP BAR (enhanced liquid blur)
+// ────────────────────────────────────────────────────────────
 class _GlassAppBar extends StatelessWidget implements PreferredSizeWidget {
   final Future<void> Function() onRefresh;
   final BleStatus bleStatus;
@@ -424,13 +439,14 @@ class _GlassAppBar extends StatelessWidget implements PreferredSizeWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
     return ClipRect(
       child: BackdropFilter(
-        filter: ui.ImageFilter.blur(sigmaX: 28, sigmaY: 28),
+        filter: ui.ImageFilter.blur(sigmaX: 40, sigmaY: 40), // increased blur
         child: Container(
-          color: Theme.of(context).brightness == Brightness.dark
-              ? Colors.black.withOpacity(0.28)
-              : Colors.white.withOpacity(0.38),
+          color: isDark
+              ? Colors.black.withOpacity(0.2)
+              : Colors.white.withOpacity(0.4),
           child: AppBar(
             backgroundColor: Colors.transparent,
             title: const Text(
@@ -443,13 +459,12 @@ class _GlassAppBar extends StatelessWidget implements PreferredSizeWidget {
               preferredSize: const Size.fromHeight(0.5),
               child: Container(
                 height: 0.5,
-                color: Theme.of(context).brightness == Brightness.dark
+                color: isDark
                     ? Colors.white.withOpacity(0.12)
                     : Colors.black.withOpacity(0.08),
               ),
             ),
             actions: [
-              // BLE status
               _AppBarIconButton(
                 onTap: bleStatus == BleStatus.connected ? null : onConnectBLE,
                 child: bleStatus == BleStatus.connected
@@ -469,7 +484,7 @@ class _GlassAppBar extends StatelessWidget implements PreferredSizeWidget {
               ),
               _AppBarIconButton(
                 onTap: () => Navigator.pushNamed(context, '/wifiConfig'),
-                child: const Icon(Icons.wifi, size: 22),
+                child: const Icon(Icons. , size: 22),
               ),
               _AppBarIconButton(
                 onTap: () async {
@@ -509,9 +524,9 @@ class _AppBarIconButton extends StatelessWidget {
   }
 }
 
-// ============================================================
-// 7. HOME CONTENT
-// ============================================================
+// ────────────────────────────────────────────────────────────
+// 7. HOME CONTENT (responsive paddings & font sizes)
+// ────────────────────────────────────────────────────────────
 class _HomeContent extends ConsumerStatefulWidget {
   final AsyncValue<Map<String, dynamic>> dataAsync;
   final Future<void> Function() onRefresh;
@@ -584,6 +599,14 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
 
   @override
   Widget build(BuildContext context) {
+    // Responsive helpers
+    final screenWidth = MediaQuery.of(context).size.width;
+    final horizontalPadding = screenWidth < 360 ? 12.0 : 20.0;
+    final cardHorizontalPadding = screenWidth < 360 ? 14.0 : 20.0;
+    final headerFontSize = screenWidth < 360 ? 22.0 : 27.0;
+    final statValueFontSize = screenWidth < 360 ? 16.0 : 20.0;
+    final roomNameFontSize = screenWidth < 360 ? 16.0 : 19.0;
+
     return RefreshIndicator(
       onRefresh: widget.onRefresh,
       displacement: 100,
@@ -597,17 +620,21 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
           return SingleChildScrollView(
             physics: const AlwaysScrollableScrollPhysics(),
             padding: EdgeInsets.only(
-              top: MediaQuery.of(context).padding.top + kToolbarHeight + 12,
-              left: 20,
-              right: 20,
+              top: MediaQuery.of(context).padding.top + kToolbarHeight - 50,
+              left: horizontalPadding,
+              right: horizontalPadding,
               bottom: 24,
             ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                _buildHeader(context),
+                _buildHeader(context, headerFontSize),
                 const SizedBox(height: 20),
-                _StatsRow(temp: temp, hum: hum),
+                _StatsRow(
+                  temp: temp,
+                  hum: hum,
+                  valueFontSize: statValueFontSize,
+                ),
                 const SizedBox(height: 16),
                 _QuickScenesRow(
                   activeIndex: _activeSceneIndex,
@@ -628,7 +655,8 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
                   selectedRoom: _selectedRoom,
                   lightOn: _selectedRoom == 'Bathroom'
                       ? _bathroomLightOn
-                      : _getLightState(_lightKeyForRoom(_selectedRoom) ?? ''),
+                      : _getLightState(
+                      _lightKeyForRoom(_selectedRoom) ?? ''),
                   onLightToggle: () => _toggleRoomLight(_selectedRoom),
                   ceilingBrightness: _ceilingBrightness,
                   onCeilingBrightnessChanged: (val) =>
@@ -636,6 +664,7 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
                   tvVolume: _tvVolume,
                   onTvVolumeChanged: (val) =>
                       setState(() => _tvVolume = val),
+                  roomNameFontSize: roomNameFontSize,
                 ),
               ],
             ),
@@ -644,7 +673,7 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
         loading: () => const _SkeletonLoader(),
         error: (err, stack) => Center(
           child: Padding(
-            padding: const EdgeInsets.all(32),
+            padding: EdgeInsets.all(horizontalPadding),
             child: _GlassCard(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
@@ -680,7 +709,7 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
     );
   }
 
-  Widget _buildHeader(BuildContext context) {
+  Widget _buildHeader(BuildContext context, double headerFontSize) {
     final now = DateTime.now();
     final hour = now.hour;
     final greeting = hour < 12
@@ -718,8 +747,8 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
               const SizedBox(height: 4),
               Text(
                 '$greeting $emoji',
-                style: const TextStyle(
-                  fontSize: 27,
+                style: TextStyle(
+                  fontSize: headerFontSize,
                   fontWeight: FontWeight.w700,
                   letterSpacing: -0.8,
                 ),
@@ -727,10 +756,8 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
             ],
           ),
         ),
-        // Online status pill
         _GlassCard(
-          padding:
-          const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
           borderRadius: BorderRadius.circular(40),
           child: Row(
             mainAxisSize: MainAxisSize.min,
@@ -757,9 +784,7 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
               ),
               const SizedBox(width: 7),
               Text(
-                widget.bleStatus == BleStatus.connected
-                    ? 'BLE'
-                    : 'Wi‑Fi',
+                widget.bleStatus == BleStatus.connected ? 'BLE' : 'Wi‑Fi',
                 style: TextStyle(
                   fontSize: 12,
                   fontWeight: FontWeight.w600,
@@ -783,20 +808,25 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
 
   String _month(int m) {
     const months = [
-      'Jan','Feb','Mar','Apr','May','Jun',
-      'Jul','Aug','Sep','Oct','Nov','Dec'
+      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
     ];
     return months[m - 1];
   }
 }
 
-// ============================================================
-// STATS ROW
-// ============================================================
+// ────────────────────────────────────────────────────────────
+// STATS ROW (responsive)
+// ────────────────────────────────────────────────────────────
 class _StatsRow extends StatelessWidget {
   final double temp;
   final double hum;
-  const _StatsRow({required this.temp, required this.hum});
+  final double valueFontSize;
+  const _StatsRow({
+    required this.temp,
+    required this.hum,
+    required this.valueFontSize,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -815,6 +845,7 @@ class _StatsRow extends StatelessWidget {
             value: '${temp.toStringAsFixed(1)}°',
             subtitle: tempStatus,
             accentColor: const Color(0xFFFF6B6B),
+            valueFontSize: valueFontSize,
           ),
         ),
         const SizedBox(width: 12),
@@ -824,6 +855,7 @@ class _StatsRow extends StatelessWidget {
             value: '${hum.toStringAsFixed(0)}%',
             subtitle: humStatus,
             accentColor: const Color(0xFF64B5F6),
+            valueFontSize: valueFontSize,
           ),
         ),
         const SizedBox(width: 12),
@@ -833,6 +865,7 @@ class _StatsRow extends StatelessWidget {
             value: '3.4kW',
             subtitle: 'Today',
             accentColor: const Color(0xFFFFD54F),
+            valueFontSize: valueFontSize,
           ),
         ),
       ],
@@ -845,12 +878,14 @@ class _StatCard extends StatelessWidget {
   final String value;
   final String subtitle;
   final Color accentColor;
+  final double valueFontSize;
 
   const _StatCard({
     required this.emoji,
     required this.value,
     required this.subtitle,
     required this.accentColor,
+    required this.valueFontSize,
   });
 
   @override
@@ -870,8 +905,8 @@ class _StatCard extends StatelessWidget {
             const SizedBox(height: 8),
             Text(
               value,
-              style: const TextStyle(
-                  fontSize: 20,
+              style: TextStyle(
+                  fontSize: valueFontSize,
                   fontWeight: FontWeight.w700,
                   letterSpacing: -0.5),
             ),
@@ -880,8 +915,7 @@ class _StatCard extends StatelessWidget {
               subtitle,
               style: TextStyle(
                 fontSize: 11,
-                color:
-                Theme.of(context).colorScheme.onSurface.withOpacity(0.5),
+                color: Theme.of(context).colorScheme.onSurface.withOpacity(0.5),
               ),
               textAlign: TextAlign.center,
               maxLines: 1,
@@ -894,9 +928,9 @@ class _StatCard extends StatelessWidget {
   }
 }
 
-// ============================================================
-// QUICK SCENES ROW
-// ============================================================
+// ────────────────────────────────────────────────────────────
+// QUICK SCENES ROW (unchanged)
+// ────────────────────────────────────────────────────────────
 class _QuickScenesRow extends StatelessWidget {
   final int activeIndex;
   final ValueChanged<int> onSceneSelected;
@@ -943,9 +977,7 @@ class _QuickScenesRow extends StatelessWidget {
                   Text(
                     label,
                     style: TextStyle(
-                      fontWeight: isActive
-                          ? FontWeight.w700
-                          : FontWeight.w500,
+                      fontWeight: isActive ? FontWeight.w700 : FontWeight.w500,
                       fontSize: 13,
                       color: isActive
                           ? Theme.of(context).colorScheme.primary
@@ -965,9 +997,9 @@ class _QuickScenesRow extends StatelessWidget {
   }
 }
 
-// ============================================================
-// FLAME SENSOR CARD
-// ============================================================
+// ────────────────────────────────────────────────────────────
+// FLAME SENSOR CARD (unchanged)
+// ────────────────────────────────────────────────────────────
 class _FlameSensorCard extends StatelessWidget {
   final bool flame;
   const _FlameSensorCard({required this.flame});
@@ -1028,9 +1060,7 @@ class _FlameSensorCard extends StatelessWidget {
                     style: TextStyle(
                       fontSize: 17,
                       fontWeight: FontWeight.w700,
-                      color: flame
-                          ? Colors.red.shade400
-                          : const Color(0xFF4DFFA0),
+                      color: flame ? Colors.red.shade400 : const Color(0xFF4DFFA0),
                       letterSpacing: -0.3,
                     ),
                   ),
@@ -1044,9 +1074,9 @@ class _FlameSensorCard extends StatelessWidget {
   }
 }
 
-// ============================================================
-// ACTIVE DEVICES ROW
-// ============================================================
+// ────────────────────────────────────────────────────────────
+// ACTIVE DEVICES ROW (unchanged)
+// ────────────────────────────────────────────────────────────
 class _ActiveDevicesRow extends StatelessWidget {
   final int activeCount;
   const _ActiveDevicesRow({required this.activeCount});
@@ -1073,7 +1103,6 @@ class _ActiveDevicesRow extends StatelessWidget {
               ),
             ),
           ),
-          // Dot indicators
           Row(
             children: List.generate(total, (i) {
               final on = i < activeCount;
@@ -1092,8 +1121,7 @@ class _ActiveDevicesRow extends StatelessWidget {
                   boxShadow: on
                       ? [
                     BoxShadow(
-                      color:
-                      const Color(0xFF4DFFA0).withOpacity(0.5),
+                      color: const Color(0xFF4DFFA0).withOpacity(0.5),
                       blurRadius: 6,
                     )
                   ]
@@ -1117,9 +1145,9 @@ class _ActiveDevicesRow extends StatelessWidget {
   }
 }
 
-// ============================================================
-// ROOMS SELECTOR
-// ============================================================
+// ────────────────────────────────────────────────────────────
+// ROOMS SELECTOR (unchanged)
+// ────────────────────────────────────────────────────────────
 class _RoomsSelector extends StatelessWidget {
   final String selectedRoom;
   final ValueChanged<String> onRoomSelected;
@@ -1168,12 +1196,10 @@ class _RoomsSelector extends StatelessWidget {
               return _AnimatedPressWidget(
                 onTap: () => onRoomSelected(name),
                 child: _GlassCard(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 16, vertical: 10),
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
                   borderRadius: BorderRadius.circular(40),
                   isActive: isSelected,
-                  activeColor:
-                  Theme.of(context).colorScheme.primary,
+                  activeColor: Theme.of(context).colorScheme.primary,
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
@@ -1182,9 +1208,7 @@ class _RoomsSelector extends StatelessWidget {
                       Text(
                         name,
                         style: TextStyle(
-                          fontWeight: isSelected
-                              ? FontWeight.w700
-                              : FontWeight.w500,
+                          fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
                           fontSize: 13,
                           color: isSelected
                               ? Theme.of(context).colorScheme.primary
@@ -1206,9 +1230,9 @@ class _RoomsSelector extends StatelessWidget {
   }
 }
 
-// ============================================================
-// ROOM DETAILS PANEL
-// ============================================================
+// ────────────────────────────────────────────────────────────
+// ROOM DETAILS PANEL (responsive)
+// ────────────────────────────────────────────────────────────
 class _RoomDetailsPanel extends StatelessWidget {
   final String selectedRoom;
   final bool lightOn;
@@ -1217,6 +1241,7 @@ class _RoomDetailsPanel extends StatelessWidget {
   final ValueChanged<double> onCeilingBrightnessChanged;
   final double tvVolume;
   final ValueChanged<double> onTvVolumeChanged;
+  final double roomNameFontSize;
 
   const _RoomDetailsPanel({
     required this.selectedRoom,
@@ -1226,6 +1251,7 @@ class _RoomDetailsPanel extends StatelessWidget {
     required this.onCeilingBrightnessChanged,
     required this.tvVolume,
     required this.onTvVolumeChanged,
+    required this.roomNameFontSize,
   });
 
   @override
@@ -1234,14 +1260,13 @@ class _RoomDetailsPanel extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Header
           Row(
             children: [
               Expanded(
                 child: Text(
                   selectedRoom,
-                  style: const TextStyle(
-                    fontSize: 19,
+                  style: TextStyle(
+                    fontSize: roomNameFontSize,
                     fontWeight: FontWeight.w700,
                     letterSpacing: -0.5,
                   ),
@@ -1254,13 +1279,10 @@ class _RoomDetailsPanel extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 20),
-
-          // Ceiling Light
           _DeviceRow(
             emoji: lightOn ? '💡' : '🔦',
             name: 'Ceiling Light',
-            valueLabel:
-            '${(ceilingBrightness * 100).toInt()}%',
+            valueLabel: '${(ceilingBrightness * 100).toInt()}%',
             accentColor: const Color(0xFFFFD54F),
           ),
           const SizedBox(height: 10),
@@ -1269,14 +1291,12 @@ class _RoomDetailsPanel extends StatelessWidget {
             onChanged: onCeilingBrightnessChanged,
             activeColor: const Color(0xFFFFD54F),
           ),
-
           if (selectedRoom == 'Living Room') ...[
             const SizedBox(height: 22),
             _DeviceRow(
               emoji: '📺',
               name: 'Smart TV',
-              valueLabel:
-              'Vol ${(tvVolume * 100).toInt()}%',
+              valueLabel: 'Vol ${(tvVolume * 100).toInt()}%',
               accentColor: const Color(0xFF64B5F6),
             ),
             const SizedBox(height: 10),
@@ -1316,17 +1336,12 @@ class _DeviceRow extends StatelessWidget {
             color: accentColor.withOpacity(0.15),
             borderRadius: BorderRadius.circular(13),
           ),
-          child: Center(
-              child: Text(emoji,
-                  style: const TextStyle(fontSize: 18))),
+          child: Center(child: Text(emoji, style: const TextStyle(fontSize: 18))),
         ),
         const SizedBox(width: 12),
         Expanded(
-          child: Text(
-            name,
-            style: const TextStyle(
-                fontWeight: FontWeight.w500, fontSize: 15),
-          ),
+          child: Text(name,
+              style: const TextStyle(fontWeight: FontWeight.w500, fontSize: 15)),
         ),
         Text(
           valueLabel,
@@ -1361,8 +1376,8 @@ class _GlassSlider extends StatelessWidget {
         Theme.of(context).colorScheme.onSurface.withOpacity(0.12),
         thumbColor: Colors.white,
         overlayColor: activeColor.withOpacity(0.15),
-        thumbShape: const RoundSliderThumbShape(
-            enabledThumbRadius: 9, elevation: 3),
+        thumbShape:
+        const RoundSliderThumbShape(enabledThumbRadius: 9, elevation: 3),
         trackHeight: 4,
       ),
       child: Slider(
@@ -1375,17 +1390,14 @@ class _GlassSlider extends StatelessWidget {
   }
 }
 
-// ============================================================
-// GLASS TOGGLE SWITCH
-// ============================================================
+// ────────────────────────────────────────────────────────────
+// GLASS TOGGLE SWITCH (iOS‑27 style)
+// ────────────────────────────────────────────────────────────
 class _GlassToggle extends StatelessWidget {
   final bool value;
   final ValueChanged<bool> onChanged;
 
-  const _GlassToggle({
-    required this.value,
-    required this.onChanged,
-  });
+  const _GlassToggle({required this.value, required this.onChanged});
 
   @override
   Widget build(BuildContext context) {
@@ -1427,8 +1439,7 @@ class _GlassToggle extends StatelessWidget {
         child: AnimatedAlign(
           duration: const Duration(milliseconds: 250),
           curve: Curves.easeInOut,
-          alignment:
-          value ? Alignment.centerRight : Alignment.centerLeft,
+          alignment: value ? Alignment.centerRight : Alignment.centerLeft,
           child: Container(
             width: 24,
             height: 24,
@@ -1450,9 +1461,9 @@ class _GlassToggle extends StatelessWidget {
   }
 }
 
-// ============================================================
-// GLASS PILL BUTTON
-// ============================================================
+// ────────────────────────────────────────────────────────────
+// GLASS PILL BUTTON (unchanged)
+// ────────────────────────────────────────────────────────────
 class _PillButton extends StatelessWidget {
   final String label;
   final VoidCallback onTap;
@@ -1463,16 +1474,12 @@ class _PillButton extends StatelessWidget {
     return _AnimatedPressWidget(
       onTap: onTap,
       child: Container(
-        padding:
-        const EdgeInsets.symmetric(horizontal: 28, vertical: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 12),
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(40),
           color: Theme.of(context).colorScheme.primary.withOpacity(0.15),
           border: Border.all(
-            color: Theme.of(context)
-                .colorScheme
-                .primary
-                .withOpacity(0.35),
+            color: Theme.of(context).colorScheme.primary.withOpacity(0.35),
             width: 0.8,
           ),
         ),
@@ -1489,9 +1496,9 @@ class _PillButton extends StatelessWidget {
   }
 }
 
-// ============================================================
-// 8. GLASS BOTTOM NAV BAR
-// ============================================================
+// ────────────────────────────────────────────────────────────
+// 8. GLASS BOTTOM NAV BAR (liquid blur, responsive height)
+// ────────────────────────────────────────────────────────────
 class _GlassBottomNavBar extends StatelessWidget {
   final int selectedIndex;
   final ValueChanged<int> onTap;
@@ -1510,20 +1517,22 @@ class _GlassBottomNavBar extends StatelessWidget {
       (Icons.settings_rounded, '⚙️', 'Settings'),
     ];
     final isDark = Theme.of(context).brightness == Brightness.dark;
+    final screenWidth = MediaQuery.of(context).size.width;
+    final navHeight = screenWidth < 360 ? 56.0 : 64.0;
 
     return ClipRect(
       child: BackdropFilter(
-        filter: ui.ImageFilter.blur(sigmaX: 28, sigmaY: 28),
+        filter: ui.ImageFilter.blur(sigmaX: 40, sigmaY: 40), // liquid blur
         child: Container(
           decoration: BoxDecoration(
             color: isDark
-                ? Colors.black.withOpacity(0.35)
-                : Colors.white.withOpacity(0.45),
+                ? Colors.black.withOpacity(0.2)
+                : Colors.white.withOpacity(0.4),
             border: Border(
               top: BorderSide(
                 color: isDark
-                    ? Colors.white.withOpacity(0.1)
-                    : Colors.black.withOpacity(0.07),
+                    ? Colors.white.withOpacity(0.08)
+                    : Colors.black.withOpacity(0.05),
                 width: 0.5,
               ),
             ),
@@ -1531,7 +1540,7 @@ class _GlassBottomNavBar extends StatelessWidget {
           child: SafeArea(
             top: false,
             child: SizedBox(
-              height: 64,
+              height: navHeight,
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceAround,
                 children: List.generate(items.length, (index) {
@@ -1544,21 +1553,21 @@ class _GlassBottomNavBar extends StatelessWidget {
                       duration: const Duration(milliseconds: 220),
                       curve: Curves.easeInOut,
                       padding: const EdgeInsets.symmetric(
-                          vertical: 8, horizontal: 20),
+                          vertical: 6, horizontal: 18),
                       decoration: BoxDecoration(
                         borderRadius: BorderRadius.circular(40),
                         color: isSelected
                             ? Theme.of(context)
                             .colorScheme
                             .primary
-                            .withOpacity(isDark ? 0.22 : 0.13)
+                            .withOpacity(isDark ? 0.2 : 0.12)
                             : Colors.transparent,
                         border: isSelected
                             ? Border.all(
                           color: Theme.of(context)
                               .colorScheme
                               .primary
-                              .withOpacity(0.3),
+                              .withOpacity(0.25),
                           width: 0.8,
                         )
                             : null,
@@ -1568,8 +1577,8 @@ class _GlassBottomNavBar extends StatelessWidget {
                             color: Theme.of(context)
                                 .colorScheme
                                 .primary
-                                .withOpacity(0.25),
-                            blurRadius: 14,
+                                .withOpacity(0.2),
+                            blurRadius: 12,
                             spreadRadius: 0,
                           ),
                         ]
@@ -1619,9 +1628,9 @@ class _GlassBottomNavBar extends StatelessWidget {
   }
 }
 
-// ============================================================
-// 9. ENERGY, ALERTS, SETTINGS SCREENS
-// ============================================================
+// ────────────────────────────────────────────────────────────
+// 9. ENERGY, ALERTS, SETTINGS SCREENS (unchanged, minor fixes)
+// ────────────────────────────────────────────────────────────
 
 class _EnergyScreen extends StatelessWidget {
   const _EnergyScreen();
@@ -1923,30 +1932,10 @@ class _AlertsScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final alerts = [
-      (
-      '⚠️',
-      Colors.orange,
-      'Motion in Living Room',
-      '2 minutes ago',
-      ),
-      (
-      '🔥',
-      Colors.red,
-      'Flame sensor test — All Clear',
-      '1 hour ago',
-      ),
-      (
-      '🔌',
-      Colors.blue,
-      'Device offline: Bedroom Light',
-      '3 hours ago',
-      ),
-      (
-      '💧',
-      Colors.teal,
-      'High humidity in Kitchen',
-      '5 hours ago',
-      ),
+      ('⚠️', Colors.orange, 'Motion in Living Room', '2 minutes ago'),
+      ('🔥', Colors.red, 'Flame sensor test — All Clear', '1 hour ago'),
+      ('🔌', Colors.blue, 'Device offline: Bedroom Light', '3 hours ago'),
+      ('💧', Colors.teal, 'High humidity in Kitchen', '5 hours ago'),
     ];
 
     return ListView.separated(
@@ -1979,8 +1968,7 @@ class _AlertsScreen extends StatelessWidget {
                     color: color.withOpacity(0.15),
                   ),
                   child: Center(
-                    child: Text(emoji,
-                        style: const TextStyle(fontSize: 22)),
+                    child: Text(emoji, style: const TextStyle(fontSize: 22)),
                   ),
                 ),
                 const SizedBox(width: 14),
@@ -2071,26 +2059,22 @@ class _SettingsScreen extends StatelessWidget {
                           value: ThemeMode.light,
                           child: Text('Light',
                               style: TextStyle(
-                                  fontSize: 14,
-                                  fontWeight: FontWeight.w500)),
+                                  fontSize: 14, fontWeight: FontWeight.w500)),
                         ),
                         DropdownMenuItem(
                           value: ThemeMode.dark,
                           child: Text('Dark',
                               style: TextStyle(
-                                  fontSize: 14,
-                                  fontWeight: FontWeight.w500)),
+                                  fontSize: 14, fontWeight: FontWeight.w500)),
                         ),
                         DropdownMenuItem(
                           value: ThemeMode.system,
                           child: Text('System',
                               style: TextStyle(
-                                  fontSize: 14,
-                                  fontWeight: FontWeight.w500)),
+                                  fontSize: 14, fontWeight: FontWeight.w500)),
                         ),
                       ],
-                      onChanged: (mode) =>
-                          onThemeModeChanged(mode!),
+                      onChanged: (mode) => onThemeModeChanged(mode!),
                     ),
                   ),
                 ),
@@ -2163,8 +2147,7 @@ class _SettingsScreen extends StatelessWidget {
                 emoji: '📡',
                 title: 'Provision ESP32',
                 subtitle: 'Setup a new device',
-                trailing: const Icon(Icons.chevron_right_rounded,
-                    size: 20),
+                trailing: const Icon(Icons.chevron_right_rounded, size: 20),
                 onTap: () {},
               ),
               _GlassDivider(),
@@ -2172,8 +2155,7 @@ class _SettingsScreen extends StatelessWidget {
                 emoji: '📶',
                 title: 'Wi‑Fi Config',
                 subtitle: 'Change network settings',
-                trailing: const Icon(Icons.chevron_right_rounded,
-                    size: 20),
+                trailing: const Icon(Icons.chevron_right_rounded, size: 20),
                 onTap: () {},
               ),
               _GlassDivider(),
@@ -2181,8 +2163,7 @@ class _SettingsScreen extends StatelessWidget {
                 emoji: 'ℹ️',
                 title: 'About',
                 subtitle: 'Smart Home v1.0.0',
-                trailing: const Icon(Icons.chevron_right_rounded,
-                    size: 20),
+                trailing: const Icon(Icons.chevron_right_rounded, size: 20),
                 onTap: () {},
               ),
             ],
@@ -2231,11 +2212,9 @@ class _SettingsTile extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  title,
-                  style: const TextStyle(
-                      fontSize: 15, fontWeight: FontWeight.w600),
-                ),
+                Text(title,
+                    style: const TextStyle(
+                        fontSize: 15, fontWeight: FontWeight.w600)),
                 Text(
                   subtitle,
                   style: TextStyle(
@@ -2261,9 +2240,9 @@ class _SettingsTile extends StatelessWidget {
   }
 }
 
-// ============================================================
-// 10. LIQUID GLASS CARD — core component
-// ============================================================
+// ────────────────────────────────────────────────────────────
+// 10. LIQUID GLASS CARD – enhanced for iOS‑27
+// ────────────────────────────────────────────────────────────
 class _GlassCard extends StatelessWidget {
   final Widget child;
   final double blur;
@@ -2278,10 +2257,10 @@ class _GlassCard extends StatelessWidget {
 
   const _GlassCard({
     required this.child,
-    this.blur = 28,
+    this.blur = 40, // increased for liquid glass
     this.border,
     this.padding = const EdgeInsets.all(20),
-    this.borderRadius = const BorderRadius.all(Radius.circular(28)),
+    this.borderRadius = const BorderRadius.all(Radius.circular(32)),
     this.animateGlow = false,
     this.glowColor,
     this.isActive = false,
@@ -2293,9 +2272,24 @@ class _GlassCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
-    final baseFill = isDark
-        ? Colors.white.withOpacity(0.07)
-        : Colors.white.withOpacity(0.55);
+    // Liquid gradient instead of solid color
+    final Gradient baseGradient = isDark
+        ? const LinearGradient(
+      begin: Alignment.topLeft,
+      end: Alignment.bottomRight,
+      colors: [
+        Color(0x20FFFFFF), // 12% white
+        Color(0x05FFFFFF),
+      ],
+    )
+        : const LinearGradient(
+      begin: Alignment.topLeft,
+      end: Alignment.bottomRight,
+      colors: [
+        Color(0x50FFFFFF), // ~31% white
+        Color(0x20FFFFFF),
+      ],
+    );
 
     Border effectiveBorder;
     if (border != null) {
@@ -2313,8 +2307,8 @@ class _GlassCard extends StatelessWidget {
     } else {
       effectiveBorder = Border.all(
         color: isDark
-            ? Colors.white.withOpacity(0.13)
-            : Colors.white.withOpacity(0.65),
+            ? Colors.white.withOpacity(0.1)
+            : Colors.white.withOpacity(0.3),
         width: 0.8,
       );
     }
@@ -2350,9 +2344,16 @@ class _GlassCard extends StatelessWidget {
         child: Container(
           padding: padding,
           decoration: BoxDecoration(
-            color: isActive && activeColor != null
-                ? activeColor!.withOpacity(isDark ? 0.14 : 0.1)
-                : baseFill,
+            gradient: isActive && activeColor != null
+                ? LinearGradient(
+              colors: [
+                activeColor!.withOpacity(isDark ? 0.14 : 0.1),
+                activeColor!.withOpacity(isDark ? 0.05 : 0.02),
+              ],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            )
+                : baseGradient,
             borderRadius: borderRadius,
             border: effectiveBorder,
             boxShadow: shadows,
@@ -2364,9 +2365,9 @@ class _GlassCard extends StatelessWidget {
   }
 }
 
-// ============================================================
-// 11. ANIMATED PRESS WIDGET
-// ============================================================
+// ────────────────────────────────────────────────────────────
+// 11. ANIMATED PRESS WIDGET – optimized (no AnimationController)
+// ────────────────────────────────────────────────────────────
 class _AnimatedPressWidget extends StatefulWidget {
   final Widget child;
   final VoidCallback onTap;
@@ -2379,54 +2380,37 @@ class _AnimatedPressWidget extends StatefulWidget {
   });
 
   @override
-  State<_AnimatedPressWidget> createState() =>
-      _AnimatedPressWidgetState();
+  State<_AnimatedPressWidget> createState() => _AnimatedPressWidgetState();
 }
 
-class _AnimatedPressWidgetState extends State<_AnimatedPressWidget>
-    with SingleTickerProviderStateMixin {
-  late AnimationController _controller;
-  late Animation<double> _scaleAnim;
-
-  @override
-  void initState() {
-    super.initState();
-    _controller = AnimationController(
-      duration: const Duration(milliseconds: 90),
-      vsync: this,
-    );
-    _scaleAnim =
-        Tween<double>(begin: 1.0, end: widget.scaleFactor).animate(
-          CurvedAnimation(parent: _controller, curve: Curves.easeInOut),
-        );
-  }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
+class _AnimatedPressWidgetState extends State<_AnimatedPressWidget> {
+  bool _pressed = false;
 
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
       onTapDown: (_) {
-        _controller.forward();
+        setState(() => _pressed = true);
         HapticFeedback.lightImpact();
       },
       onTapUp: (_) {
-        _controller.reverse();
+        setState(() => _pressed = false);
         widget.onTap();
       },
-      onTapCancel: () => _controller.reverse(),
-      child: ScaleTransition(scale: _scaleAnim, child: widget.child),
+      onTapCancel: () => setState(() => _pressed = false),
+      child: AnimatedScale(
+        scale: _pressed ? widget.scaleFactor : 1.0,
+        duration: const Duration(milliseconds: 90),
+        curve: Curves.easeInOut,
+        child: widget.child,
+      ),
     );
   }
 }
 
-// ============================================================
-// 12. SKELETON LOADER
-// ============================================================
+// ────────────────────────────────────────────────────────────
+// 12. SKELETON LOADER (unchanged)
+// ────────────────────────────────────────────────────────────
 class _SkeletonLoader extends StatelessWidget {
   const _SkeletonLoader();
 
