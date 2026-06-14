@@ -8,7 +8,7 @@ import 'provisioning_page.dart';
 import 'wifi_config_page.dart';      // <-- import your WiFi config page
 // If you also have WifiSetupPage, import it too
 
-const String appVersion = '1.0.16';
+const String appVersion = '1.0.17';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
