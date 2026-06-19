@@ -9,40 +9,58 @@ import 'package:shimmer/shimmer.dart';
 import 'ble_service.dart';
 
 // ────────────────────────────────────────────────────────────
-// 0. THEME MANAGEMENT – FIXED & SIMPLIFIED
+// 0. THEME MANAGEMENT – initialised to "system" for iOS compatibility
 // ────────────────────────────────────────────────────────────
 final themeModeProvider = StateProvider<ThemeMode>((ref) => ThemeMode.system);
 
-// Light theme – soft warm white with iOS‑27 accents
 final lightTheme = ThemeData(
   useMaterial3: true,
   brightness: Brightness.light,
-  colorSchemeSeed: const Color(0xFF007AFF), // iOS blue
-  scaffoldBackgroundColor: const Color(0xFFE8EAF6),
+  colorSchemeSeed: const Color(0xFF6C63FF),
+  scaffoldBackgroundColor: const Color(0xFFF0F2FF),
   appBarTheme: const AppBarTheme(
     backgroundColor: Colors.transparent,
     elevation: 0,
     scrolledUnderElevation: 0,
   ),
-  dividerTheme: const DividerThemeData(color: Color(0x22000000)),
 );
 
-// Dark theme – deep navy with vibrant accents
 final darkTheme = ThemeData(
   useMaterial3: true,
   brightness: Brightness.dark,
-  colorSchemeSeed: const Color(0xFF0A84FF), // iOS dark blue
-  scaffoldBackgroundColor: const Color(0xFF080C18),
+  colorSchemeSeed: const Color(0xFF6C63FF),
+  scaffoldBackgroundColor: const Color(0xFF0B0D1A),
   appBarTheme: const AppBarTheme(
     backgroundColor: Colors.transparent,
     elevation: 0,
     scrolledUnderElevation: 0,
   ),
-  dividerTheme: const DividerThemeData(color: Color(0x22FFFFFF)),
 );
 
 // ────────────────────────────────────────────────────────────
-// 1. HTTP POLLING SERVICE (unchanged)
+// 1. DESIGN TOKENS
+// ────────────────────────────────────────────────────────────
+class _DT {
+  static const bgDark        = Color(0xFF0B0D1A);
+  static const cardDark      = Color(0xFF141728);
+  static const cardBorderDk  = Color(0xFF1E2140);
+  static const cardActiveDk  = Color(0xFF1A1D35);
+  static const bgLight       = Color(0xFFF0F2FF);
+  static const cardLight     = Color(0xFFFFFFFF);
+  static const cardBorderLt  = Color(0xFFE4E7FF);
+  static const purple        = Color(0xFF6C63FF);
+  static const purpleLight   = Color(0xFF9B94FF);
+  static const green         = Color(0xFF4DFFA0);
+  static const greenDim      = Color(0xFF1A3A2A);
+  static const amber         = Color(0xFFFFB347);
+  static const blue          = Color(0xFF64B5F6);
+  static const red           = Color(0xFFFF5252);
+  static const espConnected  = Color(0xFF4DFFA0);
+  static const espDot        = Color(0xFF4DFFA0);
+}
+
+// ────────────────────────────────────────────────────────────
+// 2. HTTP POLLING SERVICE
 // ────────────────────────────────────────────────────────────
 final databaseUrlProvider = Provider((ref) =>
 'https://iot-smart-home-81abd-default-rtdb.europe-west1.firebasedatabase.app');
@@ -50,7 +68,6 @@ final databaseUrlProvider = Provider((ref) =>
 final httpDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
   final url = ref.watch(databaseUrlProvider);
   final controller = StreamController<Map<String, dynamic>>();
-
   Timer? timer;
   bool isFetching = false;
 
@@ -65,54 +82,45 @@ final httpDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
           final status = jsonData['status'] as Map? ?? {};
           int lastSeen = status['lastSeen'] as int? ?? 0;
           final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
-          bool isActuallyOnline = (now - lastSeen) < 10 && lastSeen > 0;
-          status['online'] = isActuallyOnline;
+          status['online'] = (now - lastSeen) < 10 && lastSeen > 0;
           jsonData['status'] = status;
           controller.add(jsonData);
         }
       }
     } catch (_) {}
-    finally {
-      isFetching = false;
-    }
+    finally { isFetching = false; }
   }
 
   fetchData();
   timer = Timer.periodic(const Duration(seconds: 2), (_) => fetchData());
-
-  ref.onDispose(() {
-    timer?.cancel();
-    controller.close();
-  });
-
+  ref.onDispose(() { timer?.cancel(); controller.close(); });
   return controller.stream;
 });
 
 // ────────────────────────────────────────────────────────────
-// 2. BLE + HTTP MERGED DATA PROVIDER (unchanged)
+// 3. BLE + HTTP MERGED DATA PROVIDER
 // ────────────────────────────────────────────────────────────
 final bleServiceProvider = Provider<BleService>((ref) => BleService());
 
 final smartHomeDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
-  final bleService = ref.watch(bleServiceProvider);
-  final httpStream = ref.watch(httpDataProvider.stream);
-
-  final controller = StreamController<Map<String, dynamic>>();
+  final bleService  = ref.watch(bleServiceProvider);
+  final httpStream  = ref.watch(httpDataProvider.stream);
+  final controller  = StreamController<Map<String, dynamic>>();
   late StreamSubscription bleStatusSub;
   late StreamSubscription httpSub;
 
   Map<String, dynamic> currentData = {
     'sensors': {'temperature': 0.0, 'humidity': 0.0, 'flame': false},
-    'lights': {'room1': false, 'room2': false, 'room3': false},
-    'status': {'online': false},
+    'lights':  {'room1': false, 'room2': false, 'room3': false},
+    'status':  {'online': false},
   };
 
   void updateFromBle() {
     if (bleService.currentStatus == BleStatus.connected) {
       currentData['sensors'] = {
         'temperature': bleService.temperature,
-        'humidity': bleService.humidity,
-        'flame': bleService.flameDetected,
+        'humidity':    bleService.humidity,
+        'flame':       bleService.flameDetected,
       };
       currentData['lights'] = Map.from(bleService.lights);
       currentData['status']['online'] = true;
@@ -124,11 +132,9 @@ final smartHomeDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
     if (bleService.currentStatus != BleStatus.connected) {
       currentData = httpData;
       controller.add(currentData);
-    } else {
-      if (httpData.containsKey('status')) {
-        currentData['status'] = httpData['status'];
-        controller.add(currentData);
-      }
+    } else if (httpData.containsKey('status')) {
+      currentData['status'] = httpData['status'];
+      controller.add(currentData);
     }
   }
 
@@ -140,10 +146,7 @@ final smartHomeDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
     }
   });
 
-  httpSub = httpStream.listen((httpData) {
-    updateFromHttp(httpData);
-  });
-
+  httpSub = httpStream.listen(updateFromHttp);
   bleService.connect();
 
   ref.onDispose(() {
@@ -157,7 +160,7 @@ final smartHomeDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
 });
 
 // ────────────────────────────────────────────────────────────
-// 3. LIGHT TOGGLE SERVICE (unchanged)
+// 4. LIGHT TOGGLE SERVICE
 // ────────────────────────────────────────────────────────────
 final lightToggleProvider = Provider((ref) => LightToggleService(ref));
 
@@ -167,7 +170,7 @@ class LightToggleService {
 
   Future<void> toggle(String room, bool value, BuildContext context) async {
     final bleService = _ref.read(bleServiceProvider);
-    final url = _ref.read(databaseUrlProvider);
+    final url        = _ref.read(databaseUrlProvider);
 
     if (bleService.currentStatus == BleStatus.connected) {
       try {
@@ -175,10 +178,7 @@ class LightToggleService {
         HapticFeedback.lightImpact();
         return;
       } catch (e) {
-        if (context.mounted) {
-          _showGlassSnackBar(context, 'BLE error, using Wi‑Fi: $e',
-              color: Colors.orange);
-        }
+        if (context.mounted) _showSnack(context, 'BLE error, using Wi-Fi: $e', color: Colors.orange);
       }
     }
 
@@ -194,30 +194,24 @@ class LightToggleService {
         throw Exception('HTTP toggle failed');
       }
     } catch (e) {
-      if (context.mounted) {
-        _showGlassSnackBar(context, 'Error toggling light: $e',
-            color: Colors.red);
-      }
+      if (context.mounted) _showSnack(context, 'Error: $e', color: Colors.red);
       rethrow;
     }
   }
 }
 
-void _showGlassSnackBar(BuildContext context, String message,
-    {Color color = Colors.white}) {
-  ScaffoldMessenger.of(context).showSnackBar(
-    SnackBar(
-      content: Text(message),
-      backgroundColor: color.withOpacity(0.85),
-      behavior: SnackBarBehavior.floating,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-      margin: const EdgeInsets.all(16),
-    ),
-  );
+void _showSnack(BuildContext context, String msg, {Color color = Colors.white}) {
+  ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+    content: Text(msg, style: const TextStyle(color: Colors.white)),
+    backgroundColor: color.withOpacity(0.9),
+    behavior: SnackBarBehavior.floating,
+    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+    margin: const EdgeInsets.all(16),
+  ));
 }
 
 // ────────────────────────────────────────────────────────────
-// 4. WALLPAPER GRADIENT BACKGROUND (responsive blobs)
+// 5. WALLPAPER BACKGROUND
 // ────────────────────────────────────────────────────────────
 class _WallpaperBackground extends StatelessWidget {
   final Widget child;
@@ -226,89 +220,50 @@ class _WallpaperBackground extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final screenWidth = MediaQuery.of(context).size.width;
-    // Scale glow blobs relative to screen width
-    final blobSize1 = screenWidth * 0.8;
-    final blobSize2 = screenWidth * 0.7;
-    final blobSize3 = screenWidth * 0.6;
+    final w = MediaQuery.of(context).size.width;
 
-    return Stack(
-      children: [
-        Container(
-          decoration: BoxDecoration(
-            gradient: isDark
-                ? const LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [
-                Color(0xFF080C18),
-                Color(0xFF10172E),
-                Color(0xFF0A0E20),
-              ],
-            )
-                : const LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [
-                Color(0xFFE3EAF8),
-                Color(0xFFEDE8F5),
-                Color(0xFFE8F0F8),
-              ],
-            ),
+    return Stack(children: [
+      Container(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: isDark
+                ? const [Color(0xFF0B0D1A), Color(0xFF0F1228), Color(0xFF0B0D1A)]
+                : const [Color(0xFFF0F2FF), Color(0xFFEEEBFF), Color(0xFFF0F4FF)],
           ),
         ),
-        Positioned(
-          top: -80,
-          left: -60,
-          child: _GlowBlob(
-            color: isDark ? const Color(0xFF1A3A7A) : const Color(0xFFB3C8F0),
-            size: blobSize1,
-          ),
-        ),
-        Positioned(
-          top: 200,
-          right: -80,
-          child: _GlowBlob(
-            color: isDark ? const Color(0xFF3A1A6A) : const Color(0xFFD4B8F0),
-            size: blobSize2,
-          ),
-        ),
-        Positioned(
-          bottom: 100,
-          left: 20,
-          child: _GlowBlob(
-            color: isDark ? const Color(0xFF0A3A2A) : const Color(0xFFB8E8D8),
-            size: blobSize3,
-          ),
-        ),
-        child,
-      ],
-    );
+      ),
+      Positioned(top: -100, left: -80,
+          child: _Blob(color: isDark ? const Color(0xFF1A1060) : const Color(0xFFCCC8FF), size: w * 0.9)),
+      Positioned(top: 300, right: -100,
+          child: _Blob(color: isDark ? const Color(0xFF2A0D50) : const Color(0xFFE8D8FF), size: w * 0.75)),
+      Positioned(bottom: 80, left: 0,
+          child: _Blob(color: isDark ? const Color(0xFF0A2A1A) : const Color(0xFFBEF0D8), size: w * 0.6)),
+      child,
+    ]);
   }
 }
 
-class _GlowBlob extends StatelessWidget {
+class _Blob extends StatelessWidget {
   final Color color;
   final double size;
-  const _GlowBlob({required this.color, required this.size});
+  const _Blob({required this.color, required this.size});
 
   @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: size,
-      height: size,
-      decoration: BoxDecoration(
-        shape: BoxShape.circle,
-        gradient: RadialGradient(
-          colors: [color.withOpacity(0.45), color.withOpacity(0)],
-        ),
+  Widget build(BuildContext context) => Container(
+    width: size, height: size,
+    decoration: BoxDecoration(
+      shape: BoxShape.circle,
+      gradient: RadialGradient(
+        colors: [color.withOpacity(0.5), color.withOpacity(0)],
       ),
-    );
-  }
+    ),
+  );
 }
 
 // ────────────────────────────────────────────────────────────
-// 5. DASHBOARD PAGE
+// 6. DASHBOARD PAGE
 // ────────────────────────────────────────────────────────────
 class DashboardPage extends ConsumerStatefulWidget {
   const DashboardPage({super.key});
@@ -319,21 +274,21 @@ class DashboardPage extends ConsumerStatefulWidget {
 
 class _DashboardPageState extends ConsumerState<DashboardPage> {
   int _selectedIndex = 0;
-  final List<Widget> _pages = const [
-    _HomeContentWrapper(),
-    _EnergyScreen(),
-    _AlertsScreen(),
-    _SettingsScreenWrapper(),
+
+  late final List<Widget> _pages = [
+    const _HomeContentWrapper(),
+    const _EnergyScreen(),
+    const _AlertsScreen(),
+    const _SettingsScreen(),
   ];
 
   Future<void> _manualRefresh() async {
     final bleService = ref.read(bleServiceProvider);
     await bleService.connect();
     ref.invalidate(httpDataProvider);
-  }
-
-  void _onTabTapped(int index) {
-    setState(() => _selectedIndex = index);
+    if (mounted) {
+      _showSnack(context, 'Refreshed ✓', color: _DT.green);
+    }
   }
 
   @override
@@ -343,6 +298,7 @@ class _DashboardPageState extends ConsumerState<DashboardPage> {
     return Scaffold(
       backgroundColor: Colors.transparent,
       extendBodyBehindAppBar: true,
+      extendBody: true,
       appBar: _GlassAppBar(
         onRefresh: _manualRefresh,
         bleStatus: bleService.currentStatus,
@@ -350,81 +306,62 @@ class _DashboardPageState extends ConsumerState<DashboardPage> {
       ),
       body: _WallpaperBackground(
         child: AnimatedSwitcher(
-          duration: const Duration(milliseconds: 400),
+          duration: const Duration(milliseconds: 350),
           switchInCurve: Curves.easeOutCubic,
           switchOutCurve: Curves.easeInCubic,
-          transitionBuilder: (child, animation) =>
-              FadeTransition(opacity: animation, child: child),
+          transitionBuilder: (child, anim) =>
+              FadeTransition(opacity: anim, child: child),
           child: _pages[_selectedIndex],
         ),
       ),
-      bottomNavigationBar: _GlassBottomNavBar(
+      floatingActionButton: _PurpleFab(onTap: () {
+        HapticFeedback.mediumImpact();
+        _showSnack(context, 'Quick actions coming soon', color: _DT.purple);
+      }),
+      floatingActionButtonLocation: FloatingActionButtonLocation.centerDocked,
+      bottomNavigationBar: _GlassBottomNav(
         selectedIndex: _selectedIndex,
-        onTap: _onTabTapped,
+        onTap: (i) => setState(() => _selectedIndex = i),
       ),
     );
   }
 }
 
-// Wrappers to pass data
-class _HomeContentWrapper extends ConsumerStatefulWidget {
-  const _HomeContentWrapper();
-
-  @override
-  ConsumerState<_HomeContentWrapper> createState() => _HomeContentWrapperState();
-}
-
-class _HomeContentWrapperState extends ConsumerState<_HomeContentWrapper> {
-  Future<void> _manualRefresh() async {
-    final bleService = ref.read(bleServiceProvider);
-    await bleService.connect();
-    ref.invalidate(httpDataProvider);
-  }
+// Purple FAB
+class _PurpleFab extends StatelessWidget {
+  final VoidCallback onTap;
+  const _PurpleFab({required this.onTap});
 
   @override
   Widget build(BuildContext context) {
-    final dataAsync = ref.watch(smartHomeDataProvider);
-    final bleService = ref.watch(bleServiceProvider);
-    return _HomeContent(
-      dataAsync: dataAsync,
-      onRefresh: _manualRefresh,
-      bleStatus: bleService.currentStatus,
-      onConnectBLE: () => bleService.connect(),
-    );
-  }
-}
-
-class _SettingsScreenWrapper extends ConsumerStatefulWidget {
-  const _SettingsScreenWrapper();
-
-  @override
-  ConsumerState<_SettingsScreenWrapper> createState() => _SettingsScreenWrapperState();
-}
-
-class _SettingsScreenWrapperState extends ConsumerState<_SettingsScreenWrapper> {
-  Future<void> _manualRefresh() async {
-    final bleService = ref.read(bleServiceProvider);
-    await bleService.connect();
-    ref.invalidate(httpDataProvider);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final themeMode = ref.watch(themeModeProvider);
-    final bleService = ref.watch(bleServiceProvider);
-    return _SettingsScreen(
-      themeMode: themeMode,
-      onThemeModeChanged: (mode) =>
-      ref.read(themeModeProvider.notifier).state = mode,
-      bleStatus: bleService.currentStatus,
-      onConnectBLE: () => bleService.connect(),
-      onRefresh: _manualRefresh,
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: 56,
+        height: 56,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          gradient: const LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [Color(0xFF8B7FFF), _DT.purple],
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: _DT.purple.withOpacity(0.45),
+              blurRadius: 20,
+              offset: const Offset(0, 6),
+            ),
+          ],
+        ),
+        child: const Icon(Icons.add_rounded, color: Colors.white, size: 28),
+      ),
     );
   }
 }
 
 // ────────────────────────────────────────────────────────────
-// 6. GLASS APP BAR (enhanced liquid blur)
+// 7. GLASS APP BAR
 // ────────────────────────────────────────────────────────────
 class _GlassAppBar extends StatelessWidget implements PreferredSizeWidget {
   final Future<void> Function() onRefresh;
@@ -440,92 +377,158 @@ class _GlassAppBar extends StatelessWidget implements PreferredSizeWidget {
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
+
     return ClipRect(
       child: BackdropFilter(
-        filter: ui.ImageFilter.blur(sigmaX: 40, sigmaY: 40), // increased blur
+        filter: ui.ImageFilter.blur(sigmaX: 32, sigmaY: 32),
         child: Container(
-          color: isDark
-              ? Colors.black.withOpacity(0.2)
-              : Colors.white.withOpacity(0.4),
+          color: isDark ? Colors.black.withOpacity(0.18) : Colors.white.withOpacity(0.35),
           child: AppBar(
             backgroundColor: Colors.transparent,
-            title: const Text(
-              'Smart Home',
-              style: TextStyle(fontWeight: FontWeight.w700, letterSpacing: -0.5),
+            leading: Padding(
+              padding: const EdgeInsets.only(left: 16),
+              child: CircleAvatar(
+                radius: 18,
+                backgroundColor: _DT.purple,
+                child: const Text('JD',
+                    style: TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w700,
+                        fontSize: 14)),
+              ),
             ),
-            centerTitle: false,
-            elevation: 0,
+            title: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(_formattedDate(),
+                    style: TextStyle(
+                        fontSize: 11,
+                        color: Theme.of(context).colorScheme.onSurface.withOpacity(0.5),
+                        fontWeight: FontWeight.w500)),
+                Text(_greeting(),
+                    style: const TextStyle(
+                        fontSize: 18, fontWeight: FontWeight.w700, height: 1.2)),
+              ],
+            ),
+            actions: [
+              _ABBtn(
+                onTap: () {},
+                child: Container(
+                  width: 36, height: 36,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: isDark ? Colors.white.withOpacity(0.08) : Colors.black.withOpacity(0.06),
+                  ),
+                  child: Icon(Icons.sunny,
+                      size: 18,
+                      color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7)),
+                ),
+              ),
+              const SizedBox(width: 6),
+              _ABBtn(
+                onTap: () {},
+                child: Stack(
+                  children: [
+                    Container(
+                      width: 36, height: 36,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: isDark ? Colors.white.withOpacity(0.08) : Colors.black.withOpacity(0.06),
+                      ),
+                      child: Icon(Icons.notifications_outlined,
+                          size: 18,
+                          color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7)),
+                    ),
+                    Positioned(
+                      top: 6, right: 6,
+                      child: Container(
+                        width: 8, height: 8,
+                        decoration: const BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: _DT.red,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 12),
+            ],
             bottom: PreferredSize(
               preferredSize: const Size.fromHeight(0.5),
               child: Container(
                 height: 0.5,
-                color: isDark
-                    ? Colors.white.withOpacity(0.12)
-                    : Colors.black.withOpacity(0.08),
+                color: isDark ? Colors.white.withOpacity(0.08) : Colors.black.withOpacity(0.06),
               ),
             ),
-            actions: [
-              _AppBarIconButton(
-                onTap: bleStatus == BleStatus.connected ? null : onConnectBLE,
-                child: bleStatus == BleStatus.connected
-                    ? const Icon(Icons.bluetooth_connected,
-                    color: Color(0xFF4DFFA0), size: 22)
-                    : bleStatus == BleStatus.connecting
-                    ? const SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(strokeWidth: 2))
-                    : Icon(Icons.bluetooth_disabled,
-                    color: Colors.grey.shade500, size: 22),
-              ),
-              _AppBarIconButton(
-                onTap: () => Navigator.pushNamed(context, '/provision'),
-                child: const Icon(Icons.wifi_find, size: 22),
-              ),
-              _AppBarIconButton(
-                onTap: () => Navigator.pushNamed(context, '/wifiConfig'),
-                child: const Icon(Icons.wifi, size: 22),
-              ),
-              _AppBarIconButton(
-                onTap: () async {
-                  await onRefresh();
-                  if (context.mounted) {
-                    _showGlassSnackBar(context, 'Refreshed ✓');
-                  }
-                },
-                child: const Icon(Icons.refresh_rounded, size: 22),
-              ),
-              const SizedBox(width: 4),
-            ],
           ),
         ),
       ),
     );
   }
 
+  String _formattedDate() {
+    final now = DateTime.now();
+    const days   = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
+    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    return '${days[now.weekday - 1]}, ${now.day} ${months[now.month - 1]}';
+  }
+
+  String _greeting() {
+    final h = DateTime.now().hour;
+    if (h < 12) return 'Good Morning ☀️';
+    if (h < 17) return 'Good Afternoon 🌤';
+    return 'Good Evening 🌙';
+  }
+
   @override
   Size get preferredSize => const Size.fromHeight(kToolbarHeight + 0.5);
 }
 
-class _AppBarIconButton extends StatelessWidget {
+class _ABBtn extends StatelessWidget {
   final Widget child;
-  final VoidCallback? onTap;
-  const _AppBarIconButton({required this.child, this.onTap});
+  final VoidCallback onTap;
+  const _ABBtn({required this.child, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) => GestureDetector(
+    onTap: onTap,
+    child: child,
+  );
+}
+
+// ────────────────────────────────────────────────────────────
+// 8. HOME CONTENT WRAPPER
+// ────────────────────────────────────────────────────────────
+class _HomeContentWrapper extends ConsumerStatefulWidget {
+  const _HomeContentWrapper();
+
+  @override
+  ConsumerState<_HomeContentWrapper> createState() => _HomeContentWrapperState();
+}
+
+class _HomeContentWrapperState extends ConsumerState<_HomeContentWrapper> {
+  Future<void> _refresh() async {
+    final ble = ref.read(bleServiceProvider);
+    await ble.connect();
+    ref.invalidate(httpDataProvider);
+  }
 
   @override
   Widget build(BuildContext context) {
-    return _AnimatedPressWidget(
-      onTap: onTap ?? () {},
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-        child: child,
-      ),
+    final dataAsync  = ref.watch(smartHomeDataProvider);
+    final bleService = ref.watch(bleServiceProvider);
+    return _HomeContent(
+      dataAsync: dataAsync,
+      onRefresh: _refresh,
+      bleStatus: bleService.currentStatus,
+      onConnectBLE: () => bleService.connect(),
     );
   }
 }
 
 // ────────────────────────────────────────────────────────────
-// 7. HOME CONTENT (responsive paddings & font sizes)
+// 9. HOME CONTENT
 // ────────────────────────────────────────────────────────────
 class _HomeContent extends ConsumerStatefulWidget {
   final AsyncValue<Map<String, dynamic>> dataAsync;
@@ -546,912 +549,772 @@ class _HomeContent extends ConsumerStatefulWidget {
 
 class _HomeContentState extends ConsumerState<_HomeContent> {
   String _selectedRoom = 'Living Room';
+  bool   _tvOn               = false;
+  bool   _purifierOn         = false;
+  bool   _soundbarOn         = true;
+  double _ceilingBrightness  = 0.8;
   bool _bathroomLightOn = false;
-  double _ceilingBrightness = 0.8;
-  double _tvVolume = 0.45;
-  int _activeSceneIndex = 0;
 
   String? _lightKeyForRoom(String room) {
     switch (room) {
-      case 'Living Room':
-        return 'room1';
-      case 'Bedroom':
-        return 'room2';
-      case 'Kitchen':
-        return 'room3';
-      default:
-        return null;
+      case 'Living Room': return 'room1';
+      case 'Bedroom':     return 'room2';
+      case 'Kitchen':     return 'room3';
+      default:            return null;
     }
+  }
+
+  bool _getLightState(String? key) {
+    if (key == null) return false;
+    final data   = widget.dataAsync.value;
+    final lights = (data?['lights'] as Map?) ?? {};
+    return lights[key] == true;
   }
 
   Future<void> _toggleRoomLight(String room) async {
-    final lightKey = _lightKeyForRoom(room);
-    if (lightKey != null) {
-      final currentState = _getLightState(lightKey);
-      final toggleService = ref.read(lightToggleProvider);
-      await toggleService.toggle(lightKey, !currentState, context);
+    final key = _lightKeyForRoom(room);
+    if (key != null) {
+      final cur = _getLightState(key);
+      await ref.read(lightToggleProvider).toggle(key, !cur, context);
+    }
+  }
+
+  int _activeCount() {
+    if (_selectedRoom == 'Living Room') {
+      int count = _getLightState('room1') ? 1 : 0;
+      if (_tvOn) count++;
+      if (_purifierOn) count++;
+      if (_soundbarOn) count++;
+      return count;
     } else {
+      final key = _lightKeyForRoom(_selectedRoom);
+      return _getLightState(key) ? 1 : 0;
+    }
+  }
+
+  void _toggleMainLight() {
+    if (_selectedRoom == 'Bathroom') {
       setState(() => _bathroomLightOn = !_bathroomLightOn);
       HapticFeedback.lightImpact();
-      if (context.mounted) {
-        _showGlassSnackBar(context, 'Bathroom light toggled');
-      }
+      _showSnack(context, 'Bathroom light toggled (local)');
+    } else {
+      _toggleRoomLight(_selectedRoom);
     }
-  }
-
-  bool _getLightState(String lightKey) {
-    final data = widget.dataAsync.value;
-    if (data != null) {
-      final lights = data['lights'] as Map? ?? {};
-      return lights[lightKey] == true;
-    }
-    return false;
-  }
-
-  int _getActiveLightsCount() {
-    int count = 0;
-    if (_getLightState('room1')) count++;
-    if (_getLightState('room2')) count++;
-    if (_getLightState('room3')) count++;
-    if (_bathroomLightOn) count++;
-    return count;
   }
 
   @override
   Widget build(BuildContext context) {
-    // Responsive helpers
-    final screenWidth = MediaQuery.of(context).size.width;
-    final horizontalPadding = screenWidth < 360 ? 12.0 : 20.0;
-    final cardHorizontalPadding = screenWidth < 360 ? 14.0 : 20.0;
-    final headerFontSize = screenWidth < 360 ? 22.0 : 27.0;
-    final statValueFontSize = screenWidth < 360 ? 16.0 : 20.0;
-    final roomNameFontSize = screenWidth < 360 ? 16.0 : 19.0;
+    final hp = MediaQuery.of(context).size.width < 360 ? 14.0 : 20.0;
 
     return RefreshIndicator(
       onRefresh: widget.onRefresh,
       displacement: 100,
+      color: _DT.purple,
       child: widget.dataAsync.when(
         data: (data) {
-          final sensors = data['sensors'] as Map? ?? {};
-          final temp = (sensors['temperature'] ?? 0.0).toDouble();
-          final hum = (sensors['humidity'] ?? 0.0).toDouble();
-          final flame = sensors['flame'] == true;
+          final sensors     = (data['sensors'] as Map?) ?? {};
+          final temp        = (sensors['temperature'] ?? 0.0).toDouble();
+          final hum         = (sensors['humidity']    ?? 0.0).toDouble();
+          final flame       = sensors['flame'] == true;
+          final status      = (data['status'] as Map?) ?? {};
+          final online      = status['online'] ?? false;
+          final ip          = status['ip']     ?? '192.168.1.42';
+          final ping        = status['ping']   ?? 12;
+          final rssi        = status['rssi']   ?? -38;
+          final energy      = (data['energy']  as Map?) ?? {};
+          final todayKw     = (energy['today'] ?? 3.4).toDouble();
+
+          bool lightOn;
+          if (_selectedRoom == 'Bathroom') {
+            lightOn = _bathroomLightOn;
+          } else {
+            lightOn = _getLightState(_lightKeyForRoom(_selectedRoom));
+          }
 
           return SingleChildScrollView(
             physics: const AlwaysScrollableScrollPhysics(),
             padding: EdgeInsets.only(
-              top: MediaQuery.of(context).padding.top + kToolbarHeight - 50,
-              left: horizontalPadding,
-              right: horizontalPadding,
-              bottom: 24,
+              // 🔥 FIX: reduced top padding to eliminate the huge gap
+              top: MediaQuery.of(context).padding.top + kToolbarHeight - 20,
+              left: hp, right: hp, bottom: 100,
             ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                _buildHeader(context, headerFontSize),
-                const SizedBox(height: 20),
-                _StatsRow(
-                  temp: temp,
-                  hum: hum,
-                  valueFontSize: statValueFontSize,
-                ),
-                const SizedBox(height: 16),
-                _QuickScenesRow(
-                  activeIndex: _activeSceneIndex,
-                  onSceneSelected: (i) => setState(() => _activeSceneIndex = i),
-                ),
-                const SizedBox(height: 16),
-                _FlameSensorCard(flame: flame),
+                // Removed the extra SizedBox(height: 8) to bring content closer
+                _EspBar(online: online, ip: ip, ping: ping, rssi: rssi),
                 const SizedBox(height: 14),
-                _ActiveDevicesRow(activeCount: _getActiveLightsCount()),
-                const SizedBox(height: 22),
-                _RoomsSelector(
+                _StatsRow(temp: temp, hum: hum, todayKw: todayKw),
+                const SizedBox(height: 18),
+                _FlameBanner(flame: flame),
+                const SizedBox(height: 18),
+                _RoomsHeader(
                   selectedRoom: _selectedRoom,
-                  onRoomSelected: (room) =>
-                      setState(() => _selectedRoom = room),
+                  onRoomSelected: (r) => setState(() => _selectedRoom = r),
                 ),
                 const SizedBox(height: 14),
-                _RoomDetailsPanel(
+                _DeviceGrid(
                   selectedRoom: _selectedRoom,
-                  lightOn: _selectedRoom == 'Bathroom'
-                      ? _bathroomLightOn
-                      : _getLightState(
-                      _lightKeyForRoom(_selectedRoom) ?? ''),
-                  onLightToggle: () => _toggleRoomLight(_selectedRoom),
+                  lightOn: lightOn,
+                  onLightToggle: _toggleMainLight,
                   ceilingBrightness: _ceilingBrightness,
-                  onCeilingBrightnessChanged: (val) =>
-                      setState(() => _ceilingBrightness = val),
-                  tvVolume: _tvVolume,
-                  onTvVolumeChanged: (val) =>
-                      setState(() => _tvVolume = val),
-                  roomNameFontSize: roomNameFontSize,
+                  onBrightnessChanged: (v) => setState(() => _ceilingBrightness = v),
+                  tvOn: _tvOn,
+                  onTvToggle: () => setState(() => _tvOn = !_tvOn),
+                  purifierOn: _purifierOn,
+                  onPurifierToggle: () => setState(() => _purifierOn = !_purifierOn),
+                  soundbarOn: _soundbarOn,
+                  onSoundbarToggle: () => setState(() => _soundbarOn = !_soundbarOn),
+                  activeCount: _activeCount(),
                 ),
               ],
             ),
           );
         },
         loading: () => const _SkeletonLoader(),
-        error: (err, stack) => Center(
+        error: (err, _) => Center(
           child: Padding(
-            padding: EdgeInsets.all(horizontalPadding),
-            child: _GlassCard(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Icon(Icons.error_outline_rounded,
-                      size: 48, color: Colors.redAccent),
-                  const SizedBox(height: 16),
-                  Text('Something went wrong',
-                      style: Theme.of(context)
-                          .textTheme
-                          .titleMedium
-                          ?.copyWith(fontWeight: FontWeight.w600)),
-                  const SizedBox(height: 8),
-                  Text(err.toString(),
-                      style: TextStyle(
-                          fontSize: 13,
-                          color: Theme.of(context)
-                              .colorScheme
-                              .onSurface
-                              .withOpacity(0.5)),
-                      textAlign: TextAlign.center),
-                  const SizedBox(height: 20),
-                  _PillButton(
-                    label: 'Try Again',
-                    onTap: () => widget.onRefresh(),
-                  ),
-                ],
-              ),
+            padding: EdgeInsets.all(hp),
+            child: _GCard(
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                const Icon(Icons.error_outline_rounded,
+                    size: 48, color: _DT.red),
+                const SizedBox(height: 16),
+                Text('Something went wrong',
+                    style: Theme.of(context)
+                        .textTheme
+                        .titleMedium
+                        ?.copyWith(fontWeight: FontWeight.w600)),
+                const SizedBox(height: 8),
+                Text(err.toString(),
+                    style: TextStyle(
+                        fontSize: 13,
+                        color: Theme.of(context)
+                            .colorScheme
+                            .onSurface
+                            .withOpacity(0.5)),
+                    textAlign: TextAlign.center),
+                const SizedBox(height: 20),
+                _PillBtn(label: 'Try Again', onTap: widget.onRefresh),
+              ]),
             ),
           ),
         ),
       ),
     );
   }
+}
 
-  Widget _buildHeader(BuildContext context, double headerFontSize) {
-    final now = DateTime.now();
-    final hour = now.hour;
-    final greeting = hour < 12
-        ? 'Good Morning'
-        : hour < 17
-        ? 'Good Afternoon'
-        : 'Good Evening';
-    final emoji = hour < 12
-        ? '☀️'
-        : hour < 17
-        ? '🌤'
-        : '🌙';
-    final formattedDate =
-        '${_weekday(now.weekday)}, ${now.day} ${_month(now.month)}';
+// ────────────────────────────────────────────────────────────
+// 10. ESP CONNECTION BAR
+// ────────────────────────────────────────────────────────────
+class _EspBar extends StatelessWidget {
+  final bool   online;
+  final String ip;
+  final int    ping;
+  final int    rssi;
 
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.center,
-      children: [
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                formattedDate,
-                style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w500,
-                  color: Theme.of(context)
-                      .colorScheme
-                      .onSurface
-                      .withOpacity(0.5),
-                  letterSpacing: 0.3,
-                ),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                '$greeting $emoji',
-                style: TextStyle(
-                  fontSize: headerFontSize,
-                  fontWeight: FontWeight.w700,
-                  letterSpacing: -0.8,
-                ),
-              ),
+  const _EspBar({
+    required this.online,
+    required this.ip,
+    required this.ping,
+    required this.rssi,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark  = Theme.of(context).brightness == Brightness.dark;
+    final dotColor = online ? _DT.espConnected : _DT.red;
+
+    return _GCard(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+      child: Row(children: [
+        Container(
+          width: 10, height: 10,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: dotColor,
+            boxShadow: [
+              BoxShadow(color: dotColor.withOpacity(0.5), blurRadius: 6),
             ],
           ),
         ),
-        _GlassCard(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-          borderRadius: BorderRadius.circular(40),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                width: 7,
-                height: 7,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: widget.bleStatus == BleStatus.connected
-                      ? const Color(0xFF4DFFA0)
-                      : Colors.orange,
-                  boxShadow: [
-                    BoxShadow(
-                      color: (widget.bleStatus == BleStatus.connected
-                          ? const Color(0xFF4DFFA0)
-                          : Colors.orange)
-                          .withOpacity(0.6),
-                      blurRadius: 6,
-                      spreadRadius: 1,
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(width: 7),
-              Text(
-                widget.bleStatus == BleStatus.connected ? 'BLE' : 'Wi‑Fi',
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                  color: Theme.of(context)
-                      .colorScheme
-                      .onSurface
-                      .withOpacity(0.7),
-                ),
-              ),
-            ],
+        const SizedBox(width: 10),
+        Text(
+          online ? 'ESP32 Connected' : 'Disconnected',
+          style: TextStyle(
+            fontSize: 14,
+            fontWeight: FontWeight.w700,
+            color: dotColor,
           ),
         ),
-      ],
+        const SizedBox(width: 10),
+        _MiniChip(label: ip, icon: Icons.settings_ethernet_rounded),
+        const SizedBox(width: 6),
+        _MiniChip(label: '${ping}ms', icon: Icons.timer_outlined),
+        const Spacer(),
+        Row(children: [
+          Icon(Icons.wifi,
+              size: 16,
+              color: online ? _DT.espConnected : Colors.grey.shade600),
+          const SizedBox(width: 4),
+          Text(
+            '${rssi}dBm',
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              color: online ? _DT.espConnected : Colors.grey.shade500,
+            ),
+          ),
+        ]),
+        const SizedBox(width: 8),
+        Icon(Icons.chevron_right_rounded,
+            size: 18,
+            color: Theme.of(context).colorScheme.onSurface.withOpacity(0.3)),
+      ]),
     );
   }
+}
 
-  String _weekday(int w) {
-    const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-    return days[w - 1];
-  }
+class _MiniChip extends StatelessWidget {
+  final String   label;
+  final IconData icon;
+  const _MiniChip({required this.label, required this.icon});
 
-  String _month(int m) {
-    const months = [
-      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
-    ];
-    return months[m - 1];
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(8),
+        color: isDark ? Colors.white.withOpacity(0.07) : Colors.black.withOpacity(0.05),
+        border: Border.all(
+          color: isDark ? Colors.white.withOpacity(0.1) : Colors.black.withOpacity(0.07),
+          width: 0.5,
+        ),
+      ),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        Icon(icon, size: 11, color: Colors.grey),
+        const SizedBox(width: 3),
+        Text(label,
+            style: const TextStyle(
+                fontSize: 11, fontWeight: FontWeight.w500, color: Colors.grey)),
+      ]),
+    );
   }
 }
 
 // ────────────────────────────────────────────────────────────
-// STATS ROW (responsive)
+// 11. STATS ROW
 // ────────────────────────────────────────────────────────────
 class _StatsRow extends StatelessWidget {
   final double temp;
   final double hum;
-  final double valueFontSize;
+  final double todayKw;
+
   const _StatsRow({
     required this.temp,
     required this.hum,
-    required this.valueFontSize,
+    required this.todayKw,
   });
 
   @override
   Widget build(BuildContext context) {
-    final tempDiff = temp - 25.0;
-    final tempStatus =
-    tempDiff > 0 ? '+${tempDiff.toStringAsFixed(1)}°' : 'Normal';
-    final humStatus = (hum >= 30 && hum <= 70)
-        ? 'Comfortable'
-        : (hum > 70 ? 'Humid' : 'Dry');
-
-    return Row(
-      children: [
-        Expanded(
-          child: _StatCard(
-            emoji: '🌡',
-            value: '${temp.toStringAsFixed(1)}°',
-            subtitle: tempStatus,
-            accentColor: const Color(0xFFFF6B6B),
-            valueFontSize: valueFontSize,
-          ),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: _StatCard(
-            emoji: '💧',
-            value: '${hum.toStringAsFixed(0)}%',
-            subtitle: humStatus,
-            accentColor: const Color(0xFF64B5F6),
-            valueFontSize: valueFontSize,
-          ),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: _StatCard(
-            emoji: '⚡',
-            value: '3.4kW',
-            subtitle: 'Today',
-            accentColor: const Color(0xFFFFD54F),
-            valueFontSize: valueFontSize,
-          ),
-        ),
-      ],
-    );
+    return Row(children: [
+      Expanded(child: _StatTile(
+        icon: Icons.thermostat_rounded,
+        iconColor: const Color(0xFFFF6B6B),
+        value: '${temp.toStringAsFixed(1)}°',
+        label: 'Temp',
+      )),
+      const SizedBox(width: 10),
+      Expanded(child: _StatTile(
+        icon: Icons.water_drop_rounded,
+        iconColor: _DT.blue,
+        value: '${hum.toStringAsFixed(0)}%',
+        label: 'Humid',
+      )),
+      const SizedBox(width: 10),
+      Expanded(child: _StatTile(
+        icon: Icons.bolt_rounded,
+        iconColor: _DT.amber,
+        value: '${todayKw.toStringAsFixed(1)}kW',
+        label: 'Today',
+      )),
+    ]);
   }
 }
 
-class _StatCard extends StatelessWidget {
-  final String emoji;
-  final String value;
-  final String subtitle;
-  final Color accentColor;
-  final double valueFontSize;
+class _StatTile extends StatelessWidget {
+  final IconData icon;
+  final Color    iconColor;
+  final String   value;
+  final String   label;
 
-  const _StatCard({
-    required this.emoji,
+  const _StatTile({
+    required this.icon,
+    required this.iconColor,
     required this.value,
-    required this.subtitle,
-    required this.accentColor,
-    required this.valueFontSize,
+    required this.label,
   });
 
   @override
   Widget build(BuildContext context) {
-    return _AnimatedPressWidget(
-      onTap: () {
-        HapticFeedback.lightImpact();
-        _showGlassSnackBar(context, '$value — $subtitle');
-      },
-      child: _GlassCard(
-        padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 10),
-        glowColor: accentColor,
-        animateGlow: true,
-        child: Column(
-          children: [
-            Text(emoji, style: const TextStyle(fontSize: 22)),
-            const SizedBox(height: 8),
-            Text(
-              value,
-              style: TextStyle(
-                  fontSize: valueFontSize,
-                  fontWeight: FontWeight.w700,
-                  letterSpacing: -0.5),
-            ),
-            const SizedBox(height: 3),
-            Text(
-              subtitle,
-              style: TextStyle(
-                fontSize: 11,
-                color: Theme.of(context).colorScheme.onSurface.withOpacity(0.5),
-              ),
-              textAlign: TextAlign.center,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-// ────────────────────────────────────────────────────────────
-// QUICK SCENES ROW (unchanged)
-// ────────────────────────────────────────────────────────────
-class _QuickScenesRow extends StatelessWidget {
-  final int activeIndex;
-  final ValueChanged<int> onSceneSelected;
-
-  const _QuickScenesRow({
-    required this.activeIndex,
-    required this.onSceneSelected,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final scenes = [
-      ('☀️', 'Morning'),
-      ('🎬', 'Movie'),
-      ('🌙', 'Sleep'),
-      ('🎉', 'Party'),
-    ];
-
-    return SizedBox(
-      height: 44,
-      child: ListView.separated(
-        scrollDirection: Axis.horizontal,
-        itemCount: scenes.length,
-        separatorBuilder: (_, __) => const SizedBox(width: 10),
-        itemBuilder: (context, index) {
-          final isActive = activeIndex == index;
-          final (emoji, label) = scenes[index];
-          return _AnimatedPressWidget(
-            onTap: () {
-              HapticFeedback.lightImpact();
-              onSceneSelected(index);
-              _showGlassSnackBar(context, '$label scene activated');
-            },
-            child: _GlassCard(
-              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
-              borderRadius: BorderRadius.circular(40),
-              isActive: isActive,
-              activeColor: const Color(0xFFFFD54F),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(emoji, style: const TextStyle(fontSize: 15)),
-                  const SizedBox(width: 6),
-                  Text(
-                    label,
-                    style: TextStyle(
-                      fontWeight: isActive ? FontWeight.w700 : FontWeight.w500,
-                      fontSize: 13,
-                      color: isActive
-                          ? Theme.of(context).colorScheme.primary
-                          : Theme.of(context)
-                          .colorScheme
-                          .onSurface
-                          .withOpacity(0.75),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          );
-        },
-      ),
-    );
-  }
-}
-
-// ────────────────────────────────────────────────────────────
-// FLAME SENSOR CARD (unchanged)
-// ────────────────────────────────────────────────────────────
-class _FlameSensorCard extends StatelessWidget {
-  final bool flame;
-  const _FlameSensorCard({required this.flame});
-
-  @override
-  Widget build(BuildContext context) {
-    return _AnimatedPressWidget(
-      onTap: () {
-        HapticFeedback.heavyImpact();
-        _showGlassSnackBar(
-          context,
-          flame
-              ? '⚠️ FLAME DETECTED! Check immediately.'
-              : '✅ System safe. No flames.',
-          color: flame ? Colors.red : Colors.green,
-        );
-      },
-      child: _GlassCard(
-        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-        glowColor: flame ? Colors.red : const Color(0xFF4DFFA0),
-        animateGlow: true,
-        dangerBorder: flame,
-        child: Row(
-          children: [
-            Container(
-              width: 48,
-              height: 48,
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(16),
-                color: (flame ? Colors.red : const Color(0xFF4DFFA0))
-                    .withOpacity(0.15),
-              ),
-              child: Center(
-                child: Text(
-                  flame ? '🔥' : '🛡️',
-                  style: const TextStyle(fontSize: 24),
-                ),
-              ),
-            ),
-            const SizedBox(width: 16),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Flame Sensor',
-                    style: TextStyle(
-                      fontSize: 13,
-                      color: Theme.of(context)
-                          .colorScheme
-                          .onSurface
-                          .withOpacity(0.5),
-                    ),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    flame ? '⚠️ FLAME DETECTED' : '✅ All Clear',
-                    style: TextStyle(
-                      fontSize: 17,
-                      fontWeight: FontWeight.w700,
-                      color: flame ? Colors.red.shade400 : const Color(0xFF4DFFA0),
-                      letterSpacing: -0.3,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-// ────────────────────────────────────────────────────────────
-// ACTIVE DEVICES ROW (unchanged)
-// ────────────────────────────────────────────────────────────
-class _ActiveDevicesRow extends StatelessWidget {
-  final int activeCount;
-  const _ActiveDevicesRow({required this.activeCount});
-
-  @override
-  Widget build(BuildContext context) {
-    const total = 4;
-    return _GlassCard(
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
-      child: Row(
-        children: [
-          const Text('💡', style: TextStyle(fontSize: 20)),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Text(
-              'Active lights',
-              style: TextStyle(
-                fontSize: 15,
-                fontWeight: FontWeight.w500,
-                color: Theme.of(context)
-                    .colorScheme
-                    .onSurface
-                    .withOpacity(0.75),
-              ),
-            ),
+    return _GCard(
+      padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 10),
+      child: Column(children: [
+        Container(
+          width: 36, height: 36,
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(10),
+            color: iconColor.withOpacity(0.15),
           ),
-          Row(
-            children: List.generate(total, (i) {
-              final on = i < activeCount;
-              return Container(
-                width: 8,
-                height: 8,
-                margin: const EdgeInsets.only(left: 5),
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: on
-                      ? const Color(0xFF4DFFA0)
-                      : Theme.of(context)
-                      .colorScheme
-                      .onSurface
-                      .withOpacity(0.15),
-                  boxShadow: on
-                      ? [
-                    BoxShadow(
-                      color: const Color(0xFF4DFFA0).withOpacity(0.5),
-                      blurRadius: 6,
-                    )
-                  ]
-                      : null,
-                ),
-              );
-            }),
-          ),
-          const SizedBox(width: 12),
-          Text(
-            '$activeCount/$total',
+          child: Icon(icon, color: iconColor, size: 18),
+        ),
+        const SizedBox(height: 8),
+        Text(value,
             style: const TextStyle(
-              fontSize: 18,
-              fontWeight: FontWeight.w700,
-              letterSpacing: -0.5,
-            ),
-          ),
-        ],
-      ),
+                fontSize: 18, fontWeight: FontWeight.w800, letterSpacing: -0.5)),
+        const SizedBox(height: 2),
+        Text(label,
+            style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w500,
+                color: Theme.of(context).colorScheme.onSurface.withOpacity(0.5))),
+      ]),
     );
   }
 }
 
 // ────────────────────────────────────────────────────────────
-// ROOMS SELECTOR (unchanged)
+// 12. FLAME BANNER
 // ────────────────────────────────────────────────────────────
-class _RoomsSelector extends StatelessWidget {
+class _FlameBanner extends StatelessWidget {
+  final bool flame;
+  const _FlameBanner({required this.flame});
+
+  @override
+  Widget build(BuildContext context) {
+    final color = flame ? _DT.red : _DT.green;
+    return _GCard(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      glowColor: color,
+      dangerBorder: flame,
+      child: Row(children: [
+        Container(
+          width: 40, height: 40,
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(12),
+            color: color.withOpacity(0.15),
+          ),
+          child: Icon(
+            flame ? Icons.local_fire_department_rounded : Icons.shield_rounded,
+            color: color, size: 22,
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              flame ? '⚠️ FLAME DETECTED' : 'All Clear',
+              style: TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.w700,
+                  color: color,
+                  letterSpacing: -0.2),
+            ),
+            const SizedBox(height: 2),
+            Text(
+              flame
+                  ? 'Immediate action required'
+                  : 'Flame Sensor • No alerts detected',
+              style: TextStyle(
+                  fontSize: 12,
+                  color: Theme.of(context).colorScheme.onSurface.withOpacity(0.5)),
+            ),
+          ],
+        )),
+        Icon(Icons.chevron_right_rounded,
+            size: 18,
+            color: Theme.of(context).colorScheme.onSurface.withOpacity(0.3)),
+      ]),
+    );
+  }
+}
+
+// ────────────────────────────────────────────────────────────
+// 13. ROOMS HEADER + TABS
+// ────────────────────────────────────────────────────────────
+class _RoomsHeader extends StatelessWidget {
   final String selectedRoom;
   final ValueChanged<String> onRoomSelected;
 
-  const _RoomsSelector({
+  const _RoomsHeader({
     required this.selectedRoom,
     required this.onRoomSelected,
   });
 
+  static const _rooms = [
+    ('🛋️', 'Living Room'),
+    ('🛏️', 'Bedroom'),
+    ('🍳', 'Kitchen'),
+    ('🚿', 'Bathroom'),
+  ];
+
   @override
   Widget build(BuildContext context) {
-    final rooms = [
-      ('🛋', 'Living Room'),
-      ('🛏', 'Bedroom'),
-      ('🍳', 'Kitchen'),
-      ('🚿', 'Bathroom'),
-    ];
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Padding(
-          padding: const EdgeInsets.only(left: 4, bottom: 12),
-          child: Text(
-            'Rooms',
-            style: TextStyle(
-              fontSize: 18,
-              fontWeight: FontWeight.w700,
-              letterSpacing: -0.5,
-              color: Theme.of(context)
-                  .colorScheme
-                  .onSurface
-                  .withOpacity(0.9),
-            ),
-          ),
-        ),
-        SizedBox(
-          height: 48,
-          child: ListView.separated(
-            scrollDirection: Axis.horizontal,
-            itemCount: rooms.length,
-            separatorBuilder: (_, __) => const SizedBox(width: 10),
-            itemBuilder: (context, index) {
-              final (emoji, name) = rooms[index];
-              final isSelected = name == selectedRoom;
-              return _AnimatedPressWidget(
-                onTap: () => onRoomSelected(name),
-                child: _GlassCard(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                  borderRadius: BorderRadius.circular(40),
-                  isActive: isSelected,
-                  activeColor: Theme.of(context).colorScheme.primary,
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(emoji, style: const TextStyle(fontSize: 15)),
-                      const SizedBox(width: 7),
-                      Text(
-                        name,
-                        style: TextStyle(
-                          fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text('Rooms',
+              style: TextStyle(
+                  fontSize: 17,
+                  fontWeight: FontWeight.w700,
+                  color: Theme.of(context).colorScheme.onSurface)),
+          Text('${_rooms.length} Rooms',
+              style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w500,
+                  color: _DT.purple)),
+        ],
+      ),
+      const SizedBox(height: 10),
+      SizedBox(
+        height: 40,
+        child: ListView.separated(
+          scrollDirection: Axis.horizontal,
+          itemCount: _rooms.length,
+          separatorBuilder: (_, __) => const SizedBox(width: 8),
+          itemBuilder: (context, i) {
+            final (emoji, name) = _rooms[i];
+            final selected = name == selectedRoom;
+            return GestureDetector(
+              onTap: () {
+                HapticFeedback.selectionClick();
+                onRoomSelected(name);
+              },
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 200),
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(20),
+                  color: selected
+                      ? Colors.white
+                      : (Theme.of(context).brightness == Brightness.dark
+                      ? Colors.white.withOpacity(0.07)
+                      : Colors.black.withOpacity(0.05)),
+                  border: Border.all(
+                    color: selected
+                        ? Colors.white
+                        : Colors.transparent,
+                    width: selected ? 1.5 : 0,
+                  ),
+                ),
+                child: Row(mainAxisSize: MainAxisSize.min, children: [
+                  Text(emoji, style: const TextStyle(fontSize: 14)),
+                  const SizedBox(width: 6),
+                  Text(name,
+                      style: TextStyle(
                           fontSize: 13,
-                          color: isSelected
-                              ? Theme.of(context).colorScheme.primary
+                          fontWeight: selected
+                              ? FontWeight.w700
+                              : FontWeight.w500,
+                          color: selected
+                              ? Colors.black
                               : Theme.of(context)
                               .colorScheme
                               .onSurface
-                              .withOpacity(0.65),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              );
-            },
-          ),
+                              .withOpacity(0.6))),
+                ]),
+              ),
+            );
+          },
         ),
-      ],
-    );
+      ),
+    ]);
   }
 }
 
 // ────────────────────────────────────────────────────────────
-// ROOM DETAILS PANEL (responsive)
+// 14. DEVICE GRID
 // ────────────────────────────────────────────────────────────
-class _RoomDetailsPanel extends StatelessWidget {
-  final String selectedRoom;
-  final bool lightOn;
+class _DeviceGrid extends StatelessWidget {
+  final String   selectedRoom;
+  final bool     lightOn;
   final VoidCallback onLightToggle;
-  final double ceilingBrightness;
-  final ValueChanged<double> onCeilingBrightnessChanged;
-  final double tvVolume;
-  final ValueChanged<double> onTvVolumeChanged;
-  final double roomNameFontSize;
+  final double   ceilingBrightness;
+  final ValueChanged<double> onBrightnessChanged;
+  final bool     tvOn;
+  final VoidCallback onTvToggle;
+  final bool     purifierOn;
+  final VoidCallback onPurifierToggle;
+  final bool     soundbarOn;
+  final VoidCallback onSoundbarToggle;
+  final int      activeCount;
 
-  const _RoomDetailsPanel({
+  const _DeviceGrid({
     required this.selectedRoom,
     required this.lightOn,
     required this.onLightToggle,
     required this.ceilingBrightness,
-    required this.onCeilingBrightnessChanged,
-    required this.tvVolume,
-    required this.onTvVolumeChanged,
-    required this.roomNameFontSize,
+    required this.onBrightnessChanged,
+    required this.tvOn,
+    required this.onTvToggle,
+    required this.purifierOn,
+    required this.onPurifierToggle,
+    required this.soundbarOn,
+    required this.onSoundbarToggle,
+    required this.activeCount,
   });
 
   @override
   Widget build(BuildContext context) {
-    return _GlassCard(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Expanded(
-                child: Text(
-                  selectedRoom,
-                  style: TextStyle(
-                    fontSize: roomNameFontSize,
-                    fontWeight: FontWeight.w700,
-                    letterSpacing: -0.5,
-                  ),
-                ),
-              ),
-              _GlassToggle(
-                value: lightOn,
-                onChanged: (_) => onLightToggle(),
-              ),
-            ],
-          ),
-          const SizedBox(height: 20),
-          _DeviceRow(
-            emoji: lightOn ? '💡' : '🔦',
+    if (selectedRoom != 'Living Room') {
+      return _GCard(
+        child: _DeviceRow(
+          icon: Icons.lightbulb_rounded,
+          iconColor: lightOn ? _DT.amber : Colors.grey,
+          name: 'Main Light',
+          status: lightOn ? 'On' : 'Off',
+          isOn: lightOn,
+          onToggle: onLightToggle,
+        ),
+      );
+    }
+
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Row(children: [
+        Text(selectedRoom,
+            style: const TextStyle(
+                fontSize: 18, fontWeight: FontWeight.w700, letterSpacing: -0.4)),
+        const Spacer(),
+        Text('$activeCount Active',
+            style: const TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: _DT.purple)),
+      ]),
+      const SizedBox(height: 14),
+
+      Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Expanded(
+          child: _DeviceCardTall(
+            icon: Icons.lightbulb_rounded,
+            iconColor: lightOn ? _DT.amber : Colors.grey,
             name: 'Ceiling Light',
-            valueLabel: '${(ceilingBrightness * 100).toInt()}%',
-            accentColor: const Color(0xFFFFD54F),
+            status: lightOn
+                ? 'On • ${(ceilingBrightness * 100).round()}%'
+                : 'Off',
+            isOn: lightOn,
+            onToggle: onLightToggle,
+            accentColor: _DT.amber,
+            sliderValue: ceilingBrightness,
+            onSliderChanged: onBrightnessChanged,
           ),
-          const SizedBox(height: 10),
-          _GlassSlider(
-            value: ceilingBrightness,
-            onChanged: onCeilingBrightnessChanged,
-            activeColor: const Color(0xFFFFD54F),
-          ),
-          if (selectedRoom == 'Living Room') ...[
-            const SizedBox(height: 22),
-            _DeviceRow(
-              emoji: '📺',
-              name: 'Smart TV',
-              valueLabel: 'Vol ${(tvVolume * 100).toInt()}%',
-              accentColor: const Color(0xFF64B5F6),
-            ),
-            const SizedBox(height: 10),
-            _GlassSlider(
-              value: tvVolume,
-              onChanged: onTvVolumeChanged,
-              activeColor: const Color(0xFF64B5F6),
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-}
-
-class _DeviceRow extends StatelessWidget {
-  final String emoji;
-  final String name;
-  final String valueLabel;
-  final Color accentColor;
-
-  const _DeviceRow({
-    required this.emoji,
-    required this.name,
-    required this.valueLabel,
-    required this.accentColor,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: [
-        Container(
-          width: 38,
-          height: 38,
-          decoration: BoxDecoration(
-            color: accentColor.withOpacity(0.15),
-            borderRadius: BorderRadius.circular(13),
-          ),
-          child: Center(child: Text(emoji, style: const TextStyle(fontSize: 18))),
         ),
         const SizedBox(width: 12),
         Expanded(
-          child: Text(name,
-              style: const TextStyle(fontWeight: FontWeight.w500, fontSize: 15)),
-        ),
-        Text(
-          valueLabel,
-          style: TextStyle(
-            fontSize: 14,
-            fontWeight: FontWeight.w600,
-            color: accentColor,
+          child: _DeviceCardTall(
+            icon: Icons.tv_rounded,
+            iconColor: tvOn ? _DT.blue : Colors.grey,
+            name: 'Smart TV',
+            status: tvOn ? 'On' : 'Off',
+            isOn: tvOn,
+            onToggle: onTvToggle,
+            accentColor: _DT.blue,
           ),
         ),
-      ],
-    );
+      ]),
+      const SizedBox(height: 12),
+      Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Expanded(
+          child: _DeviceCardTall(
+            icon: Icons.air_rounded,
+            iconColor: purifierOn ? const Color(0xFF81C784) : Colors.grey,
+            name: 'Air Purifier',
+            status: purifierOn ? 'On' : 'Off',
+            isOn: purifierOn,
+            onToggle: onPurifierToggle,
+            accentColor: const Color(0xFF81C784),
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: _DeviceCardTall(
+            icon: Icons.speaker_rounded,
+            iconColor: soundbarOn ? const Color(0xFFCE93D8) : Colors.grey,
+            name: 'Soundbar',
+            status: soundbarOn ? 'Playing' : 'Paused',
+            isOn: soundbarOn,
+            onToggle: onSoundbarToggle,
+            accentColor: const Color(0xFFCE93D8),
+          ),
+        ),
+      ]),
+    ]);
   }
 }
 
-class _GlassSlider extends StatelessWidget {
-  final double value;
-  final ValueChanged<double> onChanged;
-  final Color activeColor;
+// Tall grid card
+class _DeviceCardTall extends StatelessWidget {
+  final IconData icon;
+  final Color    iconColor;
+  final String   name;
+  final String   status;
+  final bool     isOn;
+  final VoidCallback onToggle;
+  final Color    accentColor;
+  final double?  sliderValue;
+  final ValueChanged<double>? onSliderChanged;
 
-  const _GlassSlider({
-    required this.value,
-    required this.onChanged,
-    required this.activeColor,
+  const _DeviceCardTall({
+    required this.icon,
+    required this.iconColor,
+    required this.name,
+    required this.status,
+    required this.isOn,
+    required this.onToggle,
+    required this.accentColor,
+    this.sliderValue,
+    this.onSliderChanged,
   });
 
   @override
   Widget build(BuildContext context) {
-    return SliderTheme(
-      data: SliderTheme.of(context).copyWith(
-        activeTrackColor: activeColor,
-        inactiveTrackColor:
-        Theme.of(context).colorScheme.onSurface.withOpacity(0.12),
-        thumbColor: Colors.white,
-        overlayColor: activeColor.withOpacity(0.15),
-        thumbShape:
-        const RoundSliderThumbShape(enabledThumbRadius: 9, elevation: 3),
-        trackHeight: 4,
-      ),
-      child: Slider(
-        value: value,
-        onChanged: onChanged,
-        min: 0,
-        max: 1,
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    return GestureDetector(
+      onTap: onToggle,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 250),
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(20),
+          color: isOn
+              ? (isDark
+              ? accentColor.withOpacity(0.12)
+              : accentColor.withOpacity(0.08))
+              : (isDark
+              ? Colors.white.withOpacity(0.05)
+              : Colors.black.withOpacity(0.04)),
+          border: Border.all(
+            color: isOn
+                ? accentColor.withOpacity(0.35)
+                : (isDark
+                ? Colors.white.withOpacity(0.08)
+                : Colors.black.withOpacity(0.07)),
+            width: 1,
+          ),
+          boxShadow: isOn
+              ? [BoxShadow(
+              color: accentColor.withOpacity(0.15),
+              blurRadius: 16, offset: const Offset(0, 4))]
+              : null,
+        ),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                width: 38, height: 38,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(11),
+                  color: iconColor.withOpacity(0.18),
+                ),
+                child: Icon(icon, color: iconColor, size: 20),
+              ),
+              _SmallToggle(value: isOn, onToggle: onToggle, accent: accentColor),
+            ],
+          ),
+          const SizedBox(height: 28),
+          Text(name,
+              style: const TextStyle(
+                  fontSize: 13, fontWeight: FontWeight.w600, height: 1.2)),
+          const SizedBox(height: 3),
+          Text(status,
+              style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w500,
+                  color: isOn ? accentColor : Colors.grey)),
+          if (sliderValue != null && onSliderChanged != null) ...[
+            const SizedBox(height: 10),
+            SliderTheme(
+              data: SliderTheme.of(context).copyWith(
+                activeTrackColor: accentColor,
+                inactiveTrackColor:
+                Theme.of(context).colorScheme.onSurface.withOpacity(0.12),
+                thumbColor: Colors.white,
+                overlayColor: accentColor.withOpacity(0.12),
+                thumbShape:
+                const RoundSliderThumbShape(enabledThumbRadius: 7, elevation: 2),
+                trackHeight: 3,
+              ),
+              child: Slider(
+                value: sliderValue!,
+                onChanged: onSliderChanged,
+                min: 0, max: 1,
+              ),
+            ),
+            Text('${(sliderValue! * 100).round()}%',
+                style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    color: accentColor)),
+          ],
+        ]),
       ),
     );
   }
 }
 
-// ────────────────────────────────────────────────────────────
-// GLASS TOGGLE SWITCH (iOS‑27 style)
-// ────────────────────────────────────────────────────────────
-class _GlassToggle extends StatelessWidget {
+// Small toggle
+class _SmallToggle extends StatelessWidget {
   final bool value;
-  final ValueChanged<bool> onChanged;
+  final VoidCallback onToggle;
+  final Color accent;
 
-  const _GlassToggle({required this.value, required this.onChanged});
+  const _SmallToggle({
+    required this.value,
+    required this.onToggle,
+    required this.accent,
+  });
 
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
       onTap: () {
         HapticFeedback.lightImpact();
-        onChanged(!value);
+        onToggle();
       },
       child: AnimatedContainer(
-        duration: const Duration(milliseconds: 250),
-        curve: Curves.easeInOut,
-        width: 52,
-        height: 30,
-        padding: const EdgeInsets.all(3),
+        duration: const Duration(milliseconds: 220),
+        width: 40, height: 24,
+        padding: const EdgeInsets.all(2),
         decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(30),
-          color: value
-              ? const Color(0xFF4DFFA0).withOpacity(0.3)
-              : Theme.of(context).colorScheme.onSurface.withOpacity(0.1),
+          borderRadius: BorderRadius.circular(12),
+          color: value ? accent.withOpacity(0.25) : Colors.white.withOpacity(0.1),
           border: Border.all(
-            color: value
-                ? const Color(0xFF4DFFA0).withOpacity(0.5)
-                : Theme.of(context)
-                .colorScheme
-                .onSurface
-                .withOpacity(0.15),
+            color: value ? accent.withOpacity(0.6) : Colors.white.withOpacity(0.15),
             width: 0.8,
           ),
-          boxShadow: value
-              ? [
-            BoxShadow(
-              color: const Color(0xFF4DFFA0).withOpacity(0.3),
-              blurRadius: 10,
-              spreadRadius: 0,
-            )
-          ]
-              : null,
         ),
         child: AnimatedAlign(
-          duration: const Duration(milliseconds: 250),
-          curve: Curves.easeInOut,
+          duration: const Duration(milliseconds: 220),
           alignment: value ? Alignment.centerRight : Alignment.centerLeft,
           child: Container(
-            width: 24,
-            height: 24,
+            width: 18, height: 18,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
-              color: value ? const Color(0xFF4DFFA0) : Colors.white,
+              color: value ? accent : Colors.white.withOpacity(0.5),
               boxShadow: [
                 BoxShadow(
-                  color: Colors.black.withOpacity(0.2),
-                  blurRadius: 4,
-                  offset: const Offset(0, 1),
-                ),
+                    color: Colors.black.withOpacity(0.2),
+                    blurRadius: 3,
+                    offset: const Offset(0, 1)),
               ],
             ),
           ),
@@ -1461,35 +1324,113 @@ class _GlassToggle extends StatelessWidget {
   }
 }
 
-// ────────────────────────────────────────────────────────────
-// GLASS PILL BUTTON (unchanged)
-// ────────────────────────────────────────────────────────────
-class _PillButton extends StatelessWidget {
-  final String label;
-  final VoidCallback onTap;
-  const _PillButton({required this.label, required this.onTap});
+// Simple device row
+class _DeviceRow extends StatelessWidget {
+  final IconData icon;
+  final Color    iconColor;
+  final String   name;
+  final String   status;
+  final bool     isOn;
+  final VoidCallback onToggle;
+
+  const _DeviceRow({
+    required this.icon,
+    required this.iconColor,
+    required this.name,
+    required this.status,
+    required this.isOn,
+    required this.onToggle,
+  });
 
   @override
   Widget build(BuildContext context) {
-    return _AnimatedPressWidget(
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 12),
+    return Row(children: [
+      Container(
+        width: 40, height: 40,
         decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(40),
-          color: Theme.of(context).colorScheme.primary.withOpacity(0.15),
-          border: Border.all(
-            color: Theme.of(context).colorScheme.primary.withOpacity(0.35),
-            width: 0.8,
-          ),
+          borderRadius: BorderRadius.circular(12),
+          color: iconColor.withOpacity(0.15),
         ),
-        child: Text(
-          label,
-          style: TextStyle(
-            fontSize: 15,
-            fontWeight: FontWeight.w600,
-            color: Theme.of(context).colorScheme.primary,
+        child: Icon(icon, color: iconColor, size: 22),
+      ),
+      const SizedBox(width: 14),
+      Expanded(child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(name,
+              style: const TextStyle(
+                  fontSize: 15, fontWeight: FontWeight.w600)),
+          Text(status,
+              style: TextStyle(
+                  fontSize: 12,
+                  color: isOn ? iconColor : Colors.grey)),
+        ],
+      )),
+      _SmallToggle(value: isOn, onToggle: onToggle, accent: iconColor),
+    ]);
+  }
+}
+
+// ────────────────────────────────────────────────────────────
+// 15. GLASS CARD
+// ────────────────────────────────────────────────────────────
+class _GCard extends StatelessWidget {
+  final Widget child;
+  final EdgeInsetsGeometry padding;
+  final BorderRadius borderRadius;
+  final Color? glowColor;
+  final bool dangerBorder;
+
+  const _GCard({
+    required this.child,
+    this.padding = const EdgeInsets.all(16),
+    this.borderRadius = const BorderRadius.all(Radius.circular(20)),
+    this.glowColor,
+    this.dangerBorder = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    return ClipRRect(
+      borderRadius: borderRadius,
+      child: BackdropFilter(
+        filter: ui.ImageFilter.blur(sigmaX: 30, sigmaY: 30),
+        child: Container(
+          padding: padding,
+          decoration: BoxDecoration(
+            borderRadius: borderRadius,
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: isDark
+                  ? [Colors.white.withOpacity(0.08), Colors.white.withOpacity(0.03)]
+                  : [Colors.white.withOpacity(0.6),  Colors.white.withOpacity(0.3)],
+            ),
+            border: Border.all(
+              color: dangerBorder
+                  ? _DT.red.withOpacity(0.45)
+                  : (isDark
+                  ? Colors.white.withOpacity(0.1)
+                  : Colors.white.withOpacity(0.4)),
+              width: 0.8,
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: isDark
+                    ? Colors.black.withOpacity(0.3)
+                    : Colors.black.withOpacity(0.05),
+                blurRadius: 20, offset: const Offset(0, 6),
+              ),
+              if (glowColor != null)
+                BoxShadow(
+                  color: glowColor!.withOpacity(isDark ? 0.18 : 0.12),
+                  blurRadius: 24,
+                ),
+            ],
           ),
+          child: child,
         ),
       ),
     );
@@ -1497,37 +1438,92 @@ class _PillButton extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 8. GLASS BOTTOM NAV BAR (liquid blur, responsive height)
+// 16. PILL BUTTON
 // ────────────────────────────────────────────────────────────
-class _GlassBottomNavBar extends StatelessWidget {
+class _PillBtn extends StatelessWidget {
+  final String label;
+  final VoidCallback onTap;
+  const _PillBtn({required this.label, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) => GestureDetector(
+    onTap: onTap,
+    child: Container(
+      padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 12),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(40),
+        gradient: const LinearGradient(
+          colors: [Color(0xFF8B7FFF), _DT.purple],
+        ),
+        boxShadow: [
+          BoxShadow(color: _DT.purple.withOpacity(0.35), blurRadius: 14),
+        ],
+      ),
+      child: Text(label,
+          style: const TextStyle(
+              color: Colors.white,
+              fontSize: 15,
+              fontWeight: FontWeight.w600)),
+    ),
+  );
+}
+
+// ────────────────────────────────────────────────────────────
+// 17. GLASS BOTTOM NAV
+// ────────────────────────────────────────────────────────────
+class _GlassBottomNav extends StatelessWidget {
   final int selectedIndex;
   final ValueChanged<int> onTap;
 
-  const _GlassBottomNavBar({
+  const _GlassBottomNav({
     required this.selectedIndex,
     required this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
-    final items = [
-      (Icons.home_rounded, '🏠', 'Home'),
-      (Icons.bolt_rounded, '⚡', 'Energy'),
-      (Icons.notifications_rounded, '🔔', 'Alerts'),
-      (Icons.settings_rounded, '⚙️', 'Settings'),
-    ];
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final screenWidth = MediaQuery.of(context).size.width;
-    final navHeight = screenWidth < 360 ? 56.0 : 64.0;
+
+    final leftItems  = [(Icons.home_rounded, 'Home', 0), (Icons.bolt_rounded, 'Energy', 1)];
+    final rightItems = [(Icons.notifications_rounded, 'Alerts', 2), (Icons.settings_rounded, 'Settings', 3)];
+
+    Widget _navItem(IconData icon, String label, int index) {
+      final selected = selectedIndex == index;
+      return GestureDetector(
+        onTap: () {
+          HapticFeedback.selectionClick();
+          onTap(index);
+        },
+        behavior: HitTestBehavior.opaque,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            Icon(icon,
+                size: 24,
+                color: selected
+                    ? _DT.purple
+                    : Theme.of(context).colorScheme.onSurface.withOpacity(0.4)),
+            const SizedBox(height: 3),
+            Text(label,
+                style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                    color: selected
+                        ? _DT.purple
+                        : Theme.of(context).colorScheme.onSurface.withOpacity(0.4))),
+          ]),
+        ),
+      );
+    }
 
     return ClipRect(
       child: BackdropFilter(
-        filter: ui.ImageFilter.blur(sigmaX: 40, sigmaY: 40), // liquid blur
+        filter: ui.ImageFilter.blur(sigmaX: 32, sigmaY: 32),
         child: Container(
           decoration: BoxDecoration(
             color: isDark
-                ? Colors.black.withOpacity(0.2)
-                : Colors.white.withOpacity(0.4),
+                ? Colors.black.withOpacity(0.25)
+                : Colors.white.withOpacity(0.45),
             border: Border(
               top: BorderSide(
                 color: isDark
@@ -1540,85 +1536,14 @@ class _GlassBottomNavBar extends StatelessWidget {
           child: SafeArea(
             top: false,
             child: SizedBox(
-              height: navHeight,
+              height: 60,
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceAround,
-                children: List.generate(items.length, (index) {
-                  final isSelected = selectedIndex == index;
-                  final (icon, _, label) = items[index];
-                  return _AnimatedPressWidget(
-                    onTap: () => onTap(index),
-                    scaleFactor: 0.92,
-                    child: AnimatedContainer(
-                      duration: const Duration(milliseconds: 220),
-                      curve: Curves.easeInOut,
-                      padding: const EdgeInsets.symmetric(
-                          vertical: 6, horizontal: 18),
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(40),
-                        color: isSelected
-                            ? Theme.of(context)
-                            .colorScheme
-                            .primary
-                            .withOpacity(isDark ? 0.2 : 0.12)
-                            : Colors.transparent,
-                        border: isSelected
-                            ? Border.all(
-                          color: Theme.of(context)
-                              .colorScheme
-                              .primary
-                              .withOpacity(0.25),
-                          width: 0.8,
-                        )
-                            : null,
-                        boxShadow: isSelected
-                            ? [
-                          BoxShadow(
-                            color: Theme.of(context)
-                                .colorScheme
-                                .primary
-                                .withOpacity(0.2),
-                            blurRadius: 12,
-                            spreadRadius: 0,
-                          ),
-                        ]
-                            : null,
-                      ),
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(
-                            icon,
-                            size: 22,
-                            color: isSelected
-                                ? Theme.of(context).colorScheme.primary
-                                : Theme.of(context)
-                                .colorScheme
-                                .onSurface
-                                .withOpacity(0.45),
-                          ),
-                          const SizedBox(height: 3),
-                          Text(
-                            label,
-                            style: TextStyle(
-                              fontSize: 10.5,
-                              fontWeight: isSelected
-                                  ? FontWeight.w700
-                                  : FontWeight.w500,
-                              color: isSelected
-                                  ? Theme.of(context).colorScheme.primary
-                                  : Theme.of(context)
-                                  .colorScheme
-                                  .onSurface
-                                  .withOpacity(0.45),
-                              letterSpacing: 0.1,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  );
-                }),
+                children: [
+                  ...leftItems.map((e) => _navItem(e.$1, e.$2, e.$3)),
+                  const SizedBox(width: 64),
+                  ...rightItems.map((e) => _navItem(e.$1, e.$2, e.$3)),
+                ],
               ),
             ),
           ),
@@ -1629,9 +1554,8 @@ class _GlassBottomNavBar extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 9. ENERGY, ALERTS, SETTINGS SCREENS (unchanged, minor fixes)
+// 18. ENERGY SCREEN
 // ────────────────────────────────────────────────────────────
-
 class _EnergyScreen extends StatelessWidget {
   const _EnergyScreen();
 
@@ -1640,560 +1564,334 @@ class _EnergyScreen extends StatelessWidget {
     return SingleChildScrollView(
       padding: EdgeInsets.only(
         top: MediaQuery.of(context).padding.top + kToolbarHeight + 12,
-        left: 20,
-        right: 20,
-        bottom: 24,
+        left: 20, right: 20, bottom: 100,
       ),
-      child: Column(
-        children: [
-          _GlassCard(
-            padding: const EdgeInsets.all(24),
-            glowColor: Theme.of(context).colorScheme.primary,
-            animateGlow: true,
-            child: Column(
+      child: Column(children: [
+        _GCard(
+          glowColor: _DT.purple,
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    const Text(
-                      "Today's Usage",
-                      style: TextStyle(
-                          fontSize: 17, fontWeight: FontWeight.w700),
-                    ),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 10, vertical: 4),
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(20),
-                        color: Theme.of(context)
-                            .colorScheme
-                            .primary
-                            .withOpacity(0.15),
-                      ),
-                      child: Text(
-                        '⚡ Live',
-                        style: TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600,
-                          color: Theme.of(context).colorScheme.primary,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 24),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  children: [
-                    _EnergyMetric(
-                      value: '3.4',
-                      unit: 'kWh',
-                      color: Theme.of(context).colorScheme.primary,
-                    ),
-                    Container(
-                      width: 0.5,
-                      height: 50,
-                      color: Theme.of(context)
-                          .colorScheme
-                          .onSurface
-                          .withOpacity(0.15),
-                    ),
-                    const _EnergyMetric(
-                      value: '€2.15',
-                      unit: 'Cost',
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 22),
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(10),
-                  child: LinearProgressIndicator(
-                    value: 0.45,
-                    minHeight: 6,
-                    backgroundColor: Theme.of(context)
-                        .colorScheme
-                        .onSurface
-                        .withOpacity(0.1),
-                    valueColor: AlwaysStoppedAnimation(
-                        Theme.of(context).colorScheme.primary),
+                const Text("Today's Usage",
+                    style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700)),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(20),
+                    color: _DT.purple.withOpacity(0.15),
                   ),
+                  child: const Text('⚡ Live',
+                      style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: _DT.purple)),
                 ),
-                const SizedBox(height: 8),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text(
-                      'Daily target',
-                      style: TextStyle(
+              ],
+            ),
+            const SizedBox(height: 20),
+            Row(mainAxisAlignment: MainAxisAlignment.spaceEvenly, children: [
+              Column(children: [
+                Text('3.4',
+                    style: TextStyle(
+                        fontSize: 30, fontWeight: FontWeight.w800,
+                        color: Theme.of(context).colorScheme.primary)),
+                Text('kWh',
+                    style: TextStyle(
+                        fontSize: 13,
+                        color: Theme.of(context).colorScheme.onSurface.withOpacity(0.5))),
+              ]),
+              Container(width: 0.5, height: 50,
+                  color: Theme.of(context).colorScheme.onSurface.withOpacity(0.15)),
+              const Column(children: [
+                Text('€2.15',
+                    style: TextStyle(fontSize: 30, fontWeight: FontWeight.w800)),
+                Text('Cost',
+                    style: TextStyle(fontSize: 13, color: Colors.grey)),
+              ]),
+            ]),
+            const SizedBox(height: 20),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: LinearProgressIndicator(
+                value: 0.45, minHeight: 6,
+                backgroundColor:
+                Theme.of(context).colorScheme.onSurface.withOpacity(0.1),
+                valueColor: AlwaysStoppedAnimation(
+                    Theme.of(context).colorScheme.primary),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text('Daily target',
+                    style: TextStyle(
                         fontSize: 12,
-                        color: Theme.of(context)
-                            .colorScheme
-                            .onSurface
-                            .withOpacity(0.5),
-                      ),
-                    ),
-                    Text(
-                      '45%',
-                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.onSurface.withOpacity(0.5))),
+                Text('45%',
+                    style: TextStyle(
                         fontSize: 12,
                         fontWeight: FontWeight.w600,
-                        color: Theme.of(context).colorScheme.primary,
-                      ),
-                    ),
-                  ],
-                ),
+                        color: Theme.of(context).colorScheme.primary)),
               ],
             ),
-          ),
-          const SizedBox(height: 14),
-          _GlassCard(
-            child: Row(
-              children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'This Week',
-                        style: TextStyle(
-                          fontSize: 15,
-                          fontWeight: FontWeight.w600,
-                          color: Theme.of(context)
-                              .colorScheme
-                              .onSurface
-                              .withOpacity(0.6),
-                        ),
-                      ),
-                      const SizedBox(height: 6),
-                      const Text(
-                        '24.1 kWh',
-                        style: TextStyle(
-                          fontSize: 24,
-                          fontWeight: FontWeight.w800,
-                          letterSpacing: -0.8,
-                        ),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        '↓ 8% vs last week',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: const Color(0xFF4DFFA0),
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                SizedBox(
-                  width: 72,
-                  height: 72,
-                  child: CircularProgressIndicator(
-                    value: 0.62,
-                    strokeWidth: 7,
-                    backgroundColor: Theme.of(context)
-                        .colorScheme
-                        .onSurface
-                        .withOpacity(0.1),
-                    valueColor: AlwaysStoppedAnimation(
-                        Theme.of(context).colorScheme.primary),
-                    strokeCap: StrokeCap.round,
-                  ),
-                ),
-              ],
+          ]),
+        ),
+        const SizedBox(height: 12),
+        _GCard(child: Row(children: [
+          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text('This Week',
+                style: TextStyle(
+                    fontSize: 15, fontWeight: FontWeight.w600,
+                    color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6))),
+            const SizedBox(height: 6),
+            const Text('24.1 kWh',
+                style: TextStyle(
+                    fontSize: 24, fontWeight: FontWeight.w800, letterSpacing: -0.8)),
+            const SizedBox(height: 4),
+            const Text('↓ 8% vs last week',
+                style: TextStyle(fontSize: 12, color: _DT.green, fontWeight: FontWeight.w500)),
+          ])),
+          SizedBox(
+            width: 72, height: 72,
+            child: CircularProgressIndicator(
+              value: 0.62, strokeWidth: 7,
+              backgroundColor:
+              Theme.of(context).colorScheme.onSurface.withOpacity(0.1),
+              valueColor: AlwaysStoppedAnimation(
+                  Theme.of(context).colorScheme.primary),
+              strokeCap: StrokeCap.round,
             ),
           ),
-          const SizedBox(height: 14),
-          _GlassCard(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  'Top Devices',
-                  style: TextStyle(
-                      fontSize: 17, fontWeight: FontWeight.w700),
+        ])),
+        const SizedBox(height: 12),
+        _GCard(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          const Text('Top Devices',
+              style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700)),
+          const SizedBox(height: 16),
+          ...[
+            (Icons.ac_unit_rounded,   'Living Room AC',  '2.1 kWh', 0.62),
+            (Icons.kitchen_rounded,   'Kitchen Fridge',  '1.8 kWh', 0.53),
+            (Icons.water_damage_rounded, 'Water Heater', '1.2 kWh', 0.35),
+          ].map((d) => Padding(
+            padding: const EdgeInsets.only(bottom: 14),
+            child: Column(children: [
+              Row(children: [
+                Icon(d.$1, size: 20, color: _DT.purple),
+                const SizedBox(width: 10),
+                Expanded(child: Text(d.$2,
+                    style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500))),
+                Text(d.$3,
+                    style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700)),
+              ]),
+              const SizedBox(height: 7),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(6),
+                child: LinearProgressIndicator(
+                  value: d.$4, minHeight: 4,
+                  backgroundColor:
+                  Theme.of(context).colorScheme.onSurface.withOpacity(0.08),
+                  valueColor: AlwaysStoppedAnimation(
+                      Theme.of(context).colorScheme.primary),
                 ),
-                const SizedBox(height: 16),
-                _EnergyDeviceRow(
-                  emoji: '❄️',
-                  name: 'Living Room AC',
-                  usage: '2.1 kWh',
-                  fraction: 0.62,
-                ),
-                const SizedBox(height: 14),
-                _EnergyDeviceRow(
-                  emoji: '🧊',
-                  name: 'Kitchen Fridge',
-                  usage: '1.8 kWh',
-                  fraction: 0.53,
-                ),
-                const SizedBox(height: 14),
-                _EnergyDeviceRow(
-                  emoji: '🚿',
-                  name: 'Water Heater',
-                  usage: '1.2 kWh',
-                  fraction: 0.35,
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
+              ),
+            ]),
+          )),
+        ])),
+      ]),
     );
   }
 }
 
-class _EnergyMetric extends StatelessWidget {
-  final String value;
-  final String unit;
-  final Color? color;
-  const _EnergyMetric({required this.value, required this.unit, this.color});
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      children: [
-        Text(
-          value,
-          style: TextStyle(
-            fontSize: 30,
-            fontWeight: FontWeight.w800,
-            letterSpacing: -1,
-            color: color,
-          ),
-        ),
-        Text(
-          unit,
-          style: TextStyle(
-            fontSize: 13,
-            color: Theme.of(context).colorScheme.onSurface.withOpacity(0.5),
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-class _EnergyDeviceRow extends StatelessWidget {
-  final String emoji;
-  final String name;
-  final String usage;
-  final double fraction;
-  const _EnergyDeviceRow({
-    required this.emoji,
-    required this.name,
-    required this.usage,
-    required this.fraction,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      children: [
-        Row(
-          children: [
-            Text(emoji, style: const TextStyle(fontSize: 18)),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Text(name,
-                  style: const TextStyle(
-                      fontSize: 14, fontWeight: FontWeight.w500)),
-            ),
-            Text(
-              usage,
-              style: const TextStyle(
-                  fontSize: 14, fontWeight: FontWeight.w700),
-            ),
-          ],
-        ),
-        const SizedBox(height: 7),
-        ClipRRect(
-          borderRadius: BorderRadius.circular(6),
-          child: LinearProgressIndicator(
-            value: fraction,
-            minHeight: 4,
-            backgroundColor: Theme.of(context)
-                .colorScheme
-                .onSurface
-                .withOpacity(0.08),
-            valueColor: AlwaysStoppedAnimation(
-                Theme.of(context).colorScheme.primary),
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-// --- ALERTS SCREEN ---
+// ────────────────────────────────────────────────────────────
+// 19. ALERTS SCREEN
+// ────────────────────────────────────────────────────────────
 class _AlertsScreen extends StatelessWidget {
   const _AlertsScreen();
 
   @override
   Widget build(BuildContext context) {
     final alerts = [
-      ('⚠️', Colors.orange, 'Motion in Living Room', '2 minutes ago'),
-      ('🔥', Colors.red, 'Flame sensor test — All Clear', '1 hour ago'),
-      ('🔌', Colors.blue, 'Device offline: Bedroom Light', '3 hours ago'),
-      ('💧', Colors.teal, 'High humidity in Kitchen', '5 hours ago'),
+      (Icons.motion_photos_on_rounded, Colors.orange, 'Motion in Living Room', '2 minutes ago'),
+      (Icons.local_fire_department_rounded, _DT.red, 'Flame sensor test — All Clear', '1 hour ago'),
+      (Icons.power_off_rounded, _DT.blue, 'Device offline: Bedroom Light', '3 hours ago'),
+      (Icons.water_drop_rounded, Colors.teal, 'High humidity in Kitchen', '5 hours ago'),
     ];
 
     return ListView.separated(
       padding: EdgeInsets.only(
         top: MediaQuery.of(context).padding.top + kToolbarHeight + 12,
-        left: 20,
-        right: 20,
-        bottom: 24,
+        left: 20, right: 20, bottom: 100,
       ),
       itemCount: alerts.length,
-      separatorBuilder: (_, __) => const SizedBox(height: 12),
-      itemBuilder: (context, index) {
-        final (emoji, color, title, time) = alerts[index];
-        return _AnimatedPressWidget(
-          onTap: () {
-            HapticFeedback.lightImpact();
-            _showGlassSnackBar(context, title, color: color);
-          },
-          child: _GlassCard(
-            padding: const EdgeInsets.all(16),
-            glowColor: color,
-            animateGlow: index == 0,
-            child: Row(
-              children: [
-                Container(
-                  width: 46,
-                  height: 46,
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(15),
-                    color: color.withOpacity(0.15),
-                  ),
-                  child: Center(
-                    child: Text(emoji, style: const TextStyle(fontSize: 22)),
-                  ),
-                ),
-                const SizedBox(width: 14),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        title,
-                        style: const TextStyle(
-                            fontSize: 15, fontWeight: FontWeight.w600),
-                      ),
-                      const SizedBox(height: 3),
-                      Text(
-                        time,
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: Theme.of(context)
-                              .colorScheme
-                              .onSurface
-                              .withOpacity(0.45),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                Icon(
-                  Icons.chevron_right_rounded,
-                  color: Theme.of(context)
-                      .colorScheme
-                      .onSurface
-                      .withOpacity(0.3),
-                  size: 20,
-                ),
-              ],
+      separatorBuilder: (_, __) => const SizedBox(height: 10),
+      itemBuilder: (context, i) {
+        final (icon, color, title, time) = alerts[i];
+        return _GCard(
+          padding: const EdgeInsets.all(14),
+          glowColor: i == 0 ? color : null,
+          child: Row(children: [
+            Container(
+              width: 44, height: 44,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(14),
+                color: color.withOpacity(0.15),
+              ),
+              child: Icon(icon, color: color, size: 22),
             ),
-          ),
+            const SizedBox(width: 12),
+            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(title,
+                  style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+              const SizedBox(height: 3),
+              Text(time,
+                  style: TextStyle(
+                      fontSize: 12,
+                      color: Theme.of(context).colorScheme.onSurface.withOpacity(0.45))),
+            ])),
+            Icon(Icons.chevron_right_rounded,
+                size: 18,
+                color: Theme.of(context).colorScheme.onSurface.withOpacity(0.3)),
+          ]),
         );
       },
     );
   }
 }
 
-// --- SETTINGS SCREEN ---
-class _SettingsScreen extends StatelessWidget {
-  final ThemeMode themeMode;
-  final ValueChanged<ThemeMode> onThemeModeChanged;
-  final BleStatus bleStatus;
-  final VoidCallback onConnectBLE;
-  final Future<void> Function() onRefresh;
-
-  const _SettingsScreen({
-    required this.themeMode,
-    required this.onThemeModeChanged,
-    required this.bleStatus,
-    required this.onConnectBLE,
-    required this.onRefresh,
-  });
+// ────────────────────────────────────────────────────────────
+// 20. SETTINGS SCREEN – now a ConsumerWidget
+// ────────────────────────────────────────────────────────────
+class _SettingsScreen extends ConsumerWidget {
+  const _SettingsScreen({super.key});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final themeMode = ref.watch(themeModeProvider);
+    final bleStatus = ref.watch(bleServiceProvider).currentStatus;
+    final onConnectBLE = () => ref.read(bleServiceProvider).connect();
+    final onRefresh = () async {
+      final ble = ref.read(bleServiceProvider);
+      await ble.connect();
+      ref.invalidate(httpDataProvider);
+    };
+
     return ListView(
       padding: EdgeInsets.only(
         top: MediaQuery.of(context).padding.top + kToolbarHeight + 12,
-        left: 20,
-        right: 20,
-        bottom: 24,
+        left: 20, right: 20, bottom: 100,
       ),
       children: [
-        _GlassCard(
-          child: Column(
-            children: [
-              _SettingsTile(
-                emoji: '🎨',
-                title: 'Appearance',
-                subtitle: 'Theme mode',
-                trailing: _GlassCard(
-                  padding: EdgeInsets.zero,
-                  borderRadius: BorderRadius.circular(12),
-                  child: DropdownButtonHideUnderline(
-                    child: DropdownButton<ThemeMode>(
-                      value: themeMode,
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 4),
-                      borderRadius: BorderRadius.circular(16),
-                      items: const [
-                        DropdownMenuItem(
-                          value: ThemeMode.light,
-                          child: Text('Light',
-                              style: TextStyle(
-                                  fontSize: 14, fontWeight: FontWeight.w500)),
-                        ),
-                        DropdownMenuItem(
-                          value: ThemeMode.dark,
-                          child: Text('Dark',
-                              style: TextStyle(
-                                  fontSize: 14, fontWeight: FontWeight.w500)),
-                        ),
-                        DropdownMenuItem(
-                          value: ThemeMode.system,
-                          child: Text('System',
-                              style: TextStyle(
-                                  fontSize: 14, fontWeight: FontWeight.w500)),
-                        ),
-                      ],
-                      onChanged: (mode) => onThemeModeChanged(mode!),
-                    ),
-                  ),
-                ),
+        _GCard(child: Column(children: [
+          _STile(
+            icon: Icons.palette_rounded,
+            title: 'Appearance',
+            subtitle: 'Theme mode',
+            trailing: DropdownButtonHideUnderline(
+              child: DropdownButton<ThemeMode>(
+                value: themeMode,
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                borderRadius: BorderRadius.circular(16),
+                items: const [
+                  DropdownMenuItem(value: ThemeMode.light,  child: Text('Light')),
+                  DropdownMenuItem(value: ThemeMode.dark,   child: Text('Dark')),
+                  DropdownMenuItem(value: ThemeMode.system, child: Text('System')),
+                ],
+                onChanged: (m) {
+                  if (m != null) {
+                    ref.read(themeModeProvider.notifier).state = m;
+                  }
+                },
               ),
-              _GlassDivider(),
-              _SettingsTile(
-                emoji: '🔵',
-                title: 'Bluetooth',
-                subtitle: bleStatus == BleStatus.connected
-                    ? 'Connected'
-                    : 'Not connected',
-                trailing: bleStatus == BleStatus.connected
-                    ? Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 12, vertical: 5),
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(20),
-                    color: const Color(0xFF4DFFA0).withOpacity(0.15),
-                    border: Border.all(
-                      color: const Color(0xFF4DFFA0).withOpacity(0.4),
-                      width: 0.8,
-                    ),
-                  ),
-                  child: const Text(
-                    '● Connected',
-                    style: TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
-                      color: Color(0xFF4DFFA0),
-                    ),
-                  ),
-                )
-                    : _PillButton(
-                  label: 'Connect',
-                  onTap: onConnectBLE,
-                ),
-              ),
-              _GlassDivider(),
-              _SettingsTile(
-                emoji: '🔄',
-                title: 'Manual Refresh',
-                subtitle: 'Pull from BLE / Cloud',
-                trailing: _AnimatedPressWidget(
-                  onTap: () => onRefresh(),
-                  child: Container(
-                    padding: const EdgeInsets.all(8),
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: Theme.of(context)
-                          .colorScheme
-                          .primary
-                          .withOpacity(0.12),
-                    ),
-                    child: Icon(
-                      Icons.refresh_rounded,
-                      size: 20,
-                      color: Theme.of(context).colorScheme.primary,
-                    ),
-                  ),
-                ),
-              ),
-            ],
+            ),
           ),
-        ),
-        const SizedBox(height: 14),
-        _GlassCard(
-          child: Column(
-            children: [
-              _SettingsTile(
-                emoji: '📡',
-                title: 'Provision ESP32',
-                subtitle: 'Setup a new device',
-                trailing: const Icon(Icons.chevron_right_rounded, size: 20),
-                onTap: () {},
+          _SDivider(),
+          _STile(
+            icon: Icons.bluetooth_rounded,
+            title: 'Bluetooth',
+            subtitle: bleStatus == BleStatus.connected ? 'Connected' : 'Not connected',
+            trailing: bleStatus == BleStatus.connected
+                ? Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(20),
+                color: _DT.green.withOpacity(0.15),
+                border: Border.all(color: _DT.green.withOpacity(0.4), width: 0.8),
               ),
-              _GlassDivider(),
-              _SettingsTile(
-                emoji: '📶',
-                title: 'Wi‑Fi Config',
-                subtitle: 'Change network settings',
-                trailing: const Icon(Icons.chevron_right_rounded, size: 20),
-                onTap: () {},
-              ),
-              _GlassDivider(),
-              _SettingsTile(
-                emoji: 'ℹ️',
-                title: 'About',
-                subtitle: 'Smart Home v1.0.0',
-                trailing: const Icon(Icons.chevron_right_rounded, size: 20),
-                onTap: () {},
-              ),
-            ],
+              child: const Text('● Connected',
+                  style: TextStyle(
+                      fontSize: 12, fontWeight: FontWeight.w600, color: _DT.green)),
+            )
+                : _PillBtn(label: 'Connect', onTap: onConnectBLE),
           ),
-        ),
+          _SDivider(),
+          _STile(
+            icon: Icons.refresh_rounded,
+            title: 'Manual Refresh',
+            subtitle: 'Pull from BLE / Cloud',
+            trailing: GestureDetector(
+              onTap: onRefresh,
+              child: Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: _DT.purple.withOpacity(0.15),
+                ),
+                child: const Icon(Icons.refresh_rounded, size: 20, color: _DT.purple),
+              ),
+            ),
+          ),
+        ])),
+        const SizedBox(height: 12),
+        _GCard(child: Column(children: [
+          _STile(
+            icon: Icons.router_rounded,
+            title: 'Provision ESP32',
+            subtitle: 'Setup a new device',
+            trailing: Icon(Icons.chevron_right_rounded, size: 20,
+                color: Theme.of(context).colorScheme.onSurface.withOpacity(0.35)),
+            onTap: () {},
+          ),
+          _SDivider(),
+          _STile(
+            icon: Icons.wifi_rounded,
+            title: 'Wi-Fi Config',
+            subtitle: 'Change network settings',
+            trailing: Icon(Icons.chevron_right_rounded, size: 20,
+                color: Theme.of(context).colorScheme.onSurface.withOpacity(0.35)),
+            onTap: () {},
+          ),
+          _SDivider(),
+          _STile(
+            icon: Icons.info_outline_rounded,
+            title: 'About',
+            subtitle: 'Smart Home v1.0.0',
+            trailing: Icon(Icons.chevron_right_rounded, size: 20,
+                color: Theme.of(context).colorScheme.onSurface.withOpacity(0.35)),
+            onTap: () {},
+          ),
+        ])),
       ],
     );
   }
 }
 
-class _GlassDivider extends StatelessWidget {
+class _SDivider extends StatelessWidget {
   @override
-  Widget build(BuildContext context) {
-    return Container(
-      height: 0.5,
-      margin: const EdgeInsets.symmetric(vertical: 4),
-      color: Theme.of(context).colorScheme.onSurface.withOpacity(0.1),
-    );
-  }
+  Widget build(BuildContext context) => Container(
+    height: 0.5,
+    margin: const EdgeInsets.symmetric(vertical: 4),
+    color: Theme.of(context).colorScheme.onSurface.withOpacity(0.08),
+  );
 }
 
-class _SettingsTile extends StatelessWidget {
-  final String emoji;
-  final String title;
-  final String subtitle;
-  final Widget trailing;
+class _STile extends StatelessWidget {
+  final IconData icon;
+  final String   title;
+  final String   subtitle;
+  final Widget   trailing;
   final VoidCallback? onTap;
 
-  const _SettingsTile({
-    required this.emoji,
+  const _STile({
+    required this.icon,
     required this.title,
     required this.subtitle,
     required this.trailing,
@@ -2204,212 +1902,35 @@ class _SettingsTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final tile = Padding(
       padding: const EdgeInsets.symmetric(vertical: 10),
-      child: Row(
-        children: [
-          Text(emoji, style: const TextStyle(fontSize: 22)),
-          const SizedBox(width: 14),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(title,
-                    style: const TextStyle(
-                        fontSize: 15, fontWeight: FontWeight.w600)),
-                Text(
-                  subtitle,
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: Theme.of(context)
-                        .colorScheme
-                        .onSurface
-                        .withOpacity(0.5),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          trailing,
-        ],
-      ),
-    );
-
-    if (onTap != null) {
-      return _AnimatedPressWidget(onTap: onTap!, child: tile);
-    }
-    return tile;
-  }
-}
-
-// ────────────────────────────────────────────────────────────
-// 10. LIQUID GLASS CARD – enhanced for iOS‑27
-// ────────────────────────────────────────────────────────────
-class _GlassCard extends StatelessWidget {
-  final Widget child;
-  final double blur;
-  final Border? border;
-  final EdgeInsetsGeometry padding;
-  final BorderRadius borderRadius;
-  final bool animateGlow;
-  final Color? glowColor;
-  final bool isActive;
-  final Color? activeColor;
-  final bool dangerBorder;
-
-  const _GlassCard({
-    required this.child,
-    this.blur = 40, // increased for liquid glass
-    this.border,
-    this.padding = const EdgeInsets.all(20),
-    this.borderRadius = const BorderRadius.all(Radius.circular(32)),
-    this.animateGlow = false,
-    this.glowColor,
-    this.isActive = false,
-    this.activeColor,
-    this.dangerBorder = false,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-
-    // Liquid gradient instead of solid color
-    final Gradient baseGradient = isDark
-        ? const LinearGradient(
-      begin: Alignment.topLeft,
-      end: Alignment.bottomRight,
-      colors: [
-        Color(0x20FFFFFF), // 12% white
-        Color(0x05FFFFFF),
-      ],
-    )
-        : const LinearGradient(
-      begin: Alignment.topLeft,
-      end: Alignment.bottomRight,
-      colors: [
-        Color(0x50FFFFFF), // ~31% white
-        Color(0x20FFFFFF),
-      ],
-    );
-
-    Border effectiveBorder;
-    if (border != null) {
-      effectiveBorder = border!;
-    } else if (dangerBorder) {
-      effectiveBorder = Border.all(
-        color: Colors.red.withOpacity(0.5),
-        width: 0.8,
-      );
-    } else if (isActive && activeColor != null) {
-      effectiveBorder = Border.all(
-        color: activeColor!.withOpacity(0.5),
-        width: 1.2,
-      );
-    } else {
-      effectiveBorder = Border.all(
-        color: isDark
-            ? Colors.white.withOpacity(0.1)
-            : Colors.white.withOpacity(0.3),
-        width: 0.8,
-      );
-    }
-
-    final List<BoxShadow> shadows = [
-      BoxShadow(
-        color: isDark
-            ? Colors.black.withOpacity(0.35)
-            : Colors.black.withOpacity(0.06),
-        blurRadius: 24,
-        offset: const Offset(0, 8),
-      ),
-    ];
-    if (animateGlow && glowColor != null) {
-      shadows.add(BoxShadow(
-        color: glowColor!.withOpacity(isDark ? 0.22 : 0.18),
-        blurRadius: 28,
-        spreadRadius: 0,
-      ));
-    }
-    if (isActive && activeColor != null) {
-      shadows.add(BoxShadow(
-        color: activeColor!.withOpacity(0.2),
-        blurRadius: 16,
-        spreadRadius: 0,
-      ));
-    }
-
-    return ClipRRect(
-      borderRadius: borderRadius,
-      child: BackdropFilter(
-        filter: ui.ImageFilter.blur(sigmaX: blur, sigmaY: blur),
-        child: Container(
-          padding: padding,
+      child: Row(children: [
+        Container(
+          width: 36, height: 36,
           decoration: BoxDecoration(
-            gradient: isActive && activeColor != null
-                ? LinearGradient(
-              colors: [
-                activeColor!.withOpacity(isDark ? 0.14 : 0.1),
-                activeColor!.withOpacity(isDark ? 0.05 : 0.02),
-              ],
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-            )
-                : baseGradient,
-            borderRadius: borderRadius,
-            border: effectiveBorder,
-            boxShadow: shadows,
+            borderRadius: BorderRadius.circular(10),
+            color: _DT.purple.withOpacity(0.12),
           ),
-          child: child,
+          child: Icon(icon, color: _DT.purple, size: 18),
         ),
-      ),
+        const SizedBox(width: 12),
+        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(title,
+              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
+          Text(subtitle,
+              style: TextStyle(
+                  fontSize: 12,
+                  color: Theme.of(context).colorScheme.onSurface.withOpacity(0.5))),
+        ])),
+        trailing,
+      ]),
     );
+    return onTap != null
+        ? GestureDetector(onTap: onTap, child: tile)
+        : tile;
   }
 }
 
 // ────────────────────────────────────────────────────────────
-// 11. ANIMATED PRESS WIDGET – optimized (no AnimationController)
-// ────────────────────────────────────────────────────────────
-class _AnimatedPressWidget extends StatefulWidget {
-  final Widget child;
-  final VoidCallback onTap;
-  final double scaleFactor;
-
-  const _AnimatedPressWidget({
-    required this.child,
-    required this.onTap,
-    this.scaleFactor = 0.96,
-  });
-
-  @override
-  State<_AnimatedPressWidget> createState() => _AnimatedPressWidgetState();
-}
-
-class _AnimatedPressWidgetState extends State<_AnimatedPressWidget> {
-  bool _pressed = false;
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTapDown: (_) {
-        setState(() => _pressed = true);
-        HapticFeedback.lightImpact();
-      },
-      onTapUp: (_) {
-        setState(() => _pressed = false);
-        widget.onTap();
-      },
-      onTapCancel: () => setState(() => _pressed = false),
-      child: AnimatedScale(
-        scale: _pressed ? widget.scaleFactor : 1.0,
-        duration: const Duration(milliseconds: 90),
-        curve: Curves.easeInOut,
-        child: widget.child,
-      ),
-    );
-  }
-}
-
-// ────────────────────────────────────────────────────────────
-// 12. SKELETON LOADER (unchanged)
+// 21. SKELETON LOADER
 // ────────────────────────────────────────────────────────────
 class _SkeletonLoader extends StatelessWidget {
   const _SkeletonLoader();
@@ -2422,58 +1943,56 @@ class _SkeletonLoader extends StatelessWidget {
           ? Colors.white.withOpacity(0.06)
           : Colors.black.withOpacity(0.07),
       highlightColor: isDark
-          ? Colors.white.withOpacity(0.13)
+          ? Colors.white.withOpacity(0.12)
           : Colors.black.withOpacity(0.03),
       child: SingleChildScrollView(
         padding: EdgeInsets.only(
           top: MediaQuery.of(context).padding.top + kToolbarHeight + 12,
-          left: 20,
-          right: 20,
-          bottom: 24,
+          left: 20, right: 20, bottom: 100,
         ),
-        child: Column(
-          children: [
-            _SkeletonBox(height: 68, radius: 28),
-            const SizedBox(height: 14),
-            Row(
-              children: [
-                Expanded(child: _SkeletonBox(height: 100, radius: 24)),
-                const SizedBox(width: 12),
-                Expanded(child: _SkeletonBox(height: 100, radius: 24)),
-                const SizedBox(width: 12),
-                Expanded(child: _SkeletonBox(height: 100, radius: 24)),
-              ],
-            ),
-            const SizedBox(height: 14),
-            _SkeletonBox(height: 44, radius: 28),
-            const SizedBox(height: 14),
-            _SkeletonBox(height: 72, radius: 28),
-            const SizedBox(height: 14),
-            _SkeletonBox(height: 56, radius: 28),
-            const SizedBox(height: 22),
-            _SkeletonBox(height: 48, radius: 28),
-            const SizedBox(height: 14),
-            _SkeletonBox(height: 180, radius: 28),
-          ],
-        ),
+        child: Column(children: [
+          _SBox(h: 54, r: 16),
+          const SizedBox(height: 12),
+          Row(children: [
+            Expanded(child: _SBox(h: 90, r: 20)),
+            const SizedBox(width: 10),
+            Expanded(child: _SBox(h: 90, r: 20)),
+            const SizedBox(width: 10),
+            Expanded(child: _SBox(h: 90, r: 20)),
+          ]),
+          const SizedBox(height: 12),
+          _SBox(h: 64, r: 16),
+          const SizedBox(height: 12),
+          _SBox(h: 40, r: 16),
+          const SizedBox(height: 12),
+          Row(children: [
+            Expanded(child: _SBox(h: 160, r: 20)),
+            const SizedBox(width: 12),
+            Expanded(child: _SBox(h: 160, r: 20)),
+          ]),
+          const SizedBox(height: 12),
+          Row(children: [
+            Expanded(child: _SBox(h: 160, r: 20)),
+            const SizedBox(width: 12),
+            Expanded(child: _SBox(h: 160, r: 20)),
+          ]),
+        ]),
       ),
     );
   }
 }
 
-class _SkeletonBox extends StatelessWidget {
-  final double height;
-  final double radius;
-  const _SkeletonBox({required this.height, required this.radius});
+class _SBox extends StatelessWidget {
+  final double h;
+  final double r;
+  const _SBox({required this.h, required this.r});
 
   @override
-  Widget build(BuildContext context) {
-    return Container(
-      height: height,
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(radius),
-      ),
-    );
-  }
+  Widget build(BuildContext context) => Container(
+    height: h,
+    decoration: BoxDecoration(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(r),
+    ),
+  );
 }

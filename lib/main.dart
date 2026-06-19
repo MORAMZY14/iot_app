@@ -1,14 +1,17 @@
+import 'dart:io' show Platform;
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'dart:io' show Platform;
-import 'package:flutter/foundation.dart' show kIsWeb;
+// Import the optimized dashboard file that now exports:
+//   - themeModeProvider
+//   - lightTheme
+//   - darkTheme
 import 'dashboard_page.dart';
 import 'provisioning_page.dart';
-import 'wifi_config_page.dart';      // <-- import your WiFi config page
-// If you also have WifiSetupPage, import it too
+import 'wifi_config_page.dart';
 
-const String appVersion = '1.0.17';
+const String appVersion = '1.0.12';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -22,20 +25,25 @@ void main() async {
   runApp(const ProviderScope(child: MyApp()));
 }
 
-class MyApp extends StatelessWidget {
+class MyApp extends ConsumerWidget {
   const MyApp({super.key});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final themeMode = ref.watch(themeModeProvider);
+
+    // 🔥 Force a rebuild when themeMode changes by using a Key.
     return MaterialApp(
+      key: ValueKey(themeMode),
       title: 'Smart Home',
-      theme: ThemeData(useMaterial3: true),
+      debugShowCheckedModeBanner: false,
+      theme: lightTheme,
+      darkTheme: darkTheme,
+      themeMode: themeMode,
       home: const DashboardPage(),
       routes: {
-        '/provision': (context) => const ProvisionPage(),     // ✅ replaced
-        '/wifiConfig': (context) => const WifiConfigPage(),   // ✅ replaced
-        // If you have a separate setup page:
-        // '/wifiSetup': (context) => const WifiSetupPage(),
+        '/provision': (context) => const ProvisionPage(),
+        '/wifiConfig': (context) => const WifiConfigPage(),
       },
     );
   }
