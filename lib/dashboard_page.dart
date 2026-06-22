@@ -9,7 +9,7 @@ import 'package:shimmer/shimmer.dart';
 import 'ble_service.dart';
 
 // ────────────────────────────────────────────────────────────
-// 0. THEME MANAGEMENT – initialised to "system" for iOS compatibility
+// 0. THEME MANAGEMENT – initialised to "system"
 // ────────────────────────────────────────────────────────────
 final themeModeProvider = StateProvider<ThemeMode>((ref) => ThemeMode.system);
 
@@ -263,7 +263,7 @@ class _Blob extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 6. DASHBOARD PAGE
+// 6. DASHBOARD PAGE – with enhanced glassy transition
 // ────────────────────────────────────────────────────────────
 class DashboardPage extends ConsumerStatefulWidget {
   const DashboardPage({super.key});
@@ -274,6 +274,7 @@ class DashboardPage extends ConsumerStatefulWidget {
 
 class _DashboardPageState extends ConsumerState<DashboardPage> {
   int _selectedIndex = 0;
+  int _previousIndex = 0;
 
   late final List<Widget> _pages = [
     const _HomeContentWrapper(),
@@ -294,6 +295,7 @@ class _DashboardPageState extends ConsumerState<DashboardPage> {
   @override
   Widget build(BuildContext context) {
     final bleService = ref.watch(bleServiceProvider);
+    final isForward = _selectedIndex > _previousIndex;
 
     return Scaffold(
       backgroundColor: Colors.transparent,
@@ -306,11 +308,29 @@ class _DashboardPageState extends ConsumerState<DashboardPage> {
       ),
       body: _WallpaperBackground(
         child: AnimatedSwitcher(
-          duration: const Duration(milliseconds: 350),
+          duration: const Duration(milliseconds: 380),
           switchInCurve: Curves.easeOutCubic,
           switchOutCurve: Curves.easeInCubic,
-          transitionBuilder: (child, anim) =>
-              FadeTransition(opacity: anim, child: child),
+          transitionBuilder: (child, animation) {
+            final offset = isForward ? Offset(1.0, 0.0) : Offset(-1.0, 0.0);
+            return SlideTransition(
+              position: Tween<Offset>(
+                begin: offset,
+                end: Offset.zero,
+              ).animate(
+                CurvedAnimation(parent: animation, curve: Curves.easeOutCubic),
+              ),
+              child: FadeTransition(
+                opacity: animation,
+                child: ScaleTransition(
+                  scale: Tween<double>(begin: 0.93, end: 1.0).animate(
+                    CurvedAnimation(parent: animation, curve: Curves.easeOutCubic),
+                  ),
+                  child: child,
+                ),
+              ),
+            );
+          },
           child: _pages[_selectedIndex],
         ),
       ),
@@ -319,9 +339,20 @@ class _DashboardPageState extends ConsumerState<DashboardPage> {
         _showSnack(context, 'Quick actions coming soon', color: _DT.purple);
       }),
       floatingActionButtonLocation: FloatingActionButtonLocation.centerDocked,
-      bottomNavigationBar: _GlassBottomNav(
-        selectedIndex: _selectedIndex,
-        onTap: (i) => setState(() => _selectedIndex = i),
+      bottomNavigationBar: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(30.0),
+          child: _GlassBottomNav(
+            selectedIndex: _selectedIndex,
+            onTap: (i) {
+              setState(() {
+                _previousIndex = _selectedIndex;
+                _selectedIndex = i;
+              });
+            },
+          ),
+        ),
       ),
     );
   }
@@ -361,9 +392,9 @@ class _PurpleFab extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 7. GLASS APP BAR
+// 7. GLASS APP BAR (now a ConsumerWidget)
 // ────────────────────────────────────────────────────────────
-class _GlassAppBar extends StatelessWidget implements PreferredSizeWidget {
+class _GlassAppBar extends ConsumerWidget implements PreferredSizeWidget {
   final Future<void> Function() onRefresh;
   final BleStatus bleStatus;
   final VoidCallback onConnectBLE;
@@ -374,8 +405,14 @@ class _GlassAppBar extends StatelessWidget implements PreferredSizeWidget {
     required this.onConnectBLE,
   });
 
+  void _toggleTheme(WidgetRef ref) {
+    final current = ref.read(themeModeProvider);
+    final next = current == ThemeMode.light ? ThemeMode.dark : ThemeMode.light;
+    ref.read(themeModeProvider.notifier).state = next;
+  }
+
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
     return ClipRect(
@@ -412,16 +449,18 @@ class _GlassAppBar extends StatelessWidget implements PreferredSizeWidget {
             ),
             actions: [
               _ABBtn(
-                onTap: () {},
+                onTap: () => _toggleTheme(ref),
                 child: Container(
                   width: 36, height: 36,
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
                     color: isDark ? Colors.white.withOpacity(0.08) : Colors.black.withOpacity(0.06),
                   ),
-                  child: Icon(Icons.sunny,
-                      size: 18,
-                      color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7)),
+                  child: Icon(
+                    isDark ? Icons.dark_mode_rounded : Icons.light_mode_rounded,
+                    size: 18,
+                    color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
+                  ),
                 ),
               ),
               const SizedBox(width: 6),
@@ -528,7 +567,7 @@ class _HomeContentWrapperState extends ConsumerState<_HomeContentWrapper> {
 }
 
 // ────────────────────────────────────────────────────────────
-// 9. HOME CONTENT
+// 9. HOME CONTENT (with optimistic light toggles)
 // ────────────────────────────────────────────────────────────
 class _HomeContent extends ConsumerStatefulWidget {
   final AsyncValue<Map<String, dynamic>> dataAsync;
@@ -555,6 +594,9 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
   double _ceilingBrightness  = 0.8;
   bool _bathroomLightOn = false;
 
+  // Local copy of light states for optimistic updates
+  Map<String, bool> _lightStates = {};
+
   String? _lightKeyForRoom(String room) {
     switch (room) {
       case 'Living Room': return 'room1';
@@ -566,16 +608,29 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
 
   bool _getLightState(String? key) {
     if (key == null) return false;
-    final data   = widget.dataAsync.value;
-    final lights = (data?['lights'] as Map?) ?? {};
-    return lights[key] == true;
+    return _lightStates[key] ?? false;
   }
 
   Future<void> _toggleRoomLight(String room) async {
     final key = _lightKeyForRoom(room);
-    if (key != null) {
-      final cur = _getLightState(key);
-      await ref.read(lightToggleProvider).toggle(key, !cur, context);
+    if (key == null) return;
+
+    final current = _lightStates[key] ?? false;
+    final newValue = !current;
+
+    // Optimistic update
+    setState(() {
+      _lightStates[key] = newValue;
+    });
+
+    try {
+      await ref.read(lightToggleProvider).toggle(key, newValue, context);
+    } catch (e) {
+      // Revert on error
+      setState(() {
+        _lightStates[key] = current;
+      });
+      // error snack already shown by service
     }
   }
 
@@ -612,6 +667,10 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
       color: _DT.purple,
       child: widget.dataAsync.when(
         data: (data) {
+          // Update local light states from the latest data
+          final lights = (data['lights'] as Map?) ?? {};
+          _lightStates = Map<String, bool>.from(lights.map((k, v) => MapEntry(k, v == true)));
+
           final sensors     = (data['sensors'] as Map?) ?? {};
           final temp        = (sensors['temperature'] ?? 0.0).toDouble();
           final hum         = (sensors['humidity']    ?? 0.0).toDouble();
@@ -634,14 +693,12 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
           return SingleChildScrollView(
             physics: const AlwaysScrollableScrollPhysics(),
             padding: EdgeInsets.only(
-              // 🔥 FIX: reduced top padding to eliminate the huge gap
               top: MediaQuery.of(context).padding.top + kToolbarHeight - 20,
               left: hp, right: hp, bottom: 100,
             ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // Removed the extra SizedBox(height: 8) to bring content closer
                 _EspBar(online: online, ip: ip, ping: ping, rssi: rssi),
                 const SizedBox(height: 14),
                 _StatsRow(temp: temp, hum: hum, todayKw: todayKw),
@@ -1469,7 +1526,7 @@ class _PillBtn extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 17. GLASS BOTTOM NAV
+// 17. GLASS BOTTOM NAV – with sliding pill indicator (iOS 26 style)
 // ────────────────────────────────────────────────────────────
 class _GlassBottomNav extends StatelessWidget {
   final int selectedIndex;
@@ -1483,69 +1540,177 @@ class _GlassBottomNav extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
+    final screenWidth = MediaQuery.of(context).size.width;
+    const gap = 64.0; // space for FAB
+    const horizontalPadding = 16.0; // from parent Padding
+    final navWidth = screenWidth - horizontalPadding * 2;
+    final itemWidth = (navWidth - gap) / 4;
+    const pillWidth = 50.0;
+    const pillHeight = 36.0;
 
-    final leftItems  = [(Icons.home_rounded, 'Home', 0), (Icons.bolt_rounded, 'Energy', 1)];
-    final rightItems = [(Icons.notifications_rounded, 'Alerts', 2), (Icons.settings_rounded, 'Settings', 3)];
+    // Calculate pill left offset based on selected index
+    double pillLeft;
+    switch (selectedIndex) {
+      case 0:
+        pillLeft = (itemWidth - pillWidth) / 2;
+        break;
+      case 1:
+        pillLeft = itemWidth + (itemWidth - pillWidth) / 2;
+        break;
+      case 2:
+        pillLeft = 2 * itemWidth + gap + (itemWidth - pillWidth) / 2;
+        break;
+      case 3:
+        pillLeft = 3 * itemWidth + gap + (itemWidth - pillWidth) / 2;
+        break;
+      default:
+        pillLeft = 0;
+    }
 
-    Widget _navItem(IconData icon, String label, int index) {
-      final selected = selectedIndex == index;
-      return GestureDetector(
+    final items = [
+      (Icons.home_rounded, 'Home'),
+      (Icons.bolt_rounded, 'Energy'),
+      (Icons.notifications_rounded, 'Alerts'),
+      (Icons.settings_rounded, 'Settings'),
+    ];
+
+    return Container(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(30.0),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.15),
+            blurRadius: 20,
+            offset: const Offset(0, -4),
+          ),
+        ],
+      ),
+      child: ClipRect(
+        child: BackdropFilter(
+          filter: ui.ImageFilter.blur(sigmaX: 32, sigmaY: 32),
+          child: Container(
+            height: 60,
+            decoration: BoxDecoration(
+              color: isDark ? Colors.black.withOpacity(0.25) : Colors.white.withOpacity(0.45),
+              borderRadius: BorderRadius.circular(30.0),
+              border: Border.all(
+                color: isDark ? Colors.white.withOpacity(0.08) : Colors.black.withOpacity(0.05),
+                width: 0.5,
+              ),
+            ),
+            child: Stack(
+              children: [
+                // Glassy pill indicator
+                AnimatedPositioned(
+                  duration: const Duration(milliseconds: 300),
+                  curve: Curves.easeInOut,
+                  left: pillLeft,
+                  top: (60 - pillHeight) / 2,
+                  width: pillWidth,
+                  height: pillHeight,
+                  child: Container(
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(20),
+                      gradient: LinearGradient(
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                        colors: [
+                          _DT.purple.withOpacity(0.35),
+                          _DT.purpleLight.withOpacity(0.15),
+                        ],
+                      ),
+                      border: Border.all(
+                        color: _DT.purple.withOpacity(0.25),
+                        width: 0.5,
+                      ),
+                      boxShadow: [
+                        BoxShadow(
+                          color: _DT.purple.withOpacity(0.15),
+                          blurRadius: 12,
+                          offset: const Offset(0, 2),
+                        ),
+                      ],
+                    ),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(20),
+                      child: BackdropFilter(
+                        filter: ui.ImageFilter.blur(sigmaX: 8, sigmaY: 8),
+                        child: Container(),
+                      ),
+                    ),
+                  ),
+                ),
+                // Row of items
+                Row(
+                  children: [
+                    ...items.sublist(0, 2).map((e) => _buildNavItem(
+                      context,            // <-- pass context here
+                      e.$1,
+                      e.$2,
+                      items.indexOf(e),
+                      itemWidth,
+                    )),
+                    SizedBox(width: gap),
+                    ...items.sublist(2).map((e) => _buildNavItem(
+                      context,            // <-- and here
+                      e.$1,
+                      e.$2,
+                      items.indexOf(e),
+                      itemWidth,
+                    )),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // Added BuildContext as first parameter
+  Widget _buildNavItem(
+      BuildContext context,
+      IconData icon,
+      String label,
+      int index,
+      double itemWidth,
+      ) {
+    final selected = selectedIndex == index;
+    return Expanded(
+      flex: 1,
+      child: GestureDetector(
         onTap: () {
           HapticFeedback.selectionClick();
           onTap(index);
         },
         behavior: HitTestBehavior.opaque,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-          child: Column(mainAxisSize: MainAxisSize.min, children: [
-            Icon(icon,
+        child: Container(
+          width: itemWidth,
+          alignment: Alignment.center,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(
+                icon,
                 size: 24,
                 color: selected
                     ? _DT.purple
-                    : Theme.of(context).colorScheme.onSurface.withOpacity(0.4)),
-            const SizedBox(height: 3),
-            Text(label,
+                    : Theme.of(context).colorScheme.onSurface.withOpacity(0.4),
+              ),
+              const SizedBox(height: 3),
+              Text(
+                label,
                 style: TextStyle(
-                    fontSize: 10,
-                    fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
-                    color: selected
-                        ? _DT.purple
-                        : Theme.of(context).colorScheme.onSurface.withOpacity(0.4))),
-          ]),
-        ),
-      );
-    }
-
-    return ClipRect(
-      child: BackdropFilter(
-        filter: ui.ImageFilter.blur(sigmaX: 32, sigmaY: 32),
-        child: Container(
-          decoration: BoxDecoration(
-            color: isDark
-                ? Colors.black.withOpacity(0.25)
-                : Colors.white.withOpacity(0.45),
-            border: Border(
-              top: BorderSide(
-                color: isDark
-                    ? Colors.white.withOpacity(0.08)
-                    : Colors.black.withOpacity(0.05),
-                width: 0.5,
+                  fontSize: 10,
+                  fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                  color: selected
+                      ? _DT.purple
+                      : Theme.of(context).colorScheme.onSurface.withOpacity(0.4),
+                ),
               ),
-            ),
-          ),
-          child: SafeArea(
-            top: false,
-            child: SizedBox(
-              height: 60,
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceAround,
-                children: [
-                  ...leftItems.map((e) => _navItem(e.$1, e.$2, e.$3)),
-                  const SizedBox(width: 64),
-                  ...rightItems.map((e) => _navItem(e.$1, e.$2, e.$3)),
-                ],
-              ),
-            ),
+            ],
           ),
         ),
       ),
@@ -1758,7 +1923,7 @@ class _AlertsScreen extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 20. SETTINGS SCREEN – now a ConsumerWidget
+// 20. SETTINGS SCREEN
 // ────────────────────────────────────────────────────────────
 class _SettingsScreen extends ConsumerWidget {
   const _SettingsScreen({super.key});
