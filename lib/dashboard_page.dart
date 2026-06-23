@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:async';
+import 'dart:math' as math;
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -9,7 +10,7 @@ import 'package:shimmer/shimmer.dart';
 import 'ble_service.dart';
 
 // ────────────────────────────────────────────────────────────
-// 0. THEME MANAGEMENT – initialised to "system"
+// 0. THEME MANAGEMENT
 // ────────────────────────────────────────────────────────────
 final themeModeProvider = StateProvider<ThemeMode>((ref) => ThemeMode.system);
 
@@ -41,26 +42,87 @@ final darkTheme = ThemeData(
 // 1. DESIGN TOKENS
 // ────────────────────────────────────────────────────────────
 class _DT {
-  static const bgDark        = Color(0xFF0B0D1A);
-  static const cardDark      = Color(0xFF141728);
-  static const cardBorderDk  = Color(0xFF1E2140);
-  static const cardActiveDk  = Color(0xFF1A1D35);
-  static const bgLight       = Color(0xFFF0F2FF);
-  static const cardLight     = Color(0xFFFFFFFF);
-  static const cardBorderLt  = Color(0xFFE4E7FF);
-  static const purple        = Color(0xFF6C63FF);
-  static const purpleLight   = Color(0xFF9B94FF);
-  static const green         = Color(0xFF4DFFA0);
-  static const greenDim      = Color(0xFF1A3A2A);
-  static const amber         = Color(0xFFFFB347);
-  static const blue          = Color(0xFF64B5F6);
-  static const red           = Color(0xFFFF5252);
-  static const espConnected  = Color(0xFF4DFFA0);
-  static const espDot        = Color(0xFF4DFFA0);
+  static const bgDark = Color(0xFF0B0D1A);
+  static const cardDark = Color(0xFF141728);
+  static const cardBorderDk = Color(0xFF1E2140);
+  static const cardActiveDk = Color(0xFF1A1D35);
+  static const bgLight = Color(0xFFF0F2FF);
+  static const cardLight = Color(0xFFFFFFFF);
+  static const cardBorderLt = Color(0xFFE4E7FF);
+  static const purple = Color(0xFF6C63FF);
+  static const purpleLight = Color(0xFF9B94FF);
+  static const green = Color(0xFF4DFFA0);
+  static const greenDim = Color(0xFF1A3A2A);
+  static const amber = Color(0xFFFFB347);
+  static const blue = Color(0xFF64B5F6);
+  static const red = Color(0xFFFF5252);
+  static const espConnected = Color(0xFF4DFFA0);
+  static const espDot = Color(0xFF4DFFA0);
 }
 
 // ────────────────────────────────────────────────────────────
-// 2. HTTP POLLING SERVICE
+// 2. RESPONSIVE HELPER
+// ────────────────────────────────────────────────────────────
+class ResponsiveHelper {
+  static bool isMobile(BuildContext context) =>
+      MediaQuery.of(context).size.width < 600;
+
+  static bool isTablet(BuildContext context) =>
+      MediaQuery.of(context).size.width >= 600 &&
+          MediaQuery.of(context).size.width < 1200;
+
+  static bool isDesktop(BuildContext context) =>
+      MediaQuery.of(context).size.width >= 1200;
+
+  static double getPadding(BuildContext context) {
+    if (isDesktop(context)) return 40.0;
+    if (isTablet(context)) return 30.0;
+    return 20.0;
+  }
+
+  static int getGridColumns(BuildContext context) {
+    if (isDesktop(context)) return 4;
+    if (isTablet(context)) return 3;
+    return 2;
+  }
+}
+
+// ────────────────────────────────────────────────────────────
+// 3. CACHED HTTP SERVICE
+// ────────────────────────────────────────────────────────────
+class CacheService {
+  static final CacheService _instance = CacheService._internal();
+  factory CacheService() => _instance;
+  CacheService._internal();
+
+  final Map<String, _CacheEntry> _cache = {};
+  final Duration _ttl = const Duration(seconds: 5);
+
+  void set(String key, dynamic data) {
+    _cache[key] = _CacheEntry(data, DateTime.now().add(_ttl));
+  }
+
+  dynamic get(String key) {
+    final entry = _cache[key];
+    if (entry == null) return null;
+    if (DateTime.now().isAfter(entry.expiry)) {
+      _cache.remove(key);
+      return null;
+    }
+    return entry.data;
+  }
+
+  void clear() => _cache.clear();
+}
+
+class _CacheEntry {
+  final dynamic data;
+  final DateTime expiry;
+  _CacheEntry(this.data, this.expiry);
+}
+
+// ────────────────────────────────────────────────────────────
+// 4. HTTP POLLING SERVICE WITH CACHING
 // ────────────────────────────────────────────────────────────
 final databaseUrlProvider = Provider((ref) =>
 'https://iot-smart-home-81abd-default-rtdb.europe-west1.firebasedatabase.app');
@@ -68,14 +130,32 @@ final databaseUrlProvider = Provider((ref) =>
 final httpDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
   final url = ref.watch(databaseUrlProvider);
   final controller = StreamController<Map<String, dynamic>>();
+  final cache = CacheService();
   Timer? timer;
   bool isFetching = false;
+  int retryCount = 0;
+  final maxRetries = 3;
 
   Future<void> fetchData() async {
     if (isFetching) return;
     isFetching = true;
     try {
-      final response = await http.get(Uri.parse('$url/smartHome.json'));
+      // Check cache first
+      final cached = cache.get('smartHome');
+      if (cached != null) {
+        controller.add(cached as Map<String, dynamic>);
+        isFetching = false;
+        retryCount = 0;
+        return;
+      }
+
+      final response = await http.get(
+        Uri.parse('$url/smartHome.json'),
+        headers: {
+          'Cache-Control': 'no-cache',
+        },
+      ).timeout(const Duration(seconds: 5));
+
       if (response.statusCode == 200) {
         final jsonData = jsonDecode(response.body);
         if (jsonData != null) {
@@ -84,58 +164,107 @@ final httpDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
           final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
           status['online'] = (now - lastSeen) < 10 && lastSeen > 0;
           jsonData['status'] = status;
+          cache.set('smartHome', jsonData);
           controller.add(jsonData);
+          retryCount = 0;
         }
+      } else if (retryCount < maxRetries) {
+        retryCount++;
+        // Exponential backoff
+        await Future.delayed(Duration(milliseconds: 500 * retryCount));
+        return fetchData();
       }
-    } catch (_) {}
-    finally { isFetching = false; }
+    } catch (_) {
+      if (retryCount < maxRetries) {
+        retryCount++;
+        await Future.delayed(Duration(milliseconds: 500 * retryCount));
+        return fetchData();
+      }
+    } finally {
+      isFetching = false;
+    }
   }
 
   fetchData();
-  timer = Timer.periodic(const Duration(seconds: 2), (_) => fetchData());
-  ref.onDispose(() { timer?.cancel(); controller.close(); });
+  timer = Timer.periodic(const Duration(seconds: 3), (_) => fetchData());
+  ref.onDispose(() {
+    timer?.cancel();
+    controller.close();
+    cache.clear();
+  });
   return controller.stream;
 });
 
 // ────────────────────────────────────────────────────────────
-// 3. BLE + HTTP MERGED DATA PROVIDER
+// 5. BLE + HTTP MERGED DATA PROVIDER WITH CACHING
 // ────────────────────────────────────────────────────────────
 final bleServiceProvider = Provider<BleService>((ref) => BleService());
 
 final smartHomeDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
-  final bleService  = ref.watch(bleServiceProvider);
-  final httpStream  = ref.watch(httpDataProvider.stream);
-  final controller  = StreamController<Map<String, dynamic>>();
+  final bleService = ref.watch(bleServiceProvider);
+  final httpStream = ref.watch(httpDataProvider.stream);
+  final controller = StreamController<Map<String, dynamic>>();
   late StreamSubscription bleStatusSub;
   late StreamSubscription httpSub;
+  final cache = CacheService();
+  bool hasInitialData = false;
 
   Map<String, dynamic> currentData = {
     'sensors': {'temperature': 0.0, 'humidity': 0.0, 'flame': false},
-    'lights':  {'room1': false, 'room2': false, 'room3': false},
-    'status':  {'online': false},
+    'lights': {'room1': false, 'room2': false, 'room3': false},
+    'status': {'online': false},
   };
 
   void updateFromBle() {
     if (bleService.currentStatus == BleStatus.connected) {
       currentData['sensors'] = {
         'temperature': bleService.temperature,
-        'humidity':    bleService.humidity,
-        'flame':       bleService.flameDetected,
+        'humidity': bleService.humidity,
+        'flame': bleService.flameDetected,
       };
       currentData['lights'] = Map.from(bleService.lights);
       currentData['status']['online'] = true;
-      controller.add(currentData);
+      cache.set('bleData', currentData);
+      if (!controller.isClosed) {
+        controller.add(currentData);
+      }
+      hasInitialData = true;
     }
   }
 
   void updateFromHttp(Map<String, dynamic> httpData) {
     if (bleService.currentStatus != BleStatus.connected) {
+      final cachedBle = cache.get('bleData');
+      if (cachedBle != null) {
+        currentData = Map<String, dynamic>.from(cachedBle as Map);
+        currentData['status'] = httpData['status'] ?? currentData['status'];
+        if (!controller.isClosed) {
+          controller.add(currentData);
+        }
+        return;
+      }
       currentData = httpData;
-      controller.add(currentData);
+      if (!controller.isClosed) {
+        controller.add(currentData);
+      }
     } else if (httpData.containsKey('status')) {
       currentData['status'] = httpData['status'];
-      controller.add(currentData);
+      if (!controller.isClosed) {
+        controller.add(currentData);
+      }
     }
+    hasInitialData = true;
+  }
+
+  // Try to load cached data initially
+  final cachedData = cache.get('bleData');
+  if (cachedData != null) {
+    currentData = Map<String, dynamic>.from(cachedData as Map);
+    Future.microtask(() {
+      if (!controller.isClosed) {
+        controller.add(currentData);
+      }
+    });
   }
 
   bleStatusSub = bleService.statusStream.listen((status) {
@@ -147,7 +276,24 @@ final smartHomeDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
   });
 
   httpSub = httpStream.listen(updateFromHttp);
-  bleService.connect();
+
+  // Connect BLE with retry
+  Future<void> connectWithRetry() async {
+    int attempts = 0;
+    while (attempts < 3) {
+      try {
+        await bleService.connect();
+        break;
+      } catch (_) {
+        attempts++;
+        if (attempts < 3) {
+          await Future.delayed(Duration(seconds: attempts));
+        }
+      }
+    }
+  }
+
+  connectWithRetry();
 
   ref.onDispose(() {
     bleStatusSub.cancel();
@@ -160,7 +306,7 @@ final smartHomeDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
 });
 
 // ────────────────────────────────────────────────────────────
-// 4. LIGHT TOGGLE SERVICE
+// 6. LIGHT TOGGLE SERVICE WITH OPTIMIZED FEEDBACK
 // ────────────────────────────────────────────────────────────
 final lightToggleProvider = Provider((ref) => LightToggleService(ref));
 
@@ -170,7 +316,7 @@ class LightToggleService {
 
   Future<void> toggle(String room, bool value, BuildContext context) async {
     final bleService = _ref.read(bleServiceProvider);
-    final url        = _ref.read(databaseUrlProvider);
+    final url = _ref.read(databaseUrlProvider);
 
     if (bleService.currentStatus == BleStatus.connected) {
       try {
@@ -178,15 +324,21 @@ class LightToggleService {
         HapticFeedback.lightImpact();
         return;
       } catch (e) {
-        if (context.mounted) _showSnack(context, 'BLE error, using Wi-Fi: $e', color: Colors.orange);
+        if (context.mounted) {
+          _showSnack(context, 'BLE error, using Wi-Fi: $e',
+              color: Colors.orange);
+        }
       }
     }
 
     try {
-      final response = await http.patch(
+      final response = await http
+          .patch(
         Uri.parse('$url/smartHome/lights.json'),
         body: jsonEncode({room: value}),
-      );
+      )
+          .timeout(const Duration(seconds: 5));
+
       if (response.statusCode == 200) {
         HapticFeedback.lightImpact();
         _ref.invalidate(httpDataProvider);
@@ -200,18 +352,20 @@ class LightToggleService {
   }
 }
 
-void _showSnack(BuildContext context, String msg, {Color color = Colors.white}) {
+void _showSnack(BuildContext context, String msg,
+    {Color color = Colors.white}) {
   ScaffoldMessenger.of(context).showSnackBar(SnackBar(
     content: Text(msg, style: const TextStyle(color: Colors.white)),
     backgroundColor: color.withOpacity(0.9),
     behavior: SnackBarBehavior.floating,
     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
     margin: const EdgeInsets.all(16),
+    duration: const Duration(seconds: 2),
   ));
 }
 
 // ────────────────────────────────────────────────────────────
-// 5. WALLPAPER BACKGROUND
+// 7. WALLPAPER BACKGROUND (OPTIMIZED)
 // ────────────────────────────────────────────────────────────
 class _WallpaperBackground extends StatelessWidget {
   final Widget child;
@@ -222,26 +376,48 @@ class _WallpaperBackground extends StatelessWidget {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final w = MediaQuery.of(context).size.width;
 
-    return Stack(children: [
-      Container(
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: isDark
-                ? const [Color(0xFF0B0D1A), Color(0xFF0F1228), Color(0xFF0B0D1A)]
-                : const [Color(0xFFF0F2FF), Color(0xFFEEEBFF), Color(0xFFF0F4FF)],
+    return RepaintBoundary(
+      child: Stack(children: [
+        Container(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: isDark
+                  ? const [
+                Color(0xFF0B0D1A),
+                Color(0xFF0F1228),
+                Color(0xFF0B0D1A)
+              ]
+                  : const [
+                Color(0xFFF0F2FF),
+                Color(0xFFEEEBFF),
+                Color(0xFFF0F4FF)
+              ],
+            ),
           ),
         ),
-      ),
-      Positioned(top: -100, left: -80,
-          child: _Blob(color: isDark ? const Color(0xFF1A1060) : const Color(0xFFCCC8FF), size: w * 0.9)),
-      Positioned(top: 300, right: -100,
-          child: _Blob(color: isDark ? const Color(0xFF2A0D50) : const Color(0xFFE8D8FF), size: w * 0.75)),
-      Positioned(bottom: 80, left: 0,
-          child: _Blob(color: isDark ? const Color(0xFF0A2A1A) : const Color(0xFFBEF0D8), size: w * 0.6)),
-      child,
-    ]);
+        Positioned(
+            top: -100,
+            left: -80,
+            child: _Blob(
+                color: isDark ? const Color(0xFF1A1060) : const Color(0xFFCCC8FF),
+                size: w * 0.9)),
+        Positioned(
+            top: 300,
+            right: -100,
+            child: _Blob(
+                color: isDark ? const Color(0xFF2A0D50) : const Color(0xFFE8D8FF),
+                size: w * 0.75)),
+        Positioned(
+            bottom: 80,
+            left: 0,
+            child: _Blob(
+                color: isDark ? const Color(0xFF0A2A1A) : const Color(0xFFBEF0D8),
+                size: w * 0.6)),
+        child,
+      ]),
+    );
   }
 }
 
@@ -252,7 +428,8 @@ class _Blob extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Container(
-    width: size, height: size,
+    width: size,
+    height: size,
     decoration: BoxDecoration(
       shape: BoxShape.circle,
       gradient: RadialGradient(
@@ -263,7 +440,7 @@ class _Blob extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 6. DASHBOARD PAGE – with enhanced glassy transition
+// 8. DASHBOARD PAGE (OPTIMIZED)
 // ────────────────────────────────────────────────────────────
 class DashboardPage extends ConsumerStatefulWidget {
   const DashboardPage({super.key});
@@ -272,30 +449,35 @@ class DashboardPage extends ConsumerStatefulWidget {
   ConsumerState<DashboardPage> createState() => _DashboardPageState();
 }
 
-class _DashboardPageState extends ConsumerState<DashboardPage> {
+class _DashboardPageState extends ConsumerState<DashboardPage>
+    with SingleTickerProviderStateMixin {
   int _selectedIndex = 0;
   int _previousIndex = 0;
+  late final List<Widget> _pages;
 
-  late final List<Widget> _pages = [
-    const _HomeContentWrapper(),
-    const _EnergyScreen(),
-    const _AlertsScreen(),
-    const _SettingsScreen(),
-  ];
+  @override
+  void initState() {
+    super.initState();
+    _pages = [
+      const _HomeContentWrapper(),
+      const _EnergyScreen(),
+      const _AlertsScreen(),
+      const _SettingsScreen(),
+    ];
+  }
 
   Future<void> _manualRefresh() async {
     final bleService = ref.read(bleServiceProvider);
     await bleService.connect();
     ref.invalidate(httpDataProvider);
-    if (mounted) {
-      _showSnack(context, 'Refreshed ✓', color: _DT.green);
-    }
+    if (mounted) _showSnack(context, 'Refreshed ✓', color: _DT.green);
   }
 
   @override
   Widget build(BuildContext context) {
     final bleService = ref.watch(bleServiceProvider);
     final isForward = _selectedIndex > _previousIndex;
+    final isDesktop = ResponsiveHelper.isDesktop(context);
 
     return Scaffold(
       backgroundColor: Colors.transparent,
@@ -308,25 +490,25 @@ class _DashboardPageState extends ConsumerState<DashboardPage> {
       ),
       body: _WallpaperBackground(
         child: AnimatedSwitcher(
-          duration: const Duration(milliseconds: 380),
+          duration: const Duration(milliseconds: 300),
           switchInCurve: Curves.easeOutCubic,
           switchOutCurve: Curves.easeInCubic,
           transitionBuilder: (child, animation) {
-            final offset = isForward ? Offset(1.0, 0.0) : Offset(-1.0, 0.0);
+            final offset = isForward
+                ? const Offset(1.0, 0.0)
+                : const Offset(-1.0, 0.0);
             return SlideTransition(
-              position: Tween<Offset>(
-                begin: offset,
-                end: Offset.zero,
-              ).animate(
+              position: Tween<Offset>(begin: offset, end: Offset.zero).animate(
                 CurvedAnimation(parent: animation, curve: Curves.easeOutCubic),
               ),
               child: FadeTransition(
                 opacity: animation,
                 child: ScaleTransition(
-                  scale: Tween<double>(begin: 0.93, end: 1.0).animate(
-                    CurvedAnimation(parent: animation, curve: Curves.easeOutCubic),
+                  scale: Tween<double>(begin: 0.95, end: 1.0).animate(
+                    CurvedAnimation(
+                        parent: animation, curve: Curves.easeOutCubic),
                   ),
-                  child: child,
+                  child: RepaintBoundary(child: child),
                 ),
               ),
             );
@@ -334,31 +516,33 @@ class _DashboardPageState extends ConsumerState<DashboardPage> {
           child: _pages[_selectedIndex],
         ),
       ),
-      floatingActionButton: _PurpleFab(onTap: () {
+      floatingActionButton: isDesktop ? null : _PurpleFab(onTap: () {
         HapticFeedback.mediumImpact();
         _showSnack(context, 'Quick actions coming soon', color: _DT.purple);
       }),
-      floatingActionButtonLocation: FloatingActionButtonLocation.centerDocked,
-      bottomNavigationBar: Padding(
+      floatingActionButtonLocation:
+      isDesktop ? null : FloatingActionButtonLocation.centerDocked,
+      bottomNavigationBar: isDesktop
+          ? null
+          : Padding(
         padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(30.0),
-          child: _GlassBottomNav(
-            selectedIndex: _selectedIndex,
-            onTap: (i) {
-              setState(() {
-                _previousIndex = _selectedIndex;
-                _selectedIndex = i;
-              });
-            },
-          ),
+        child: _GlassBottomNav(
+          selectedIndex: _selectedIndex,
+          onTap: (i) {
+            setState(() {
+              _previousIndex = _selectedIndex;
+              _selectedIndex = i;
+            });
+          },
         ),
       ),
     );
   }
 }
 
-// Purple FAB
+// ────────────────────────────────────────────────────────────
+// 9. PURPLE FAB
+// ────────────────────────────────────────────────────────────
 class _PurpleFab extends StatelessWidget {
   final VoidCallback onTap;
   const _PurpleFab({required this.onTap});
@@ -392,7 +576,7 @@ class _PurpleFab extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 7. GLASS APP BAR (now a ConsumerWidget)
+// 10. GLASS APP BAR (OPTIMIZED)
 // ────────────────────────────────────────────────────────────
 class _GlassAppBar extends ConsumerWidget implements PreferredSizeWidget {
   final Future<void> Function() onRefresh;
@@ -417,11 +601,14 @@ class _GlassAppBar extends ConsumerWidget implements PreferredSizeWidget {
 
     return ClipRect(
       child: BackdropFilter(
-        filter: ui.ImageFilter.blur(sigmaX: 32, sigmaY: 32),
+        filter: ui.ImageFilter.blur(sigmaX: 20, sigmaY: 20),
         child: Container(
-          color: isDark ? Colors.black.withOpacity(0.18) : Colors.white.withOpacity(0.35),
+          color: isDark
+              ? Colors.black.withOpacity(0.15)
+              : Colors.white.withOpacity(0.3),
           child: AppBar(
             backgroundColor: Colors.transparent,
+            elevation: 0,
             leading: Padding(
               padding: const EdgeInsets.only(left: 16),
               child: CircleAvatar(
@@ -440,56 +627,73 @@ class _GlassAppBar extends ConsumerWidget implements PreferredSizeWidget {
                 Text(_formattedDate(),
                     style: TextStyle(
                         fontSize: 11,
-                        color: Theme.of(context).colorScheme.onSurface.withOpacity(0.5),
+                        color: Theme.of(context)
+                            .colorScheme
+                            .onSurface
+                            .withOpacity(0.5),
                         fontWeight: FontWeight.w500)),
                 Text(_greeting(),
                     style: const TextStyle(
-                        fontSize: 18, fontWeight: FontWeight.w700, height: 1.2)),
+                        fontSize: 18,
+                        fontWeight: FontWeight.w700,
+                        height: 1.2)),
               ],
             ),
             actions: [
               _ABBtn(
                 onTap: () => _toggleTheme(ref),
                 child: Container(
-                  width: 36, height: 36,
+                  width: 36,
+                  height: 36,
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
-                    color: isDark ? Colors.white.withOpacity(0.08) : Colors.black.withOpacity(0.06),
+                    color: isDark
+                        ? Colors.white.withOpacity(0.08)
+                        : Colors.black.withOpacity(0.06),
                   ),
                   child: Icon(
-                    isDark ? Icons.dark_mode_rounded : Icons.light_mode_rounded,
+                    isDark
+                        ? Icons.dark_mode_rounded
+                        : Icons.light_mode_rounded,
                     size: 18,
-                    color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
+                    color: Theme.of(context)
+                        .colorScheme
+                        .onSurface
+                        .withOpacity(0.7),
                   ),
                 ),
               ),
               const SizedBox(width: 6),
               _ABBtn(
                 onTap: () {},
-                child: Stack(
-                  children: [
-                    Container(
-                      width: 36, height: 36,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: isDark ? Colors.white.withOpacity(0.08) : Colors.black.withOpacity(0.06),
-                      ),
-                      child: Icon(Icons.notifications_outlined,
-                          size: 18,
-                          color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7)),
+                child: Stack(children: [
+                  Container(
+                    width: 36,
+                    height: 36,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: isDark
+                          ? Colors.white.withOpacity(0.08)
+                          : Colors.black.withOpacity(0.06),
                     ),
-                    Positioned(
-                      top: 6, right: 6,
-                      child: Container(
-                        width: 8, height: 8,
-                        decoration: const BoxDecoration(
-                          shape: BoxShape.circle,
-                          color: _DT.red,
-                        ),
-                      ),
+                    child: Icon(Icons.notifications_outlined,
+                        size: 18,
+                        color: Theme.of(context)
+                            .colorScheme
+                            .onSurface
+                            .withOpacity(0.7)),
+                  ),
+                  Positioned(
+                    top: 6,
+                    right: 6,
+                    child: Container(
+                      width: 8,
+                      height: 8,
+                      decoration: const BoxDecoration(
+                          shape: BoxShape.circle, color: _DT.red),
                     ),
-                  ],
-                ),
+                  ),
+                ]),
               ),
               const SizedBox(width: 12),
             ],
@@ -497,7 +701,9 @@ class _GlassAppBar extends ConsumerWidget implements PreferredSizeWidget {
               preferredSize: const Size.fromHeight(0.5),
               child: Container(
                 height: 0.5,
-                color: isDark ? Colors.white.withOpacity(0.08) : Colors.black.withOpacity(0.06),
+                color: isDark
+                    ? Colors.white.withOpacity(0.08)
+                    : Colors.black.withOpacity(0.06),
               ),
             ),
           ),
@@ -508,8 +714,29 @@ class _GlassAppBar extends ConsumerWidget implements PreferredSizeWidget {
 
   String _formattedDate() {
     final now = DateTime.now();
-    const days   = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
-    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    const days = [
+      'Monday',
+      'Tuesday',
+      'Wednesday',
+      'Thursday',
+      'Friday',
+      'Saturday',
+      'Sunday'
+    ];
+    const months = [
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec'
+    ];
     return '${days[now.weekday - 1]}, ${now.day} ${months[now.month - 1]}';
   }
 
@@ -530,20 +757,19 @@ class _ABBtn extends StatelessWidget {
   const _ABBtn({required this.child, required this.onTap});
 
   @override
-  Widget build(BuildContext context) => GestureDetector(
-    onTap: onTap,
-    child: child,
-  );
+  Widget build(BuildContext context) =>
+      GestureDetector(onTap: onTap, child: child);
 }
 
 // ────────────────────────────────────────────────────────────
-// 8. HOME CONTENT WRAPPER
+// 11. HOME CONTENT WRAPPER
 // ────────────────────────────────────────────────────────────
 class _HomeContentWrapper extends ConsumerStatefulWidget {
   const _HomeContentWrapper();
 
   @override
-  ConsumerState<_HomeContentWrapper> createState() => _HomeContentWrapperState();
+  ConsumerState<_HomeContentWrapper> createState() =>
+      _HomeContentWrapperState();
 }
 
 class _HomeContentWrapperState extends ConsumerState<_HomeContentWrapper> {
@@ -555,7 +781,7 @@ class _HomeContentWrapperState extends ConsumerState<_HomeContentWrapper> {
 
   @override
   Widget build(BuildContext context) {
-    final dataAsync  = ref.watch(smartHomeDataProvider);
+    final dataAsync = ref.watch(smartHomeDataProvider);
     final bleService = ref.watch(bleServiceProvider);
     return _HomeContent(
       dataAsync: dataAsync,
@@ -567,7 +793,7 @@ class _HomeContentWrapperState extends ConsumerState<_HomeContentWrapper> {
 }
 
 // ────────────────────────────────────────────────────────────
-// 9. HOME CONTENT (with optimistic light toggles)
+// 12. HOME CONTENT (OPTIMIZED)
 // ────────────────────────────────────────────────────────────
 class _HomeContent extends ConsumerStatefulWidget {
   final AsyncValue<Map<String, dynamic>> dataAsync;
@@ -588,21 +814,23 @@ class _HomeContent extends ConsumerStatefulWidget {
 
 class _HomeContentState extends ConsumerState<_HomeContent> {
   String _selectedRoom = 'Living Room';
-  bool   _tvOn               = false;
-  bool   _purifierOn         = false;
-  bool   _soundbarOn         = true;
-  double _ceilingBrightness  = 0.8;
+  bool _tvOn = false;
+  bool _purifierOn = false;
+  bool _soundbarOn = true;
+  double _ceilingBrightness = 0.8;
   bool _bathroomLightOn = false;
-
-  // Local copy of light states for optimistic updates
   Map<String, bool> _lightStates = {};
 
   String? _lightKeyForRoom(String room) {
     switch (room) {
-      case 'Living Room': return 'room1';
-      case 'Bedroom':     return 'room2';
-      case 'Kitchen':     return 'room3';
-      default:            return null;
+      case 'Living Room':
+        return 'room1';
+      case 'Bedroom':
+        return 'room2';
+      case 'Kitchen':
+        return 'room3';
+      default:
+        return null;
     }
   }
 
@@ -614,23 +842,17 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
   Future<void> _toggleRoomLight(String room) async {
     final key = _lightKeyForRoom(room);
     if (key == null) return;
-
     final current = _lightStates[key] ?? false;
     final newValue = !current;
-
-    // Optimistic update
     setState(() {
       _lightStates[key] = newValue;
     });
-
     try {
       await ref.read(lightToggleProvider).toggle(key, newValue, context);
-    } catch (e) {
-      // Revert on error
+    } catch (_) {
       setState(() {
         _lightStates[key] = current;
       });
-      // error snack already shown by service
     }
   }
 
@@ -641,10 +863,9 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
       if (_purifierOn) count++;
       if (_soundbarOn) count++;
       return count;
-    } else {
-      final key = _lightKeyForRoom(_selectedRoom);
-      return _getLightState(key) ? 1 : 0;
     }
+    final key = _lightKeyForRoom(_selectedRoom);
+    return _getLightState(key) ? 1 : 0;
   }
 
   void _toggleMainLight() {
@@ -659,7 +880,8 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
 
   @override
   Widget build(BuildContext context) {
-    final hp = MediaQuery.of(context).size.width < 360 ? 14.0 : 20.0;
+    final padding = ResponsiveHelper.getPadding(context);
+    final isDesktop = ResponsiveHelper.isDesktop(context);
 
     return RefreshIndicator(
       onRefresh: widget.onRefresh,
@@ -667,34 +889,33 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
       color: _DT.purple,
       child: widget.dataAsync.when(
         data: (data) {
-          // Update local light states from the latest data
           final lights = (data['lights'] as Map?) ?? {};
-          _lightStates = Map<String, bool>.from(lights.map((k, v) => MapEntry(k, v == true)));
+          _lightStates = Map<String, bool>.from(
+              lights.map((k, v) => MapEntry(k, v == true)));
 
-          final sensors     = (data['sensors'] as Map?) ?? {};
-          final temp        = (sensors['temperature'] ?? 0.0).toDouble();
-          final hum         = (sensors['humidity']    ?? 0.0).toDouble();
-          final flame       = sensors['flame'] == true;
-          final status      = (data['status'] as Map?) ?? {};
-          final online      = status['online'] ?? false;
-          final ip          = status['ip']     ?? '192.168.1.42';
-          final ping        = status['ping']   ?? 12;
-          final rssi        = status['rssi']   ?? -38;
-          final energy      = (data['energy']  as Map?) ?? {};
-          final todayKw     = (energy['today'] ?? 3.4).toDouble();
+          final sensors = (data['sensors'] as Map?) ?? {};
+          final temp = (sensors['temperature'] ?? 0.0).toDouble();
+          final hum = (sensors['humidity'] ?? 0.0).toDouble();
+          final flame = sensors['flame'] == true;
+          final status = (data['status'] as Map?) ?? {};
+          final online = status['online'] ?? false;
+          final ip = status['ip'] ?? '192.168.1.42';
+          final ping = status['ping'] ?? 12;
+          final rssi = status['rssi'] ?? -38;
+          final energy = (data['energy'] as Map?) ?? {};
+          final todayKw = (energy['today'] ?? 3.4).toDouble();
 
-          bool lightOn;
-          if (_selectedRoom == 'Bathroom') {
-            lightOn = _bathroomLightOn;
-          } else {
-            lightOn = _getLightState(_lightKeyForRoom(_selectedRoom));
-          }
+          final bool lightOn = _selectedRoom == 'Bathroom'
+              ? _bathroomLightOn
+              : _getLightState(_lightKeyForRoom(_selectedRoom));
 
           return SingleChildScrollView(
             physics: const AlwaysScrollableScrollPhysics(),
             padding: EdgeInsets.only(
               top: MediaQuery.of(context).padding.top + kToolbarHeight - 20,
-              left: hp, right: hp, bottom: 100,
+              left: padding,
+              right: padding,
+              bottom: isDesktop ? 40 : 100,
             ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -715,13 +936,16 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
                   lightOn: lightOn,
                   onLightToggle: _toggleMainLight,
                   ceilingBrightness: _ceilingBrightness,
-                  onBrightnessChanged: (v) => setState(() => _ceilingBrightness = v),
+                  onBrightnessChanged: (v) =>
+                      setState(() => _ceilingBrightness = v),
                   tvOn: _tvOn,
                   onTvToggle: () => setState(() => _tvOn = !_tvOn),
                   purifierOn: _purifierOn,
-                  onPurifierToggle: () => setState(() => _purifierOn = !_purifierOn),
+                  onPurifierToggle: () =>
+                      setState(() => _purifierOn = !_purifierOn),
                   soundbarOn: _soundbarOn,
-                  onSoundbarToggle: () => setState(() => _soundbarOn = !_soundbarOn),
+                  onSoundbarToggle: () =>
+                      setState(() => _soundbarOn = !_soundbarOn),
                   activeCount: _activeCount(),
                 ),
               ],
@@ -731,7 +955,7 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
         loading: () => const _SkeletonLoader(),
         error: (err, _) => Center(
           child: Padding(
-            padding: EdgeInsets.all(hp),
+            padding: EdgeInsets.all(padding),
             child: _GCard(
               child: Column(mainAxisSize: MainAxisSize.min, children: [
                 const Icon(Icons.error_outline_rounded,
@@ -763,13 +987,13 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
 }
 
 // ────────────────────────────────────────────────────────────
-// 10. ESP CONNECTION BAR
+// 13. ESP CONNECTION BAR
 // ────────────────────────────────────────────────────────────
 class _EspBar extends StatelessWidget {
-  final bool   online;
+  final bool online;
   final String ip;
-  final int    ping;
-  final int    rssi;
+  final int ping;
+  final int rssi;
 
   const _EspBar({
     required this.online,
@@ -780,14 +1004,14 @@ class _EspBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final isDark  = Theme.of(context).brightness == Brightness.dark;
     final dotColor = online ? _DT.espConnected : _DT.red;
 
     return _GCard(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
       child: Row(children: [
         Container(
-          width: 10, height: 10,
+          width: 10,
+          height: 10,
           decoration: BoxDecoration(
             shape: BoxShape.circle,
             color: dotColor,
@@ -800,10 +1024,7 @@ class _EspBar extends StatelessWidget {
         Text(
           online ? 'ESP32 Connected' : 'Disconnected',
           style: TextStyle(
-            fontSize: 14,
-            fontWeight: FontWeight.w700,
-            color: dotColor,
-          ),
+              fontSize: 14, fontWeight: FontWeight.w700, color: dotColor),
         ),
         const SizedBox(width: 10),
         _MiniChip(label: ip, icon: Icons.settings_ethernet_rounded),
@@ -815,26 +1036,24 @@ class _EspBar extends StatelessWidget {
               size: 16,
               color: online ? _DT.espConnected : Colors.grey.shade600),
           const SizedBox(width: 4),
-          Text(
-            '${rssi}dBm',
-            style: TextStyle(
-              fontSize: 12,
-              fontWeight: FontWeight.w600,
-              color: online ? _DT.espConnected : Colors.grey.shade500,
-            ),
-          ),
+          Text('${rssi}dBm',
+              style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: online ? _DT.espConnected : Colors.grey.shade500)),
         ]),
         const SizedBox(width: 8),
         Icon(Icons.chevron_right_rounded,
             size: 18,
-            color: Theme.of(context).colorScheme.onSurface.withOpacity(0.3)),
+            color:
+            Theme.of(context).colorScheme.onSurface.withOpacity(0.3)),
       ]),
     );
   }
 }
 
 class _MiniChip extends StatelessWidget {
-  final String   label;
+  final String label;
   final IconData icon;
   const _MiniChip({required this.label, required this.icon});
 
@@ -845,9 +1064,13 @@ class _MiniChip extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(8),
-        color: isDark ? Colors.white.withOpacity(0.07) : Colors.black.withOpacity(0.05),
+        color: isDark
+            ? Colors.white.withOpacity(0.07)
+            : Colors.black.withOpacity(0.05),
         border: Border.all(
-          color: isDark ? Colors.white.withOpacity(0.1) : Colors.black.withOpacity(0.07),
+          color: isDark
+              ? Colors.white.withOpacity(0.1)
+              : Colors.black.withOpacity(0.07),
           width: 0.5,
         ),
       ),
@@ -856,14 +1079,16 @@ class _MiniChip extends StatelessWidget {
         const SizedBox(width: 3),
         Text(label,
             style: const TextStyle(
-                fontSize: 11, fontWeight: FontWeight.w500, color: Colors.grey)),
+                fontSize: 11,
+                fontWeight: FontWeight.w500,
+                color: Colors.grey)),
       ]),
     );
   }
 }
 
 // ────────────────────────────────────────────────────────────
-// 11. STATS ROW
+// 14. STATS ROW
 // ────────────────────────────────────────────────────────────
 class _StatsRow extends StatelessWidget {
   final double temp;
@@ -905,9 +1130,9 @@ class _StatsRow extends StatelessWidget {
 
 class _StatTile extends StatelessWidget {
   final IconData icon;
-  final Color    iconColor;
-  final String   value;
-  final String   label;
+  final Color iconColor;
+  final String value;
+  final String label;
 
   const _StatTile({
     required this.icon,
@@ -922,7 +1147,8 @@ class _StatTile extends StatelessWidget {
       padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 10),
       child: Column(children: [
         Container(
-          width: 36, height: 36,
+          width: 36,
+          height: 36,
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(10),
             color: iconColor.withOpacity(0.15),
@@ -932,20 +1158,25 @@ class _StatTile extends StatelessWidget {
         const SizedBox(height: 8),
         Text(value,
             style: const TextStyle(
-                fontSize: 18, fontWeight: FontWeight.w800, letterSpacing: -0.5)),
+                fontSize: 18,
+                fontWeight: FontWeight.w800,
+                letterSpacing: -0.5)),
         const SizedBox(height: 2),
         Text(label,
             style: TextStyle(
                 fontSize: 11,
                 fontWeight: FontWeight.w500,
-                color: Theme.of(context).colorScheme.onSurface.withOpacity(0.5))),
+                color: Theme.of(context)
+                    .colorScheme
+                    .onSurface
+                    .withOpacity(0.5))),
       ]),
     );
   }
 }
 
 // ────────────────────────────────────────────────────────────
-// 12. FLAME BANNER
+// 15. FLAME BANNER
 // ────────────────────────────────────────────────────────────
 class _FlameBanner extends StatelessWidget {
   final bool flame;
@@ -960,14 +1191,18 @@ class _FlameBanner extends StatelessWidget {
       dangerBorder: flame,
       child: Row(children: [
         Container(
-          width: 40, height: 40,
+          width: 40,
+          height: 40,
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(12),
             color: color.withOpacity(0.15),
           ),
           child: Icon(
-            flame ? Icons.local_fire_department_rounded : Icons.shield_rounded,
-            color: color, size: 22,
+            flame
+                ? Icons.local_fire_department_rounded
+                : Icons.shield_rounded,
+            color: color,
+            size: 22,
           ),
         ),
         const SizedBox(width: 12),
@@ -989,20 +1224,24 @@ class _FlameBanner extends StatelessWidget {
                   : 'Flame Sensor • No alerts detected',
               style: TextStyle(
                   fontSize: 12,
-                  color: Theme.of(context).colorScheme.onSurface.withOpacity(0.5)),
+                  color: Theme.of(context)
+                      .colorScheme
+                      .onSurface
+                      .withOpacity(0.5)),
             ),
           ],
         )),
         Icon(Icons.chevron_right_rounded,
             size: 18,
-            color: Theme.of(context).colorScheme.onSurface.withOpacity(0.3)),
+            color:
+            Theme.of(context).colorScheme.onSurface.withOpacity(0.3)),
       ]),
     );
   }
 }
 
 // ────────────────────────────────────────────────────────────
-// 13. ROOMS HEADER + TABS
+// 16. ROOMS HEADER + TABS
 // ────────────────────────────────────────────────────────────
 class _RoomsHeader extends StatelessWidget {
   final String selectedRoom;
@@ -1032,7 +1271,7 @@ class _RoomsHeader extends StatelessWidget {
                   fontWeight: FontWeight.w700,
                   color: Theme.of(context).colorScheme.onSurface)),
           Text('${_rooms.length} Rooms',
-              style: TextStyle(
+              style: const TextStyle(
                   fontSize: 13,
                   fontWeight: FontWeight.w500,
                   color: _DT.purple)),
@@ -1055,7 +1294,8 @@ class _RoomsHeader extends StatelessWidget {
               },
               child: AnimatedContainer(
                 duration: const Duration(milliseconds: 200),
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                padding:
+                const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
                 decoration: BoxDecoration(
                   borderRadius: BorderRadius.circular(20),
                   color: selected
@@ -1064,9 +1304,7 @@ class _RoomsHeader extends StatelessWidget {
                       ? Colors.white.withOpacity(0.07)
                       : Colors.black.withOpacity(0.05)),
                   border: Border.all(
-                    color: selected
-                        ? Colors.white
-                        : Colors.transparent,
+                    color: selected ? Colors.white : Colors.transparent,
                     width: selected ? 1.5 : 0,
                   ),
                 ),
@@ -1096,21 +1334,21 @@ class _RoomsHeader extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 14. DEVICE GRID
+// 17. DEVICE GRID (OPTIMIZED)
 // ────────────────────────────────────────────────────────────
 class _DeviceGrid extends StatelessWidget {
-  final String   selectedRoom;
-  final bool     lightOn;
+  final String selectedRoom;
+  final bool lightOn;
   final VoidCallback onLightToggle;
-  final double   ceilingBrightness;
+  final double ceilingBrightness;
   final ValueChanged<double> onBrightnessChanged;
-  final bool     tvOn;
+  final bool tvOn;
   final VoidCallback onTvToggle;
-  final bool     purifierOn;
+  final bool purifierOn;
   final VoidCallback onPurifierToggle;
-  final bool     soundbarOn;
+  final bool soundbarOn;
   final VoidCallback onSoundbarToggle;
-  final int      activeCount;
+  final int activeCount;
 
   const _DeviceGrid({
     required this.selectedRoom,
@@ -1129,6 +1367,8 @@ class _DeviceGrid extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isDesktop = ResponsiveHelper.isDesktop(context);
+
     if (selectedRoom != 'Living Room') {
       return _GCard(
         child: _DeviceRow(
@@ -1146,7 +1386,9 @@ class _DeviceGrid extends StatelessWidget {
       Row(children: [
         Text(selectedRoom,
             style: const TextStyle(
-                fontSize: 18, fontWeight: FontWeight.w700, letterSpacing: -0.4)),
+                fontSize: 18,
+                fontWeight: FontWeight.w700,
+                letterSpacing: -0.4)),
         const Spacer(),
         Text('$activeCount Active',
             style: const TextStyle(
@@ -1155,76 +1397,133 @@ class _DeviceGrid extends StatelessWidget {
                 color: _DT.purple)),
       ]),
       const SizedBox(height: 14),
-
-      Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Expanded(
-          child: _DeviceCardTall(
-            icon: Icons.lightbulb_rounded,
-            iconColor: lightOn ? _DT.amber : Colors.grey,
-            name: 'Ceiling Light',
-            status: lightOn
-                ? 'On • ${(ceilingBrightness * 100).round()}%'
-                : 'Off',
-            isOn: lightOn,
-            onToggle: onLightToggle,
-            accentColor: _DT.amber,
-            sliderValue: ceilingBrightness,
-            onSliderChanged: onBrightnessChanged,
-          ),
+      if (isDesktop) ...[
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: _DeviceCardTall(
+                icon: Icons.lightbulb_rounded,
+                iconColor: lightOn ? _DT.amber : Colors.grey,
+                name: 'Ceiling Light',
+                status: lightOn
+                    ? 'On • ${(ceilingBrightness * 100).round()}%'
+                    : 'Off',
+                isOn: lightOn,
+                onToggle: onLightToggle,
+                accentColor: _DT.amber,
+                sliderValue: ceilingBrightness,
+                onSliderChanged: onBrightnessChanged,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: _DeviceCardTall(
+                icon: Icons.tv_rounded,
+                iconColor: tvOn ? _DT.blue : Colors.grey,
+                name: 'Smart TV',
+                status: tvOn ? 'On' : 'Off',
+                isOn: tvOn,
+                onToggle: onTvToggle,
+                accentColor: _DT.blue,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: _DeviceCardTall(
+                icon: Icons.air_rounded,
+                iconColor: purifierOn ? const Color(0xFF81C784) : Colors.grey,
+                name: 'Air Purifier',
+                status: purifierOn ? 'On' : 'Off',
+                isOn: purifierOn,
+                onToggle: onPurifierToggle,
+                accentColor: const Color(0xFF81C784),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: _DeviceCardTall(
+                icon: Icons.speaker_rounded,
+                iconColor: soundbarOn ? const Color(0xFFCE93D8) : Colors.grey,
+                name: 'Soundbar',
+                status: soundbarOn ? 'Playing' : 'Paused',
+                isOn: soundbarOn,
+                onToggle: onSoundbarToggle,
+                accentColor: const Color(0xFFCE93D8),
+              ),
+            ),
+          ],
         ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: _DeviceCardTall(
-            icon: Icons.tv_rounded,
-            iconColor: tvOn ? _DT.blue : Colors.grey,
-            name: 'Smart TV',
-            status: tvOn ? 'On' : 'Off',
-            isOn: tvOn,
-            onToggle: onTvToggle,
-            accentColor: _DT.blue,
+      ] else ...[
+        Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Expanded(
+            child: _DeviceCardTall(
+              icon: Icons.lightbulb_rounded,
+              iconColor: lightOn ? _DT.amber : Colors.grey,
+              name: 'Ceiling Light',
+              status: lightOn
+                  ? 'On • ${(ceilingBrightness * 100).round()}%'
+                  : 'Off',
+              isOn: lightOn,
+              onToggle: onLightToggle,
+              accentColor: _DT.amber,
+              sliderValue: ceilingBrightness,
+              onSliderChanged: onBrightnessChanged,
+            ),
           ),
-        ),
-      ]),
-      const SizedBox(height: 12),
-      Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Expanded(
-          child: _DeviceCardTall(
-            icon: Icons.air_rounded,
-            iconColor: purifierOn ? const Color(0xFF81C784) : Colors.grey,
-            name: 'Air Purifier',
-            status: purifierOn ? 'On' : 'Off',
-            isOn: purifierOn,
-            onToggle: onPurifierToggle,
-            accentColor: const Color(0xFF81C784),
+          const SizedBox(width: 12),
+          Expanded(
+            child: _DeviceCardTall(
+              icon: Icons.tv_rounded,
+              iconColor: tvOn ? _DT.blue : Colors.grey,
+              name: 'Smart TV',
+              status: tvOn ? 'On' : 'Off',
+              isOn: tvOn,
+              onToggle: onTvToggle,
+              accentColor: _DT.blue,
+            ),
           ),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: _DeviceCardTall(
-            icon: Icons.speaker_rounded,
-            iconColor: soundbarOn ? const Color(0xFFCE93D8) : Colors.grey,
-            name: 'Soundbar',
-            status: soundbarOn ? 'Playing' : 'Paused',
-            isOn: soundbarOn,
-            onToggle: onSoundbarToggle,
-            accentColor: const Color(0xFFCE93D8),
+        ]),
+        const SizedBox(height: 12),
+        Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Expanded(
+            child: _DeviceCardTall(
+              icon: Icons.air_rounded,
+              iconColor: purifierOn ? const Color(0xFF81C784) : Colors.grey,
+              name: 'Air Purifier',
+              status: purifierOn ? 'On' : 'Off',
+              isOn: purifierOn,
+              onToggle: onPurifierToggle,
+              accentColor: const Color(0xFF81C784),
+            ),
           ),
-        ),
-      ]),
+          const SizedBox(width: 12),
+          Expanded(
+            child: _DeviceCardTall(
+              icon: Icons.speaker_rounded,
+              iconColor: soundbarOn ? const Color(0xFFCE93D8) : Colors.grey,
+              name: 'Soundbar',
+              status: soundbarOn ? 'Playing' : 'Paused',
+              isOn: soundbarOn,
+              onToggle: onSoundbarToggle,
+              accentColor: const Color(0xFFCE93D8),
+            ),
+          ),
+        ]),
+      ],
     ]);
   }
 }
 
-// Tall grid card
 class _DeviceCardTall extends StatelessWidget {
   final IconData icon;
-  final Color    iconColor;
-  final String   name;
-  final String   status;
-  final bool     isOn;
+  final Color iconColor;
+  final String name;
+  final String status;
+  final bool isOn;
   final VoidCallback onToggle;
-  final Color    accentColor;
-  final double?  sliderValue;
+  final Color accentColor;
+  final double? sliderValue;
   final ValueChanged<double>? onSliderChanged;
 
   const _DeviceCardTall({
@@ -1243,92 +1542,101 @@ class _DeviceCardTall extends StatelessWidget {
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
-    return GestureDetector(
-      onTap: onToggle,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 250),
-        padding: const EdgeInsets.all(14),
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(20),
-          color: isOn
-              ? (isDark
-              ? accentColor.withOpacity(0.12)
-              : accentColor.withOpacity(0.08))
-              : (isDark
-              ? Colors.white.withOpacity(0.05)
-              : Colors.black.withOpacity(0.04)),
-          border: Border.all(
+    return RepaintBoundary(
+      child: GestureDetector(
+        onTap: onToggle,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 250),
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(20),
             color: isOn
-                ? accentColor.withOpacity(0.35)
+                ? (isDark
+                ? accentColor.withOpacity(0.12)
+                : accentColor.withOpacity(0.08))
                 : (isDark
-                ? Colors.white.withOpacity(0.08)
-                : Colors.black.withOpacity(0.07)),
-            width: 1,
-          ),
-          boxShadow: isOn
-              ? [BoxShadow(
-              color: accentColor.withOpacity(0.15),
-              blurRadius: 16, offset: const Offset(0, 4))]
-              : null,
-        ),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Container(
-                width: 38, height: 38,
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(11),
-                  color: iconColor.withOpacity(0.18),
-                ),
-                child: Icon(icon, color: iconColor, size: 20),
-              ),
-              _SmallToggle(value: isOn, onToggle: onToggle, accent: accentColor),
-            ],
-          ),
-          const SizedBox(height: 28),
-          Text(name,
-              style: const TextStyle(
-                  fontSize: 13, fontWeight: FontWeight.w600, height: 1.2)),
-          const SizedBox(height: 3),
-          Text(status,
-              style: TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w500,
-                  color: isOn ? accentColor : Colors.grey)),
-          if (sliderValue != null && onSliderChanged != null) ...[
-            const SizedBox(height: 10),
-            SliderTheme(
-              data: SliderTheme.of(context).copyWith(
-                activeTrackColor: accentColor,
-                inactiveTrackColor:
-                Theme.of(context).colorScheme.onSurface.withOpacity(0.12),
-                thumbColor: Colors.white,
-                overlayColor: accentColor.withOpacity(0.12),
-                thumbShape:
-                const RoundSliderThumbShape(enabledThumbRadius: 7, elevation: 2),
-                trackHeight: 3,
-              ),
-              child: Slider(
-                value: sliderValue!,
-                onChanged: onSliderChanged,
-                min: 0, max: 1,
-              ),
+                ? Colors.white.withOpacity(0.05)
+                : Colors.black.withOpacity(0.04)),
+            border: Border.all(
+              color: isOn
+                  ? accentColor.withOpacity(0.35)
+                  : (isDark
+                  ? Colors.white.withOpacity(0.08)
+                  : Colors.black.withOpacity(0.07)),
+              width: 1,
             ),
-            Text('${(sliderValue! * 100).round()}%',
+            boxShadow: isOn
+                ? [
+              BoxShadow(
+                  color: accentColor.withOpacity(0.15),
+                  blurRadius: 16,
+                  offset: const Offset(0, 4))
+            ]
+                : null,
+          ),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  width: 38,
+                  height: 38,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(11),
+                    color: iconColor.withOpacity(0.18),
+                  ),
+                  child: Icon(icon, color: iconColor, size: 20),
+                ),
+                _SmallToggle(
+                    value: isOn, onToggle: onToggle, accent: accentColor),
+              ],
+            ),
+            const SizedBox(height: 28),
+            Text(name,
+                style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    height: 1.2)),
+            const SizedBox(height: 3),
+            Text(status,
                 style: TextStyle(
                     fontSize: 11,
-                    fontWeight: FontWeight.w600,
-                    color: accentColor)),
-          ],
-        ]),
+                    fontWeight: FontWeight.w500,
+                    color: isOn ? accentColor : Colors.grey)),
+            if (sliderValue != null && onSliderChanged != null) ...[
+              const SizedBox(height: 10),
+              SliderTheme(
+                data: SliderTheme.of(context).copyWith(
+                  activeTrackColor: accentColor,
+                  inactiveTrackColor:
+                  Theme.of(context).colorScheme.onSurface.withOpacity(0.12),
+                  thumbColor: Colors.white,
+                  overlayColor: accentColor.withOpacity(0.12),
+                  thumbShape: const RoundSliderThumbShape(
+                      enabledThumbRadius: 7, elevation: 2),
+                  trackHeight: 3,
+                ),
+                child: Slider(
+                  value: sliderValue!,
+                  onChanged: onSliderChanged,
+                  min: 0,
+                  max: 1,
+                ),
+              ),
+              Text('${(sliderValue! * 100).round()}%',
+                  style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                      color: accentColor)),
+            ],
+          ]),
+        ),
       ),
     );
   }
 }
 
-// Small toggle
 class _SmallToggle extends StatelessWidget {
   final bool value;
   final VoidCallback onToggle;
@@ -1349,13 +1657,18 @@ class _SmallToggle extends StatelessWidget {
       },
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 220),
-        width: 40, height: 24,
+        width: 40,
+        height: 24,
         padding: const EdgeInsets.all(2),
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(12),
-          color: value ? accent.withOpacity(0.25) : Colors.white.withOpacity(0.1),
+          color: value
+              ? accent.withOpacity(0.25)
+              : Colors.white.withOpacity(0.1),
           border: Border.all(
-            color: value ? accent.withOpacity(0.6) : Colors.white.withOpacity(0.15),
+            color: value
+                ? accent.withOpacity(0.6)
+                : Colors.white.withOpacity(0.15),
             width: 0.8,
           ),
         ),
@@ -1363,7 +1676,8 @@ class _SmallToggle extends StatelessWidget {
           duration: const Duration(milliseconds: 220),
           alignment: value ? Alignment.centerRight : Alignment.centerLeft,
           child: Container(
-            width: 18, height: 18,
+            width: 18,
+            height: 18,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
               color: value ? accent : Colors.white.withOpacity(0.5),
@@ -1381,13 +1695,12 @@ class _SmallToggle extends StatelessWidget {
   }
 }
 
-// Simple device row
 class _DeviceRow extends StatelessWidget {
   final IconData icon;
-  final Color    iconColor;
-  final String   name;
-  final String   status;
-  final bool     isOn;
+  final Color iconColor;
+  final String name;
+  final String status;
+  final bool isOn;
   final VoidCallback onToggle;
 
   const _DeviceRow({
@@ -1403,7 +1716,8 @@ class _DeviceRow extends StatelessWidget {
   Widget build(BuildContext context) {
     return Row(children: [
       Container(
-        width: 40, height: 40,
+        width: 40,
+        height: 40,
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(12),
           color: iconColor.withOpacity(0.15),
@@ -1429,7 +1743,7 @@ class _DeviceRow extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 15. GLASS CARD
+// 18. GLASS CARD
 // ────────────────────────────────────────────────────────────
 class _GCard extends StatelessWidget {
   final Widget child;
@@ -1453,7 +1767,7 @@ class _GCard extends StatelessWidget {
     return ClipRRect(
       borderRadius: borderRadius,
       child: BackdropFilter(
-        filter: ui.ImageFilter.blur(sigmaX: 30, sigmaY: 30),
+        filter: ui.ImageFilter.blur(sigmaX: 20, sigmaY: 20),
         child: Container(
           padding: padding,
           decoration: BoxDecoration(
@@ -1462,8 +1776,14 @@ class _GCard extends StatelessWidget {
               begin: Alignment.topLeft,
               end: Alignment.bottomRight,
               colors: isDark
-                  ? [Colors.white.withOpacity(0.08), Colors.white.withOpacity(0.03)]
-                  : [Colors.white.withOpacity(0.6),  Colors.white.withOpacity(0.3)],
+                  ? [
+                Colors.white.withOpacity(0.08),
+                Colors.white.withOpacity(0.03)
+              ]
+                  : [
+                Colors.white.withOpacity(0.6),
+                Colors.white.withOpacity(0.3)
+              ],
             ),
             border: Border.all(
               color: dangerBorder
@@ -1478,7 +1798,8 @@ class _GCard extends StatelessWidget {
                 color: isDark
                     ? Colors.black.withOpacity(0.3)
                     : Colors.black.withOpacity(0.05),
-                blurRadius: 20, offset: const Offset(0, 6),
+                blurRadius: 20,
+                offset: const Offset(0, 6),
               ),
               if (glowColor != null)
                 BoxShadow(
@@ -1495,7 +1816,7 @@ class _GCard extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 16. PILL BUTTON
+// 19. PILL BUTTON
 // ────────────────────────────────────────────────────────────
 class _PillBtn extends StatelessWidget {
   final String label;
@@ -1513,7 +1834,8 @@ class _PillBtn extends StatelessWidget {
           colors: [Color(0xFF8B7FFF), _DT.purple],
         ),
         boxShadow: [
-          BoxShadow(color: _DT.purple.withOpacity(0.35), blurRadius: 14),
+          BoxShadow(
+              color: _DT.purple.withOpacity(0.35), blurRadius: 14),
         ],
       ),
       child: Text(label,
@@ -1526,9 +1848,9 @@ class _PillBtn extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 17. GLASS BOTTOM NAV – with sliding pill indicator (iOS 26 style)
+// 20. GLASS BOTTOM NAV (OPTIMIZED)
 // ────────────────────────────────────────────────────────────
-class _GlassBottomNav extends StatelessWidget {
+class _GlassBottomNav extends StatefulWidget {
   final int selectedIndex;
   final ValueChanged<int> onTap;
 
@@ -1538,177 +1860,270 @@ class _GlassBottomNav extends StatelessWidget {
   });
 
   @override
+  State<_GlassBottomNav> createState() => _GlassBottomNavState();
+}
+
+class _GlassBottomNavState extends State<_GlassBottomNav> {
+  double? _dragPillLeft;
+  double _dragStartX = 0;
+  double _pillStartLeft = 0;
+  bool _isDragging = false;
+  bool _didDrag = false;
+  int _hoverIndex = -1;
+
+  static const _items = [
+    (Icons.home_rounded, 'Home'),
+    (Icons.bolt_rounded, 'Energy'),
+    (Icons.notifications_rounded, 'Alerts'),
+    (Icons.settings_rounded, 'Settings'),
+  ];
+
+  static const double _navH = 64.0;
+  static const double _pillH = 44.0;
+  static const double _fabGap = 64.0;
+
+  double _segW(double navW) => (navW - _fabGap) / 4;
+  double _pillW(double navW) => (_segW(navW) + 14).clamp(56, 88);
+
+  double _itemCx(double navW, int idx) {
+    final sw = _segW(navW);
+    return idx < 2
+        ? sw * idx + sw / 2
+        : sw * 2 + _fabGap + sw * (idx - 2) + sw / 2;
+  }
+
+  double _pillLeft(double navW, int idx) =>
+      _itemCx(navW, idx) - _pillW(navW) / 2;
+
+  int _nearest(double pillLeft, double navW) {
+    final cx = pillLeft + _pillW(navW) / 2;
+    int best = 0;
+    double bestD = double.infinity;
+    for (int i = 0; i < 4; i++) {
+      final d = (cx - _itemCx(navW, i)).abs();
+      if (d < bestD) {
+        bestD = d;
+        best = i;
+      }
+    }
+    return best;
+  }
+
+  void _cyclePill() {
+    if (_isDragging) return;
+    HapticFeedback.selectionClick();
+    widget.onTap((widget.selectedIndex + 1) % 4);
+  }
+
+  void _onDragStart(double globalX, double navW) {
+    setState(() {
+      _isDragging = true;
+      _didDrag = false;
+      _dragStartX = globalX;
+      _pillStartLeft = _pillLeft(navW, widget.selectedIndex);
+      _dragPillLeft = _pillStartLeft;
+    });
+  }
+
+  void _onDragUpdate(double globalX, double navW) {
+    final dx = globalX - _dragStartX;
+    if (dx.abs() > 4) _didDrag = true;
+    final pw = _pillW(navW);
+    final nl = (_pillStartLeft + dx).clamp(4.0, navW - pw - 4);
+    final h = _nearest(nl, navW);
+    setState(() {
+      _dragPillLeft = nl;
+      _hoverIndex = h;
+    });
+  }
+
+  void _onDragEnd(double navW) {
+    final snapped = _nearest(
+        _dragPillLeft ?? _pillLeft(navW, widget.selectedIndex), navW);
+    final wasDrag = _didDrag;
+    setState(() {
+      _isDragging = false;
+      _didDrag = false;
+      _dragPillLeft = null;
+      _hoverIndex = -1;
+    });
+    if (wasDrag && snapped != widget.selectedIndex) {
+      HapticFeedback.selectionClick();
+      widget.onTap(snapped);
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final screenWidth = MediaQuery.of(context).size.width;
-    const gap = 64.0; // space for FAB
-    const horizontalPadding = 16.0; // from parent Padding
-    final navWidth = screenWidth - horizontalPadding * 2;
-    final itemWidth = (navWidth - gap) / 4;
-    const pillWidth = 50.0;
-    const pillHeight = 36.0;
 
-    // Calculate pill left offset based on selected index
-    double pillLeft;
-    switch (selectedIndex) {
-      case 0:
-        pillLeft = (itemWidth - pillWidth) / 2;
-        break;
-      case 1:
-        pillLeft = itemWidth + (itemWidth - pillWidth) / 2;
-        break;
-      case 2:
-        pillLeft = 2 * itemWidth + gap + (itemWidth - pillWidth) / 2;
-        break;
-      case 3:
-        pillLeft = 3 * itemWidth + gap + (itemWidth - pillWidth) / 2;
-        break;
-      default:
-        pillLeft = 0;
-    }
+    return LayoutBuilder(builder: (context, constraints) {
+      final navW = constraints.maxWidth;
+      final pw = _pillW(navW);
+      final targetLeft =
+          _dragPillLeft ?? _pillLeft(navW, widget.selectedIndex);
 
-    final items = [
-      (Icons.home_rounded, 'Home'),
-      (Icons.bolt_rounded, 'Energy'),
-      (Icons.notifications_rounded, 'Alerts'),
-      (Icons.settings_rounded, 'Settings'),
-    ];
-
-    return Container(
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(30.0),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.15),
-            blurRadius: 20,
-            offset: const Offset(0, -4),
-          ),
-        ],
-      ),
-      child: ClipRect(
-        child: BackdropFilter(
-          filter: ui.ImageFilter.blur(sigmaX: 32, sigmaY: 32),
-          child: Container(
-            height: 60,
-            decoration: BoxDecoration(
-              color: isDark ? Colors.black.withOpacity(0.25) : Colors.white.withOpacity(0.45),
-              borderRadius: BorderRadius.circular(30.0),
-              border: Border.all(
-                color: isDark ? Colors.white.withOpacity(0.08) : Colors.black.withOpacity(0.05),
-                width: 0.5,
-              ),
+      return Container(
+        height: _navH,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(32),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.20),
+              blurRadius: 28,
+              offset: const Offset(0, -3),
             ),
-            child: Stack(
-              children: [
-                // Glassy pill indicator
+          ],
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(32),
+          child: BackdropFilter(
+            filter: ui.ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+            child: Container(
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(32),
+                color: isDark
+                    ? Colors.white.withOpacity(0.10)
+                    : Colors.white.withOpacity(0.52),
+                border: Border.all(
+                  color: isDark
+                      ? Colors.white.withOpacity(0.12)
+                      : Colors.black.withOpacity(0.06),
+                  width: 0.5,
+                ),
+              ),
+              child: Stack(children: [
                 AnimatedPositioned(
-                  duration: const Duration(milliseconds: 300),
-                  curve: Curves.easeInOut,
-                  left: pillLeft,
-                  top: (60 - pillHeight) / 2,
-                  width: pillWidth,
-                  height: pillHeight,
-                  child: Container(
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(20),
-                      gradient: LinearGradient(
-                        begin: Alignment.topLeft,
-                        end: Alignment.bottomRight,
-                        colors: [
-                          _DT.purple.withOpacity(0.35),
-                          _DT.purpleLight.withOpacity(0.15),
-                        ],
-                      ),
-                      border: Border.all(
-                        color: _DT.purple.withOpacity(0.25),
-                        width: 0.5,
-                      ),
-                      boxShadow: [
-                        BoxShadow(
-                          color: _DT.purple.withOpacity(0.15),
-                          blurRadius: 12,
-                          offset: const Offset(0, 2),
-                        ),
-                      ],
-                    ),
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(20),
-                      child: BackdropFilter(
-                        filter: ui.ImageFilter.blur(sigmaX: 8, sigmaY: 8),
-                        child: Container(),
-                      ),
-                    ),
+                  duration: _isDragging
+                      ? Duration.zero
+                      : const Duration(milliseconds: 400),
+                  curve: _SpringCurve.instance,
+                  left: targetLeft,
+                  top: (_navH - _pillH) / 2,
+                  width: pw,
+                  height: _pillH,
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: _cyclePill,
+                    onHorizontalDragStart: (d) =>
+                        _onDragStart(d.globalPosition.dx, navW),
+                    onHorizontalDragUpdate: (d) =>
+                        _onDragUpdate(d.globalPosition.dx, navW),
+                    onHorizontalDragEnd: (_) => _onDragEnd(navW),
+                    child: _LiquidPill(isDark: isDark),
                   ),
                 ),
-                // Row of items
-                Row(
-                  children: [
-                    ...items.sublist(0, 2).map((e) => _buildNavItem(
-                      context,            // <-- pass context here
-                      e.$1,
-                      e.$2,
-                      items.indexOf(e),
-                      itemWidth,
-                    )),
-                    SizedBox(width: gap),
-                    ...items.sublist(2).map((e) => _buildNavItem(
-                      context,            // <-- and here
-                      e.$1,
-                      e.$2,
-                      items.indexOf(e),
-                      itemWidth,
-                    )),
-                  ],
+                Row(children: [
+                  ..._buildSide(context, isDark, navW, [0, 1]),
+                  const SizedBox(width: _fabGap),
+                  ..._buildSide(context, isDark, navW, [2, 3]),
+                ]),
+              ]),
+            ),
+          ),
+        ),
+      );
+    });
+  }
+
+  List<Widget> _buildSide(
+      BuildContext ctx,
+      bool isDark,
+      double navW,
+      List<int> indices,
+      ) {
+    return indices.map((i) {
+      final (icon, lbl) = _items[i];
+      final isActive = widget.selectedIndex == i ||
+          (_isDragging && _hoverIndex == i);
+
+      return Expanded(
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: () {
+            HapticFeedback.selectionClick();
+            widget.onTap(i);
+          },
+          child: AnimatedScale(
+            scale: isActive ? 1.10 : 1.0,
+            duration: const Duration(milliseconds: 350),
+            curve: _SpringCurve.instance,
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 200),
+                  child: Icon(
+                    icon,
+                    key: ValueKey(isActive),
+                    size: isActive ? 25 : 22,
+                    color: isActive
+                        ? _DT.purple
+                        : (isDark
+                        ? Colors.white.withOpacity(0.32)
+                        : Colors.black.withOpacity(0.28)),
+                  ),
+                ),
+                const SizedBox(height: 3),
+                AnimatedDefaultTextStyle(
+                  duration: const Duration(milliseconds: 200),
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: isActive ? FontWeight.w700 : FontWeight.w500,
+                    color: isActive
+                        ? _DT.purple
+                        : (isDark
+                        ? Colors.white.withOpacity(0.28)
+                        : Colors.black.withOpacity(0.25)),
+                  ),
+                  child: Text(lbl),
                 ),
               ],
             ),
           ),
         ),
-      ),
-    );
+      );
+    }).toList();
   }
+}
 
-  // Added BuildContext as first parameter
-  Widget _buildNavItem(
-      BuildContext context,
-      IconData icon,
-      String label,
-      int index,
-      double itemWidth,
-      ) {
-    final selected = selectedIndex == index;
-    return Expanded(
-      flex: 1,
-      child: GestureDetector(
-        onTap: () {
-          HapticFeedback.selectionClick();
-          onTap(index);
-        },
-        behavior: HitTestBehavior.opaque,
+class _LiquidPill extends StatelessWidget {
+  final bool isDark;
+  const _LiquidPill({required this.isDark});
+
+  @override
+  Widget build(BuildContext context) {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(22),
+      child: BackdropFilter(
+        filter: ui.ImageFilter.blur(sigmaX: 14, sigmaY: 14),
         child: Container(
-          width: itemWidth,
-          alignment: Alignment.center,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(
-                icon,
-                size: 24,
-                color: selected
-                    ? _DT.purple
-                    : Theme.of(context).colorScheme.onSurface.withOpacity(0.4),
-              ),
-              const SizedBox(height: 3),
-              Text(
-                label,
-                style: TextStyle(
-                  fontSize: 10,
-                  fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
-                  color: selected
-                      ? _DT.purple
-                      : Theme.of(context).colorScheme.onSurface.withOpacity(0.4),
-                ),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(22),
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: isDark
+                  ? [
+                _DT.purple.withOpacity(0.24),
+                _DT.purpleLight.withOpacity(0.10),
+              ]
+                  : [
+                _DT.purple.withOpacity(0.16),
+                _DT.purpleLight.withOpacity(0.06),
+              ],
+            ),
+            border: Border.all(
+              color: isDark
+                  ? _DT.purple.withOpacity(0.32)
+                  : _DT.purple.withOpacity(0.22),
+              width: 0.8,
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: _DT.purple.withOpacity(isDark ? 0.22 : 0.14),
+                blurRadius: 18,
+                offset: const Offset(0, 3),
               ),
             ],
           ),
@@ -1718,18 +2133,35 @@ class _GlassBottomNav extends StatelessWidget {
   }
 }
 
+class _SpringCurve extends Curve {
+  const _SpringCurve._();
+  static const instance = _SpringCurve._();
+
+  @override
+  double transformInternal(double t) {
+    final decay = math.pow(1 - t, 2.4) as double;
+    final bounce = math.sin(t * math.pi * 1.6) * 0.06;
+    return t + bounce * decay;
+  }
+}
+
 // ────────────────────────────────────────────────────────────
-// 18. ENERGY SCREEN
+// 21. ENERGY SCREEN
 // ────────────────────────────────────────────────────────────
 class _EnergyScreen extends StatelessWidget {
   const _EnergyScreen();
 
   @override
   Widget build(BuildContext context) {
+    final padding = ResponsiveHelper.getPadding(context);
+    final isDesktop = ResponsiveHelper.isDesktop(context);
+
     return SingleChildScrollView(
       padding: EdgeInsets.only(
         top: MediaQuery.of(context).padding.top + kToolbarHeight + 12,
-        left: 20, right: 20, bottom: 100,
+        left: padding,
+        right: padding,
+        bottom: isDesktop ? 40 : 100,
       ),
       child: Column(children: [
         _GCard(
@@ -1739,15 +2171,20 @@ class _EnergyScreen extends StatelessWidget {
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 const Text("Today's Usage",
-                    style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700)),
+                    style: TextStyle(
+                        fontSize: 17, fontWeight: FontWeight.w700)),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 10, vertical: 4),
                   decoration: BoxDecoration(
                     borderRadius: BorderRadius.circular(20),
                     color: _DT.purple.withOpacity(0.15),
                   ),
                   child: const Text('⚡ Live',
-                      style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: _DT.purple)),
+                      style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: _DT.purple)),
                 ),
               ],
             ),
@@ -1756,18 +2193,28 @@ class _EnergyScreen extends StatelessWidget {
               Column(children: [
                 Text('3.4',
                     style: TextStyle(
-                        fontSize: 30, fontWeight: FontWeight.w800,
+                        fontSize: 30,
+                        fontWeight: FontWeight.w800,
                         color: Theme.of(context).colorScheme.primary)),
                 Text('kWh',
                     style: TextStyle(
                         fontSize: 13,
-                        color: Theme.of(context).colorScheme.onSurface.withOpacity(0.5))),
+                        color: Theme.of(context)
+                            .colorScheme
+                            .onSurface
+                            .withOpacity(0.5))),
               ]),
-              Container(width: 0.5, height: 50,
-                  color: Theme.of(context).colorScheme.onSurface.withOpacity(0.15)),
+              Container(
+                  width: 0.5,
+                  height: 50,
+                  color: Theme.of(context)
+                      .colorScheme
+                      .onSurface
+                      .withOpacity(0.15)),
               const Column(children: [
                 Text('€2.15',
-                    style: TextStyle(fontSize: 30, fontWeight: FontWeight.w800)),
+                    style: TextStyle(
+                        fontSize: 30, fontWeight: FontWeight.w800)),
                 Text('Cost',
                     style: TextStyle(fontSize: 13, color: Colors.grey)),
               ]),
@@ -1776,9 +2223,12 @@ class _EnergyScreen extends StatelessWidget {
             ClipRRect(
               borderRadius: BorderRadius.circular(8),
               child: LinearProgressIndicator(
-                value: 0.45, minHeight: 6,
-                backgroundColor:
-                Theme.of(context).colorScheme.onSurface.withOpacity(0.1),
+                value: 0.45,
+                minHeight: 6,
+                backgroundColor: Theme.of(context)
+                    .colorScheme
+                    .onSurface
+                    .withOpacity(0.1),
                 valueColor: AlwaysStoppedAnimation(
                     Theme.of(context).colorScheme.primary),
               ),
@@ -1790,7 +2240,10 @@ class _EnergyScreen extends StatelessWidget {
                 Text('Daily target',
                     style: TextStyle(
                         fontSize: 12,
-                        color: Theme.of(context).colorScheme.onSurface.withOpacity(0.5))),
+                        color: Theme.of(context)
+                            .colorScheme
+                            .onSurface
+                            .withOpacity(0.5))),
                 Text('45%',
                     style: TextStyle(
                         fontSize: 12,
@@ -1802,25 +2255,41 @@ class _EnergyScreen extends StatelessWidget {
         ),
         const SizedBox(height: 12),
         _GCard(child: Row(children: [
-          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text('This Week',
-                style: TextStyle(
-                    fontSize: 15, fontWeight: FontWeight.w600,
-                    color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6))),
-            const SizedBox(height: 6),
-            const Text('24.1 kWh',
-                style: TextStyle(
-                    fontSize: 24, fontWeight: FontWeight.w800, letterSpacing: -0.8)),
-            const SizedBox(height: 4),
-            const Text('↓ 8% vs last week',
-                style: TextStyle(fontSize: 12, color: _DT.green, fontWeight: FontWeight.w500)),
-          ])),
+          Expanded(child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('This Week',
+                  style: TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w600,
+                      color: Theme.of(context)
+                          .colorScheme
+                          .onSurface
+                          .withOpacity(0.6))),
+              const SizedBox(height: 6),
+              const Text('24.1 kWh',
+                  style: TextStyle(
+                      fontSize: 24,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: -0.8)),
+              const SizedBox(height: 4),
+              const Text('↓ 8% vs last week',
+                  style: TextStyle(
+                      fontSize: 12,
+                      color: _DT.green,
+                      fontWeight: FontWeight.w500)),
+            ],
+          )),
           SizedBox(
-            width: 72, height: 72,
+            width: 72,
+            height: 72,
             child: CircularProgressIndicator(
-              value: 0.62, strokeWidth: 7,
-              backgroundColor:
-              Theme.of(context).colorScheme.onSurface.withOpacity(0.1),
+              value: 0.62,
+              strokeWidth: 7,
+              backgroundColor: Theme.of(context)
+                  .colorScheme
+                  .onSurface
+                  .withOpacity(0.1),
               valueColor: AlwaysStoppedAnimation(
                   Theme.of(context).colorScheme.primary),
               strokeCap: StrokeCap.round,
@@ -1828,63 +2297,80 @@ class _EnergyScreen extends StatelessWidget {
           ),
         ])),
         const SizedBox(height: 12),
-        _GCard(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          const Text('Top Devices',
-              style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700)),
-          const SizedBox(height: 16),
-          ...[
-            (Icons.ac_unit_rounded,   'Living Room AC',  '2.1 kWh', 0.62),
-            (Icons.kitchen_rounded,   'Kitchen Fridge',  '1.8 kWh', 0.53),
-            (Icons.water_damage_rounded, 'Water Heater', '1.2 kWh', 0.35),
-          ].map((d) => Padding(
-            padding: const EdgeInsets.only(bottom: 14),
-            child: Column(children: [
-              Row(children: [
-                Icon(d.$1, size: 20, color: _DT.purple),
-                const SizedBox(width: 10),
-                Expanded(child: Text(d.$2,
-                    style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500))),
-                Text(d.$3,
-                    style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700)),
-              ]),
-              const SizedBox(height: 7),
-              ClipRRect(
-                borderRadius: BorderRadius.circular(6),
-                child: LinearProgressIndicator(
-                  value: d.$4, minHeight: 4,
-                  backgroundColor:
-                  Theme.of(context).colorScheme.onSurface.withOpacity(0.08),
-                  valueColor: AlwaysStoppedAnimation(
-                      Theme.of(context).colorScheme.primary),
+        _GCard(child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Top Devices',
+                style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700)),
+            const SizedBox(height: 16),
+            ...[
+              (Icons.ac_unit_rounded, 'Living Room AC', '2.1 kWh', 0.62),
+              (Icons.kitchen_rounded, 'Kitchen Fridge', '1.8 kWh', 0.53),
+              (Icons.water_damage_rounded, 'Water Heater', '1.2 kWh', 0.35),
+            ].map((d) => Padding(
+              padding: const EdgeInsets.only(bottom: 14),
+              child: Column(children: [
+                Row(children: [
+                  Icon(d.$1, size: 20, color: _DT.purple),
+                  const SizedBox(width: 10),
+                  Expanded(child: Text(d.$2,
+                      style: const TextStyle(
+                          fontSize: 14, fontWeight: FontWeight.w500))),
+                  Text(d.$3,
+                      style: const TextStyle(
+                          fontSize: 14, fontWeight: FontWeight.w700)),
+                ]),
+                const SizedBox(height: 7),
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(6),
+                  child: LinearProgressIndicator(
+                    value: d.$4,
+                    minHeight: 4,
+                    backgroundColor: Theme.of(context)
+                        .colorScheme
+                        .onSurface
+                        .withOpacity(0.08),
+                    valueColor: AlwaysStoppedAnimation(
+                        Theme.of(context).colorScheme.primary),
+                  ),
                 ),
-              ),
-            ]),
-          )),
-        ])),
+              ]),
+            )),
+          ],
+        )),
       ]),
     );
   }
 }
 
 // ────────────────────────────────────────────────────────────
-// 19. ALERTS SCREEN
+// 22. ALERTS SCREEN
 // ────────────────────────────────────────────────────────────
 class _AlertsScreen extends StatelessWidget {
   const _AlertsScreen();
 
   @override
   Widget build(BuildContext context) {
+    final padding = ResponsiveHelper.getPadding(context);
+    final isDesktop = ResponsiveHelper.isDesktop(context);
+
     final alerts = [
-      (Icons.motion_photos_on_rounded, Colors.orange, 'Motion in Living Room', '2 minutes ago'),
-      (Icons.local_fire_department_rounded, _DT.red, 'Flame sensor test — All Clear', '1 hour ago'),
-      (Icons.power_off_rounded, _DT.blue, 'Device offline: Bedroom Light', '3 hours ago'),
-      (Icons.water_drop_rounded, Colors.teal, 'High humidity in Kitchen', '5 hours ago'),
+      (Icons.motion_photos_on_rounded, Colors.orange, 'Motion in Living Room',
+      '2 minutes ago'),
+      (Icons.local_fire_department_rounded, _DT.red, 'Flame sensor test — All Clear',
+      '1 hour ago'),
+      (Icons.power_off_rounded, _DT.blue, 'Device offline: Bedroom Light',
+      '3 hours ago'),
+      (Icons.water_drop_rounded, Colors.teal, 'High humidity in Kitchen',
+      '5 hours ago'),
     ];
 
     return ListView.separated(
       padding: EdgeInsets.only(
         top: MediaQuery.of(context).padding.top + kToolbarHeight + 12,
-        left: 20, right: 20, bottom: 100,
+        left: padding,
+        right: padding,
+        bottom: isDesktop ? 40 : 100,
       ),
       itemCount: alerts.length,
       separatorBuilder: (_, __) => const SizedBox(height: 10),
@@ -1895,7 +2381,8 @@ class _AlertsScreen extends StatelessWidget {
           glowColor: i == 0 ? color : null,
           child: Row(children: [
             Container(
-              width: 44, height: 44,
+              width: 44,
+              height: 44,
               decoration: BoxDecoration(
                 borderRadius: BorderRadius.circular(14),
                 color: color.withOpacity(0.15),
@@ -1903,18 +2390,28 @@ class _AlertsScreen extends StatelessWidget {
               child: Icon(icon, color: color, size: 22),
             ),
             const SizedBox(width: 12),
-            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text(title,
-                  style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
-              const SizedBox(height: 3),
-              Text(time,
-                  style: TextStyle(
-                      fontSize: 12,
-                      color: Theme.of(context).colorScheme.onSurface.withOpacity(0.45))),
-            ])),
+            Expanded(child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title,
+                    style: const TextStyle(
+                        fontSize: 14, fontWeight: FontWeight.w600)),
+                const SizedBox(height: 3),
+                Text(time,
+                    style: TextStyle(
+                        fontSize: 12,
+                        color: Theme.of(context)
+                            .colorScheme
+                            .onSurface
+                            .withOpacity(0.45))),
+              ],
+            )),
             Icon(Icons.chevron_right_rounded,
                 size: 18,
-                color: Theme.of(context).colorScheme.onSurface.withOpacity(0.3)),
+                color: Theme.of(context)
+                    .colorScheme
+                    .onSurface
+                    .withOpacity(0.3)),
           ]),
         );
       },
@@ -1923,7 +2420,7 @@ class _AlertsScreen extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 20. SETTINGS SCREEN
+// 23. SETTINGS SCREEN
 // ────────────────────────────────────────────────────────────
 class _SettingsScreen extends ConsumerWidget {
   const _SettingsScreen({super.key});
@@ -1939,10 +2436,15 @@ class _SettingsScreen extends ConsumerWidget {
       ref.invalidate(httpDataProvider);
     };
 
+    final padding = ResponsiveHelper.getPadding(context);
+    final isDesktop = ResponsiveHelper.isDesktop(context);
+
     return ListView(
       padding: EdgeInsets.only(
         top: MediaQuery.of(context).padding.top + kToolbarHeight + 12,
-        left: 20, right: 20, bottom: 100,
+        left: padding,
+        right: padding,
+        bottom: isDesktop ? 40 : 100,
       ),
       children: [
         _GCard(child: Column(children: [
@@ -1953,12 +2455,16 @@ class _SettingsScreen extends ConsumerWidget {
             trailing: DropdownButtonHideUnderline(
               child: DropdownButton<ThemeMode>(
                 value: themeMode,
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 10, vertical: 4),
                 borderRadius: BorderRadius.circular(16),
                 items: const [
-                  DropdownMenuItem(value: ThemeMode.light,  child: Text('Light')),
-                  DropdownMenuItem(value: ThemeMode.dark,   child: Text('Dark')),
-                  DropdownMenuItem(value: ThemeMode.system, child: Text('System')),
+                  DropdownMenuItem(
+                      value: ThemeMode.light, child: Text('Light')),
+                  DropdownMenuItem(
+                      value: ThemeMode.dark, child: Text('Dark')),
+                  DropdownMenuItem(
+                      value: ThemeMode.system, child: Text('System')),
                 ],
                 onChanged: (m) {
                   if (m != null) {
@@ -1972,18 +2478,24 @@ class _SettingsScreen extends ConsumerWidget {
           _STile(
             icon: Icons.bluetooth_rounded,
             title: 'Bluetooth',
-            subtitle: bleStatus == BleStatus.connected ? 'Connected' : 'Not connected',
+            subtitle: bleStatus == BleStatus.connected
+                ? 'Connected'
+                : 'Not connected',
             trailing: bleStatus == BleStatus.connected
                 ? Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+              padding: const EdgeInsets.symmetric(
+                  horizontal: 10, vertical: 5),
               decoration: BoxDecoration(
                 borderRadius: BorderRadius.circular(20),
                 color: _DT.green.withOpacity(0.15),
-                border: Border.all(color: _DT.green.withOpacity(0.4), width: 0.8),
+                border: Border.all(
+                    color: _DT.green.withOpacity(0.4), width: 0.8),
               ),
               child: const Text('● Connected',
                   style: TextStyle(
-                      fontSize: 12, fontWeight: FontWeight.w600, color: _DT.green)),
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: _DT.green)),
             )
                 : _PillBtn(label: 'Connect', onTap: onConnectBLE),
           ),
@@ -2000,7 +2512,8 @@ class _SettingsScreen extends ConsumerWidget {
                   shape: BoxShape.circle,
                   color: _DT.purple.withOpacity(0.15),
                 ),
-                child: const Icon(Icons.refresh_rounded, size: 20, color: _DT.purple),
+                child: const Icon(Icons.refresh_rounded,
+                    size: 20, color: _DT.purple),
               ),
             ),
           ),
@@ -2011,8 +2524,12 @@ class _SettingsScreen extends ConsumerWidget {
             icon: Icons.router_rounded,
             title: 'Provision ESP32',
             subtitle: 'Setup a new device',
-            trailing: Icon(Icons.chevron_right_rounded, size: 20,
-                color: Theme.of(context).colorScheme.onSurface.withOpacity(0.35)),
+            trailing: Icon(Icons.chevron_right_rounded,
+                size: 20,
+                color: Theme.of(context)
+                    .colorScheme
+                    .onSurface
+                    .withOpacity(0.35)),
             onTap: () {},
           ),
           _SDivider(),
@@ -2020,8 +2537,12 @@ class _SettingsScreen extends ConsumerWidget {
             icon: Icons.wifi_rounded,
             title: 'Wi-Fi Config',
             subtitle: 'Change network settings',
-            trailing: Icon(Icons.chevron_right_rounded, size: 20,
-                color: Theme.of(context).colorScheme.onSurface.withOpacity(0.35)),
+            trailing: Icon(Icons.chevron_right_rounded,
+                size: 20,
+                color: Theme.of(context)
+                    .colorScheme
+                    .onSurface
+                    .withOpacity(0.35)),
             onTap: () {},
           ),
           _SDivider(),
@@ -2029,8 +2550,12 @@ class _SettingsScreen extends ConsumerWidget {
             icon: Icons.info_outline_rounded,
             title: 'About',
             subtitle: 'Smart Home v1.0.0',
-            trailing: Icon(Icons.chevron_right_rounded, size: 20,
-                color: Theme.of(context).colorScheme.onSurface.withOpacity(0.35)),
+            trailing: Icon(Icons.chevron_right_rounded,
+                size: 20,
+                color: Theme.of(context)
+                    .colorScheme
+                    .onSurface
+                    .withOpacity(0.35)),
             onTap: () {},
           ),
         ])),
@@ -2050,9 +2575,9 @@ class _SDivider extends StatelessWidget {
 
 class _STile extends StatelessWidget {
   final IconData icon;
-  final String   title;
-  final String   subtitle;
-  final Widget   trailing;
+  final String title;
+  final String subtitle;
+  final Widget trailing;
   final VoidCallback? onTap;
 
   const _STile({
@@ -2069,7 +2594,8 @@ class _STile extends StatelessWidget {
       padding: const EdgeInsets.symmetric(vertical: 10),
       child: Row(children: [
         Container(
-          width: 36, height: 36,
+          width: 36,
+          height: 36,
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(10),
             color: _DT.purple.withOpacity(0.12),
@@ -2077,14 +2603,21 @@ class _STile extends StatelessWidget {
           child: Icon(icon, color: _DT.purple, size: 18),
         ),
         const SizedBox(width: 12),
-        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(title,
-              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
-          Text(subtitle,
-              style: TextStyle(
-                  fontSize: 12,
-                  color: Theme.of(context).colorScheme.onSurface.withOpacity(0.5))),
-        ])),
+        Expanded(child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(title,
+                style: const TextStyle(
+                    fontSize: 15, fontWeight: FontWeight.w600)),
+            Text(subtitle,
+                style: TextStyle(
+                    fontSize: 12,
+                    color: Theme.of(context)
+                        .colorScheme
+                        .onSurface
+                        .withOpacity(0.5))),
+          ],
+        )),
         trailing,
       ]),
     );
@@ -2095,7 +2628,7 @@ class _STile extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 21. SKELETON LOADER
+// 24. SKELETON LOADER (OPTIMIZED)
 // ────────────────────────────────────────────────────────────
 class _SkeletonLoader extends StatelessWidget {
   const _SkeletonLoader();
@@ -2103,6 +2636,9 @@ class _SkeletonLoader extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
+    final padding = ResponsiveHelper.getPadding(context);
+    final isDesktop = ResponsiveHelper.isDesktop(context);
+
     return Shimmer.fromColors(
       baseColor: isDark
           ? Colors.white.withOpacity(0.06)
@@ -2113,7 +2649,9 @@ class _SkeletonLoader extends StatelessWidget {
       child: SingleChildScrollView(
         padding: EdgeInsets.only(
           top: MediaQuery.of(context).padding.top + kToolbarHeight + 12,
-          left: 20, right: 20, bottom: 100,
+          left: padding,
+          right: padding,
+          bottom: isDesktop ? 40 : 100,
         ),
         child: Column(children: [
           _SBox(h: 54, r: 16),
