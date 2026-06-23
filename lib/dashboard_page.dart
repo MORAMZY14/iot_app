@@ -140,7 +140,6 @@ final httpDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
     if (isFetching) return;
     isFetching = true;
     try {
-      // Check cache first
       final cached = cache.get('smartHome');
       if (cached != null) {
         controller.add(cached as Map<String, dynamic>);
@@ -170,7 +169,6 @@ final httpDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
         }
       } else if (retryCount < maxRetries) {
         retryCount++;
-        // Exponential backoff
         await Future.delayed(Duration(milliseconds: 500 * retryCount));
         return fetchData();
       }
@@ -196,7 +194,7 @@ final httpDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
 });
 
 // ────────────────────────────────────────────────────────────
-// 5. BLE + HTTP MERGED DATA PROVIDER WITH CACHING
+// 5. BLE + HTTP MERGED DATA PROVIDER
 // ────────────────────────────────────────────────────────────
 final bleServiceProvider = Provider<BleService>((ref) => BleService());
 
@@ -207,7 +205,6 @@ final smartHomeDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
   late StreamSubscription bleStatusSub;
   late StreamSubscription httpSub;
   final cache = CacheService();
-  bool hasInitialData = false;
 
   Map<String, dynamic> currentData = {
     'sensors': {'temperature': 0.0, 'humidity': 0.0, 'flame': false},
@@ -228,7 +225,6 @@ final smartHomeDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
       if (!controller.isClosed) {
         controller.add(currentData);
       }
-      hasInitialData = true;
     }
   }
 
@@ -253,10 +249,8 @@ final smartHomeDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
         controller.add(currentData);
       }
     }
-    hasInitialData = true;
   }
 
-  // Try to load cached data initially
   final cachedData = cache.get('bleData');
   if (cachedData != null) {
     currentData = Map<String, dynamic>.from(cachedData as Map);
@@ -277,7 +271,6 @@ final smartHomeDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
 
   httpSub = httpStream.listen(updateFromHttp);
 
-  // Connect BLE with retry
   Future<void> connectWithRetry() async {
     int attempts = 0;
     while (attempts < 3) {
@@ -306,7 +299,7 @@ final smartHomeDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
 });
 
 // ────────────────────────────────────────────────────────────
-// 6. LIGHT TOGGLE SERVICE WITH OPTIMIZED FEEDBACK
+// 6. LIGHT TOGGLE SERVICE
 // ────────────────────────────────────────────────────────────
 final lightToggleProvider = Provider((ref) => LightToggleService(ref));
 
@@ -321,7 +314,6 @@ class LightToggleService {
     if (bleService.currentStatus == BleStatus.connected) {
       try {
         await bleService.setLightState(room, value);
-        HapticFeedback.lightImpact();
         return;
       } catch (e) {
         if (context.mounted) {
@@ -340,7 +332,6 @@ class LightToggleService {
           .timeout(const Duration(seconds: 5));
 
       if (response.statusCode == 200) {
-        HapticFeedback.lightImpact();
         _ref.invalidate(httpDataProvider);
       } else {
         throw Exception('HTTP toggle failed');
@@ -365,7 +356,7 @@ void _showSnack(BuildContext context, String msg,
 }
 
 // ────────────────────────────────────────────────────────────
-// 7. WALLPAPER BACKGROUND (OPTIMIZED)
+// 7. WALLPAPER BACKGROUND
 // ────────────────────────────────────────────────────────────
 class _WallpaperBackground extends StatelessWidget {
   final Widget child;
@@ -440,7 +431,7 @@ class _Blob extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 8. DASHBOARD PAGE (OPTIMIZED)
+// 8. DASHBOARD PAGE
 // ────────────────────────────────────────────────────────────
 class DashboardPage extends ConsumerStatefulWidget {
   const DashboardPage({super.key});
@@ -576,7 +567,7 @@ class _PurpleFab extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 10. GLASS APP BAR (OPTIMIZED)
+// 10. GLASS APP BAR
 // ────────────────────────────────────────────────────────────
 class _GlassAppBar extends ConsumerWidget implements PreferredSizeWidget {
   final Future<void> Function() onRefresh;
@@ -793,7 +784,7 @@ class _HomeContentWrapperState extends ConsumerState<_HomeContentWrapper> {
 }
 
 // ────────────────────────────────────────────────────────────
-// 12. HOME CONTENT (OPTIMIZED)
+// 12. HOME CONTENT - FIXED LIGHT TOGGLE
 // ────────────────────────────────────────────────────────────
 class _HomeContent extends ConsumerStatefulWidget {
   final AsyncValue<Map<String, dynamic>> dataAsync;
@@ -820,6 +811,7 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
   double _ceilingBrightness = 0.8;
   bool _bathroomLightOn = false;
   Map<String, bool> _lightStates = {};
+  bool _isToggling = false;
 
   String? _lightKeyForRoom(String room) {
     switch (room) {
@@ -841,18 +833,28 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
 
   Future<void> _toggleRoomLight(String room) async {
     final key = _lightKeyForRoom(room);
-    if (key == null) return;
+    if (key == null || _isToggling) return;
+
+    _isToggling = true;
     final current = _lightStates[key] ?? false;
     final newValue = !current;
+
+    // Update UI immediately for instant feedback
     setState(() {
       _lightStates[key] = newValue;
     });
+
     try {
       await ref.read(lightToggleProvider).toggle(key, newValue, context);
+      HapticFeedback.lightImpact();
     } catch (_) {
+      // Revert on error
       setState(() {
         _lightStates[key] = current;
       });
+      _showSnack(context, 'Failed to toggle light', color: Colors.red);
+    } finally {
+      _isToggling = false;
     }
   }
 
@@ -947,6 +949,7 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
                   onSoundbarToggle: () =>
                       setState(() => _soundbarOn = !_soundbarOn),
                   activeCount: _activeCount(),
+                  isToggling: _isToggling,
                 ),
               ],
             ),
@@ -1334,7 +1337,7 @@ class _RoomsHeader extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 17. DEVICE GRID (OPTIMIZED)
+// 17. DEVICE GRID - FIXED
 // ────────────────────────────────────────────────────────────
 class _DeviceGrid extends StatelessWidget {
   final String selectedRoom;
@@ -1349,6 +1352,7 @@ class _DeviceGrid extends StatelessWidget {
   final bool soundbarOn;
   final VoidCallback onSoundbarToggle;
   final int activeCount;
+  final bool isToggling;
 
   const _DeviceGrid({
     required this.selectedRoom,
@@ -1363,6 +1367,7 @@ class _DeviceGrid extends StatelessWidget {
     required this.soundbarOn,
     required this.onSoundbarToggle,
     required this.activeCount,
+    this.isToggling = false,
   });
 
   @override
@@ -1378,6 +1383,7 @@ class _DeviceGrid extends StatelessWidget {
           status: lightOn ? 'On' : 'Off',
           isOn: lightOn,
           onToggle: onLightToggle,
+          isToggling: isToggling,
         ),
       );
     }
@@ -1390,6 +1396,16 @@ class _DeviceGrid extends StatelessWidget {
                 fontWeight: FontWeight.w700,
                 letterSpacing: -0.4)),
         const Spacer(),
+        if (isToggling)
+          const SizedBox(
+            width: 20,
+            height: 20,
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              color: _DT.purple,
+            ),
+          ),
+        const SizedBox(width: 8),
         Text('$activeCount Active',
             style: const TextStyle(
                 fontSize: 13,
@@ -1414,6 +1430,7 @@ class _DeviceGrid extends StatelessWidget {
                 accentColor: _DT.amber,
                 sliderValue: ceilingBrightness,
                 onSliderChanged: onBrightnessChanged,
+                isToggling: isToggling,
               ),
             ),
             const SizedBox(width: 12),
@@ -1426,6 +1443,7 @@ class _DeviceGrid extends StatelessWidget {
                 isOn: tvOn,
                 onToggle: onTvToggle,
                 accentColor: _DT.blue,
+                isToggling: false,
               ),
             ),
             const SizedBox(width: 12),
@@ -1438,6 +1456,7 @@ class _DeviceGrid extends StatelessWidget {
                 isOn: purifierOn,
                 onToggle: onPurifierToggle,
                 accentColor: const Color(0xFF81C784),
+                isToggling: false,
               ),
             ),
             const SizedBox(width: 12),
@@ -1450,6 +1469,7 @@ class _DeviceGrid extends StatelessWidget {
                 isOn: soundbarOn,
                 onToggle: onSoundbarToggle,
                 accentColor: const Color(0xFFCE93D8),
+                isToggling: false,
               ),
             ),
           ],
@@ -1469,6 +1489,7 @@ class _DeviceGrid extends StatelessWidget {
               accentColor: _DT.amber,
               sliderValue: ceilingBrightness,
               onSliderChanged: onBrightnessChanged,
+              isToggling: isToggling,
             ),
           ),
           const SizedBox(width: 12),
@@ -1481,6 +1502,7 @@ class _DeviceGrid extends StatelessWidget {
               isOn: tvOn,
               onToggle: onTvToggle,
               accentColor: _DT.blue,
+              isToggling: false,
             ),
           ),
         ]),
@@ -1495,6 +1517,7 @@ class _DeviceGrid extends StatelessWidget {
               isOn: purifierOn,
               onToggle: onPurifierToggle,
               accentColor: const Color(0xFF81C784),
+              isToggling: false,
             ),
           ),
           const SizedBox(width: 12),
@@ -1507,6 +1530,7 @@ class _DeviceGrid extends StatelessWidget {
               isOn: soundbarOn,
               onToggle: onSoundbarToggle,
               accentColor: const Color(0xFFCE93D8),
+              isToggling: false,
             ),
           ),
         ]),
@@ -1525,6 +1549,7 @@ class _DeviceCardTall extends StatelessWidget {
   final Color accentColor;
   final double? sliderValue;
   final ValueChanged<double>? onSliderChanged;
+  final bool isToggling;
 
   const _DeviceCardTall({
     required this.icon,
@@ -1536,6 +1561,7 @@ class _DeviceCardTall extends StatelessWidget {
     required this.accentColor,
     this.sliderValue,
     this.onSliderChanged,
+    this.isToggling = false,
   });
 
   @override
@@ -1544,7 +1570,7 @@ class _DeviceCardTall extends StatelessWidget {
 
     return RepaintBoundary(
       child: GestureDetector(
-        onTap: onToggle,
+        onTap: isToggling ? null : onToggle,
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 250),
           padding: const EdgeInsets.all(14),
@@ -1586,10 +1612,23 @@ class _DeviceCardTall extends StatelessWidget {
                     borderRadius: BorderRadius.circular(11),
                     color: iconColor.withOpacity(0.18),
                   ),
-                  child: Icon(icon, color: iconColor, size: 20),
+                  child: isToggling && isOn
+                      ? const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: _DT.purple,
+                    ),
+                  )
+                      : Icon(icon, color: iconColor, size: 20),
                 ),
                 _SmallToggle(
-                    value: isOn, onToggle: onToggle, accent: accentColor),
+                  value: isOn,
+                  onToggle: onToggle,
+                  accent: accentColor,
+                  isToggling: isToggling,
+                ),
               ],
             ),
             const SizedBox(height: 28),
@@ -1619,7 +1658,7 @@ class _DeviceCardTall extends StatelessWidget {
                 ),
                 child: Slider(
                   value: sliderValue!,
-                  onChanged: onSliderChanged,
+                  onChanged: isToggling ? null : onSliderChanged,
                   min: 0,
                   max: 1,
                 ),
@@ -1641,17 +1680,19 @@ class _SmallToggle extends StatelessWidget {
   final bool value;
   final VoidCallback onToggle;
   final Color accent;
+  final bool isToggling;
 
   const _SmallToggle({
     required this.value,
     required this.onToggle,
     required this.accent,
+    this.isToggling = false,
   });
 
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
-      onTap: () {
+      onTap: isToggling ? null : () {
         HapticFeedback.lightImpact();
         onToggle();
       },
@@ -1702,6 +1743,7 @@ class _DeviceRow extends StatelessWidget {
   final String status;
   final bool isOn;
   final VoidCallback onToggle;
+  final bool isToggling;
 
   const _DeviceRow({
     required this.icon,
@@ -1710,6 +1752,7 @@ class _DeviceRow extends StatelessWidget {
     required this.status,
     required this.isOn,
     required this.onToggle,
+    this.isToggling = false,
   });
 
   @override
@@ -1737,7 +1780,12 @@ class _DeviceRow extends StatelessWidget {
                   color: isOn ? iconColor : Colors.grey)),
         ],
       )),
-      _SmallToggle(value: isOn, onToggle: onToggle, accent: iconColor),
+      _SmallToggle(
+        value: isOn,
+        onToggle: onToggle,
+        accent: iconColor,
+        isToggling: isToggling,
+      ),
     ]);
   }
 }
@@ -1848,7 +1896,7 @@ class _PillBtn extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 20. GLASS BOTTOM NAV (OPTIMIZED)
+// 20. GLASS BOTTOM NAV - FIXED (No onHover)
 // ────────────────────────────────────────────────────────────
 class _GlassBottomNav extends StatefulWidget {
   final int selectedIndex;
@@ -1864,13 +1912,6 @@ class _GlassBottomNav extends StatefulWidget {
 }
 
 class _GlassBottomNavState extends State<_GlassBottomNav> {
-  double? _dragPillLeft;
-  double _dragStartX = 0;
-  double _pillStartLeft = 0;
-  bool _isDragging = false;
-  bool _didDrag = false;
-  int _hoverIndex = -1;
-
   static const _items = [
     (Icons.home_rounded, 'Home'),
     (Icons.bolt_rounded, 'Energy'),
@@ -1878,273 +1919,104 @@ class _GlassBottomNavState extends State<_GlassBottomNav> {
     (Icons.settings_rounded, 'Settings'),
   ];
 
-  static const double _navH = 64.0;
-  static const double _pillH = 44.0;
-  static const double _fabGap = 64.0;
-
-  double _segW(double navW) => (navW - _fabGap) / 4;
-  double _pillW(double navW) => (_segW(navW) + 14).clamp(56, 88);
-
-  double _itemCx(double navW, int idx) {
-    final sw = _segW(navW);
-    return idx < 2
-        ? sw * idx + sw / 2
-        : sw * 2 + _fabGap + sw * (idx - 2) + sw / 2;
-  }
-
-  double _pillLeft(double navW, int idx) =>
-      _itemCx(navW, idx) - _pillW(navW) / 2;
-
-  int _nearest(double pillLeft, double navW) {
-    final cx = pillLeft + _pillW(navW) / 2;
-    int best = 0;
-    double bestD = double.infinity;
-    for (int i = 0; i < 4; i++) {
-      final d = (cx - _itemCx(navW, i)).abs();
-      if (d < bestD) {
-        bestD = d;
-        best = i;
-      }
-    }
-    return best;
-  }
-
-  void _cyclePill() {
-    if (_isDragging) return;
-    HapticFeedback.selectionClick();
-    widget.onTap((widget.selectedIndex + 1) % 4);
-  }
-
-  void _onDragStart(double globalX, double navW) {
-    setState(() {
-      _isDragging = true;
-      _didDrag = false;
-      _dragStartX = globalX;
-      _pillStartLeft = _pillLeft(navW, widget.selectedIndex);
-      _dragPillLeft = _pillStartLeft;
-    });
-  }
-
-  void _onDragUpdate(double globalX, double navW) {
-    final dx = globalX - _dragStartX;
-    if (dx.abs() > 4) _didDrag = true;
-    final pw = _pillW(navW);
-    final nl = (_pillStartLeft + dx).clamp(4.0, navW - pw - 4);
-    final h = _nearest(nl, navW);
-    setState(() {
-      _dragPillLeft = nl;
-      _hoverIndex = h;
-    });
-  }
-
-  void _onDragEnd(double navW) {
-    final snapped = _nearest(
-        _dragPillLeft ?? _pillLeft(navW, widget.selectedIndex), navW);
-    final wasDrag = _didDrag;
-    setState(() {
-      _isDragging = false;
-      _didDrag = false;
-      _dragPillLeft = null;
-      _hoverIndex = -1;
-    });
-    if (wasDrag && snapped != widget.selectedIndex) {
-      HapticFeedback.selectionClick();
-      widget.onTap(snapped);
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
-    return LayoutBuilder(builder: (context, constraints) {
-      final navW = constraints.maxWidth;
-      final pw = _pillW(navW);
-      final targetLeft =
-          _dragPillLeft ?? _pillLeft(navW, widget.selectedIndex);
-
-      return Container(
-        height: _navH,
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(32),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(0.20),
-              blurRadius: 28,
-              offset: const Offset(0, -3),
-            ),
-          ],
-        ),
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(32),
-          child: BackdropFilter(
-            filter: ui.ImageFilter.blur(sigmaX: 20, sigmaY: 20),
-            child: Container(
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(32),
+    return Container(
+      height: 64,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(32),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.20),
+            blurRadius: 28,
+            offset: const Offset(0, -3),
+          ),
+        ],
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(32),
+        child: BackdropFilter(
+          filter: ui.ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+          child: Container(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(32),
+              color: isDark
+                  ? Colors.white.withOpacity(0.10)
+                  : Colors.white.withOpacity(0.52),
+              border: Border.all(
                 color: isDark
-                    ? Colors.white.withOpacity(0.10)
-                    : Colors.white.withOpacity(0.52),
-                border: Border.all(
-                  color: isDark
-                      ? Colors.white.withOpacity(0.12)
-                      : Colors.black.withOpacity(0.06),
-                  width: 0.5,
-                ),
+                    ? Colors.white.withOpacity(0.12)
+                    : Colors.black.withOpacity(0.06),
+                width: 0.5,
               ),
-              child: Stack(children: [
-                AnimatedPositioned(
-                  duration: _isDragging
-                      ? Duration.zero
-                      : const Duration(milliseconds: 400),
-                  curve: _SpringCurve.instance,
-                  left: targetLeft,
-                  top: (_navH - _pillH) / 2,
-                  width: pw,
-                  height: _pillH,
+            ),
+            child: Row(
+              children: _items.asMap().entries.map((entry) {
+                final index = entry.key;
+                final (icon, label) = entry.value;
+                final isActive = widget.selectedIndex == index;
+
+                return Expanded(
                   child: GestureDetector(
                     behavior: HitTestBehavior.opaque,
-                    onTap: _cyclePill,
-                    onHorizontalDragStart: (d) =>
-                        _onDragStart(d.globalPosition.dx, navW),
-                    onHorizontalDragUpdate: (d) =>
-                        _onDragUpdate(d.globalPosition.dx, navW),
-                    onHorizontalDragEnd: (_) => _onDragEnd(navW),
-                    child: _LiquidPill(isDark: isDark),
+                    onTap: () {
+                      HapticFeedback.selectionClick();
+                      widget.onTap(index);
+                    },
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 250),
+                      margin: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(20),
+                        color: isActive
+                            ? _DT.purple.withOpacity(0.15)
+                            : Colors.transparent,
+                      ),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          AnimatedSwitcher(
+                            duration: const Duration(milliseconds: 200),
+                            child: Icon(
+                              icon,
+                              key: ValueKey(isActive),
+                              size: isActive ? 26 : 22,
+                              color: isActive
+                                  ? _DT.purple
+                                  : (isDark
+                                  ? Colors.white.withOpacity(0.4)
+                                  : Colors.black.withOpacity(0.3)),
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          AnimatedDefaultTextStyle(
+                            duration: const Duration(milliseconds: 200),
+                            style: TextStyle(
+                              fontSize: 10,
+                              fontWeight: isActive ? FontWeight.w700 : FontWeight.w500,
+                              color: isActive
+                                  ? _DT.purple
+                                  : (isDark
+                                  ? Colors.white.withOpacity(0.4)
+                                  : Colors.black.withOpacity(0.3)),
+                            ),
+                            child: Text(label),
+                          ),
+                        ],
+                      ),
+                    ),
                   ),
-                ),
-                Row(children: [
-                  ..._buildSide(context, isDark, navW, [0, 1]),
-                  const SizedBox(width: _fabGap),
-                  ..._buildSide(context, isDark, navW, [2, 3]),
-                ]),
-              ]),
+                );
+              }).toList(),
             ),
-          ),
-        ),
-      );
-    });
-  }
-
-  List<Widget> _buildSide(
-      BuildContext ctx,
-      bool isDark,
-      double navW,
-      List<int> indices,
-      ) {
-    return indices.map((i) {
-      final (icon, lbl) = _items[i];
-      final isActive = widget.selectedIndex == i ||
-          (_isDragging && _hoverIndex == i);
-
-      return Expanded(
-        child: GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onTap: () {
-            HapticFeedback.selectionClick();
-            widget.onTap(i);
-          },
-          child: AnimatedScale(
-            scale: isActive ? 1.10 : 1.0,
-            duration: const Duration(milliseconds: 350),
-            curve: _SpringCurve.instance,
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 200),
-                  child: Icon(
-                    icon,
-                    key: ValueKey(isActive),
-                    size: isActive ? 25 : 22,
-                    color: isActive
-                        ? _DT.purple
-                        : (isDark
-                        ? Colors.white.withOpacity(0.32)
-                        : Colors.black.withOpacity(0.28)),
-                  ),
-                ),
-                const SizedBox(height: 3),
-                AnimatedDefaultTextStyle(
-                  duration: const Duration(milliseconds: 200),
-                  style: TextStyle(
-                    fontSize: 10,
-                    fontWeight: isActive ? FontWeight.w700 : FontWeight.w500,
-                    color: isActive
-                        ? _DT.purple
-                        : (isDark
-                        ? Colors.white.withOpacity(0.28)
-                        : Colors.black.withOpacity(0.25)),
-                  ),
-                  child: Text(lbl),
-                ),
-              ],
-            ),
-          ),
-        ),
-      );
-    }).toList();
-  }
-}
-
-class _LiquidPill extends StatelessWidget {
-  final bool isDark;
-  const _LiquidPill({required this.isDark});
-
-  @override
-  Widget build(BuildContext context) {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(22),
-      child: BackdropFilter(
-        filter: ui.ImageFilter.blur(sigmaX: 14, sigmaY: 14),
-        child: Container(
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(22),
-            gradient: LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: isDark
-                  ? [
-                _DT.purple.withOpacity(0.24),
-                _DT.purpleLight.withOpacity(0.10),
-              ]
-                  : [
-                _DT.purple.withOpacity(0.16),
-                _DT.purpleLight.withOpacity(0.06),
-              ],
-            ),
-            border: Border.all(
-              color: isDark
-                  ? _DT.purple.withOpacity(0.32)
-                  : _DT.purple.withOpacity(0.22),
-              width: 0.8,
-            ),
-            boxShadow: [
-              BoxShadow(
-                color: _DT.purple.withOpacity(isDark ? 0.22 : 0.14),
-                blurRadius: 18,
-                offset: const Offset(0, 3),
-              ),
-            ],
           ),
         ),
       ),
     );
   }
 }
-
-class _SpringCurve extends Curve {
-  const _SpringCurve._();
-  static const instance = _SpringCurve._();
-
-  @override
-  double transformInternal(double t) {
-    final decay = math.pow(1 - t, 2.4) as double;
-    final bounce = math.sin(t * math.pi * 1.6) * 0.06;
-    return t + bounce * decay;
-  }
-}
-
 // ────────────────────────────────────────────────────────────
 // 21. ENERGY SCREEN
 // ────────────────────────────────────────────────────────────
@@ -2628,7 +2500,7 @@ class _STile extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 24. SKELETON LOADER (OPTIMIZED)
+// 24. SKELETON LOADER
 // ────────────────────────────────────────────────────────────
 class _SkeletonLoader extends StatelessWidget {
   const _SkeletonLoader();
