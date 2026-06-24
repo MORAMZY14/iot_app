@@ -114,17 +114,200 @@ class _CacheEntry {
 }
 
 // ────────────────────────────────────────────────────────────
-// 4. HTTP POLLING SERVICE WITH CACHING
+// 4. ESP32 DEVICE MANAGEMENT SERVICE
+// ────────────────────────────────────────────────────────────
+class ESP32DeviceService {
+  final String esp32Ip;
+
+  ESP32DeviceService(this.esp32Ip);
+
+  Future<Map<String, dynamic>> getDevices() async {
+    try {
+      final response = await http.get(
+        Uri.parse('http://$esp32Ip/api/devices'),
+        headers: {'Cache-Control': 'no-cache'},
+      ).timeout(const Duration(seconds: 3));
+
+      if (response.statusCode == 200) {
+        return jsonDecode(response.body) as Map<String, dynamic>;
+      }
+      return {'devices': []};
+    } catch (e) {
+      print('Error getting devices: $e');
+      return {'devices': []};
+    }
+  }
+
+  Future<bool> addDevice({
+    required String name,
+    required int type,
+    required int gpio,
+    required String room,
+  }) async {
+    try {
+      final response = await http.post(
+        Uri.parse('http://$esp32Ip/api/devices/add'),
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: {
+          'name': name,
+          'type': type.toString(),
+          'gpio': gpio.toString(),
+          'room': room,
+        },
+      ).timeout(const Duration(seconds: 5));
+
+      print('Add device response: ${response.statusCode} - ${response.body}');
+      return response.statusCode == 200;
+    } catch (e) {
+      print('Error adding device: $e');
+      return false;
+    }
+  }
+
+  Future<bool> editDeviceGPIO({
+    required String id,
+    required int newGpio,
+  }) async {
+    try {
+      final response = await http.post(
+        Uri.parse('http://$esp32Ip/api/devices/edit-gpio'),
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: {
+          'id': id,
+          'gpio': newGpio.toString(),
+        },
+      ).timeout(const Duration(seconds: 5));
+
+      print('Edit GPIO response: ${response.statusCode} - ${response.body}');
+      return response.statusCode == 200;
+    } catch (e) {
+      print('Error editing GPIO: $e');
+      return false;
+    }
+  }
+
+  Future<bool> controlDevice({
+    required String id,
+    required bool state,
+  }) async {
+    try {
+      final response = await http.post(
+        Uri.parse('http://$esp32Ip/api/devices/control'),
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: {
+          'id': id,
+          'state': state.toString(),
+        },
+      ).timeout(const Duration(seconds: 3));
+
+      return response.statusCode == 200;
+    } catch (e) {
+      print('Error controlling device: $e');
+      return false;
+    }
+  }
+
+  Future<bool> removeDevice(String id) async {
+    try {
+      final response = await http.post(
+        Uri.parse('http://$esp32Ip/api/devices/remove'),
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: {'id': id},
+      ).timeout(const Duration(seconds: 3));
+
+      return response.statusCode == 200;
+    } catch (e) {
+      print('Error removing device: $e');
+      return false;
+    }
+  }
+
+  Future<List<int>> getAvailableGPIOs() async {
+    try {
+      final response = await http.get(
+        Uri.parse('http://$esp32Ip/api/gpio/scan'),
+      ).timeout(const Duration(seconds: 3));
+
+      print('GPIO scan response: ${response.statusCode} - ${response.body}');
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body) as Map<String, dynamic>;
+        final available = data['available'] as List? ?? [];
+        return available.map((e) => e['pin'] as int).toList();
+      }
+      return _getDefaultGPIOs();
+    } catch (e) {
+      print('Error getting GPIOs: $e');
+      return _getDefaultGPIOs();
+    }
+  }
+
+  List<int> _getDefaultGPIOs() {
+    return [4, 5, 13, 14, 16, 17, 18, 19, 21, 22, 23, 25, 26, 27, 32, 33];
+  }
+
+  Future<List<String>> getRooms() async {
+    try {
+      final response = await http.get(
+        Uri.parse('http://$esp32Ip/api/rooms'),
+      ).timeout(const Duration(seconds: 3));
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body) as Map<String, dynamic>;
+        return (data['rooms'] as List? ?? []).map((e) => e as String).toList();
+      }
+      return ['Living Room', 'Bedroom', 'Kitchen', 'Bathroom'];
+    } catch (e) {
+      return ['Living Room', 'Bedroom', 'Kitchen', 'Bathroom'];
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> getDeviceTypes() async {
+    try {
+      final response = await http.get(
+        Uri.parse('http://$esp32Ip/api/devicetypes'),
+      ).timeout(const Duration(seconds: 3));
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body) as Map<String, dynamic>;
+        return (data['types'] as List? ?? []).map((e) => e as Map<String, dynamic>).toList();
+      }
+      return [
+        {'type': 0, 'name': 'Light', 'icon': 'lightbulb'},
+        {'type': 1, 'name': 'Fan', 'icon': 'fan'},
+        {'type': 2, 'name': 'Switch', 'icon': 'power'},
+        {'type': 3, 'name': 'Socket', 'icon': 'power_plug'},
+      ];
+    } catch (e) {
+      return [
+        {'type': 0, 'name': 'Light', 'icon': 'lightbulb'},
+        {'type': 1, 'name': 'Fan', 'icon': 'fan'},
+        {'type': 2, 'name': 'Switch', 'icon': 'power'},
+        {'type': 3, 'name': 'Socket', 'icon': 'power_plug'},
+      ];
+    }
+  }
+}
+
+// ESP32 IP provider
+final esp32IpProvider = StateProvider<String>((ref) => '192.168.1.9');
+
+// ESP32 Device Service Provider
+final esp32DeviceServiceProvider = Provider<ESP32DeviceService>((ref) {
+  final ip = ref.watch(esp32IpProvider);
+  return ESP32DeviceService(ip);
+});
+
+// ────────────────────────────────────────────────────────────
+// 5. HTTP POLLING SERVICE WITH CACHING
 // ────────────────────────────────────────────────────────────
 final databaseUrlProvider = Provider((ref) =>
 'https://iot-smart-home-81abd-default-rtdb.europe-west1.firebasedatabase.app');
 
-// FIXED: Using .future instead of .stream
 final httpDataProvider = FutureProvider<Map<String, dynamic>>((ref) async {
   final url = ref.watch(databaseUrlProvider);
   final cache = CacheService();
 
-  // Check cache first
   final cached = cache.get('smartHome');
   if (cached != null) {
     return cached as Map<String, dynamic>;
@@ -143,13 +326,53 @@ final httpDataProvider = FutureProvider<Map<String, dynamic>>((ref) async {
       if (response.statusCode == 200) {
         final jsonData = jsonDecode(response.body);
         if (jsonData != null) {
-          final status = jsonData['status'] as Map? ?? {};
+          Map<String, dynamic> processedData = {};
+
+          if (jsonData.containsKey('temperature') || jsonData.containsKey('flame')) {
+            processedData['sensors'] = {
+              'temperature': jsonData['temperature'] ?? 0.0,
+              'humidity': jsonData['humidity'] ?? 0.0,
+              'flame': jsonData['flame'] ?? false,
+            };
+
+            if (jsonData.containsKey('lights')) {
+              processedData['lights'] = jsonData['lights'];
+            }
+            if (jsonData.containsKey('status')) {
+              processedData['status'] = jsonData['status'];
+            }
+          } else {
+            processedData = jsonData;
+          }
+
+          if (!processedData.containsKey('sensors')) {
+            processedData['sensors'] = {
+              'temperature': 0.0,
+              'humidity': 0.0,
+              'flame': false,
+            };
+          }
+
+          if (!processedData.containsKey('lights')) {
+            processedData['lights'] = {
+              'room1': false,
+              'room2': false,
+              'room3': false,
+            };
+          }
+
+          if (!processedData.containsKey('status')) {
+            processedData['status'] = {'online': false};
+          }
+
+          final status = processedData['status'] as Map? ?? {};
           int lastSeen = status['lastSeen'] as int? ?? 0;
           final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
           status['online'] = (now - lastSeen) < 10 && lastSeen > 0;
-          jsonData['status'] = status;
-          cache.set('smartHome', jsonData);
-          return jsonData;
+          processedData['status'] = status;
+
+          cache.set('smartHome', processedData);
+          return processedData;
         }
       }
     } catch (_) {
@@ -159,11 +382,15 @@ final httpDataProvider = FutureProvider<Map<String, dynamic>>((ref) async {
       }
     }
   }
-  return {};
+  return {
+    'sensors': {'temperature': 0.0, 'humidity': 0.0, 'flame': false},
+    'lights': {'room1': false, 'room2': false, 'room3': false},
+    'status': {'online': false},
+  };
 });
 
 // ────────────────────────────────────────────────────────────
-// 5. BLE + HTTP MERGED DATA PROVIDER
+// 6. BLE + HTTP MERGED DATA PROVIDER
 // ────────────────────────────────────────────────────────────
 final bleServiceProvider = Provider<BleService>((ref) => BleService());
 
@@ -228,10 +455,8 @@ final smartHomeDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
     }
   });
 
-  // Initial fetch
   fetchHttpData();
 
-  // Periodic fetch
   httpTimer = Timer.periodic(const Duration(seconds: 5), (_) => fetchHttpData());
 
   Future<void> connectWithRetry() async {
@@ -260,7 +485,7 @@ final smartHomeDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
 });
 
 // ────────────────────────────────────────────────────────────
-// 6. LIGHT TOGGLE SERVICE — FIXED: optimistic cache patch
+// 7. LIGHT TOGGLE SERVICE
 // ────────────────────────────────────────────────────────────
 final lightToggleProvider = Provider((ref) => LightToggleService(ref));
 
@@ -268,8 +493,6 @@ class LightToggleService {
   final Ref _ref;
   LightToggleService(this._ref);
 
-  /// Patches the in-memory cache instantly so the stream reflects
-  /// the new value without waiting for a network round-trip.
   void _patchCache(String cacheKey, String room, bool value) {
     final cached = CacheService().get(cacheKey);
     if (cached == null) return;
@@ -280,7 +503,6 @@ class LightToggleService {
     CacheService().set(cacheKey, updated);
   }
 
-  /// Reverts the cache patch if the network call fails.
   void _revertCache(String cacheKey, String room, bool originalValue) {
     _patchCache(cacheKey, room, originalValue);
   }
@@ -289,25 +511,21 @@ class LightToggleService {
     final bleService = _ref.read(bleServiceProvider);
     final url = _ref.read(databaseUrlProvider);
 
-    // ── 1. Optimistic update in cache (instant UI) ──────────
     _patchCache('smartHome', room, value);
     _patchCache('bleData', room, value);
 
-    // ── 2. Try BLE first ────────────────────────────────────
     if (bleService.currentStatus == BleStatus.connected) {
       try {
         await bleService.setLightState(room, value);
-        return; // success — cache already patched, done
+        return;
       } catch (e) {
         if (context.mounted) {
           _showSnack(context, 'BLE error, trying Wi-Fi…',
               color: Colors.orange);
         }
-        // fall through to HTTP
       }
     }
 
-    // ── 3. HTTP fallback ─────────────────────────────────────
     try {
       final response = await http
           .patch(
@@ -319,10 +537,7 @@ class LightToggleService {
       if (response.statusCode != 200) {
         throw Exception('HTTP ${response.statusCode}');
       }
-      // No cache invalidation needed — cache is already up-to-date.
-      // The next poll will confirm the server state naturally.
     } catch (e) {
-      // ── 4. Revert optimistic update on failure ───────────
       _revertCache('smartHome', room, !value);
       _revertCache('bleData', room, !value);
       if (context.mounted) {
@@ -346,7 +561,7 @@ void _showSnack(BuildContext context, String msg,
 }
 
 // ────────────────────────────────────────────────────────────
-// 7. WALLPAPER BACKGROUND
+// 8. WALLPAPER BACKGROUND
 // ────────────────────────────────────────────────────────────
 class _WallpaperBackground extends StatelessWidget {
   final Widget child;
@@ -413,7 +628,7 @@ class _Blob extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 8. DASHBOARD PAGE
+// 9. DASHBOARD PAGE
 // ────────────────────────────────────────────────────────────
 class DashboardPage extends ConsumerStatefulWidget {
   const DashboardPage({super.key});
@@ -442,6 +657,15 @@ class _DashboardPageState extends ConsumerState<DashboardPage>
     await bleService.connect();
     ref.invalidate(httpDataProvider);
     if (mounted) _showSnack(context, 'Refreshed ✓', color: _DT.green);
+  }
+
+  void _showQuickActionDialog(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => const _QuickActionDialog(),
+    );
   }
 
   @override
@@ -485,8 +709,7 @@ class _DashboardPageState extends ConsumerState<DashboardPage>
           ? null
           : _PurpleFab(onTap: () {
         HapticFeedback.mediumImpact();
-        _showSnack(context, 'Quick actions coming soon',
-            color: _DT.purple);
+        _showQuickActionDialog(context);
       }),
       floatingActionButtonLocation:
       isDesktop ? null : FloatingActionButtonLocation.centerDocked,
@@ -507,7 +730,839 @@ class _DashboardPageState extends ConsumerState<DashboardPage>
 }
 
 // ────────────────────────────────────────────────────────────
-// 9. PURPLE FAB
+// 10. PASSWORD DIALOG
+// ────────────────────────────────────────────────────────────
+class _PasswordDialog extends StatefulWidget {
+  final VoidCallback onSuccess;
+  final VoidCallback? onCancel;
+
+  const _PasswordDialog({
+    required this.onSuccess,
+    this.onCancel,
+  });
+
+  @override
+  State<_PasswordDialog> createState() => _PasswordDialogState();
+}
+
+class _PasswordDialogState extends State<_PasswordDialog> {
+  final TextEditingController _passwordController = TextEditingController();
+  bool _obscureText = true;
+  String _errorMessage = '';
+
+  void _verifyPassword() {
+    if (_passwordController.text == '1234') {
+      widget.onSuccess();
+      Navigator.pop(context);
+    } else {
+      setState(() {
+        _errorMessage = 'Incorrect password. Please try again.';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      backgroundColor: Colors.transparent,
+      child: _GCard(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 60,
+              height: 60,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: _DT.purple.withValues(alpha: 0.15),
+              ),
+              child: const Icon(
+                Icons.lock_rounded,
+                color: _DT.purple,
+                size: 30,
+              ),
+            ),
+            const SizedBox(height: 16),
+            const Text(
+              'Enter Password',
+              style: TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'This action requires admin password',
+              style: TextStyle(
+                fontSize: 14,
+                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5),
+              ),
+            ),
+            const SizedBox(height: 20),
+            TextField(
+              controller: _passwordController,
+              obscureText: _obscureText,
+              decoration: InputDecoration(
+                hintText: 'Enter password',
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: BorderSide(
+                    color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.1),
+                  ),
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: const BorderSide(color: _DT.purple, width: 2),
+                ),
+                suffixIcon: IconButton(
+                  icon: Icon(
+                    _obscureText ? Icons.visibility_rounded : Icons.visibility_off_rounded,
+                    color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5),
+                  ),
+                  onPressed: () => setState(() => _obscureText = !_obscureText),
+                ),
+                errorText: _errorMessage.isNotEmpty ? _errorMessage : null,
+              ),
+              onSubmitted: (_) => _verifyPassword(),
+            ),
+            const SizedBox(height: 20),
+            Row(
+              children: [
+                Expanded(
+                  child: TextButton(
+                    onPressed: () {
+                      widget.onCancel?.call();
+                      Navigator.pop(context);
+                    },
+                    child: const Text('Cancel'),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: ElevatedButton(
+                    onPressed: _verifyPassword,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: _DT.purple,
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                    ),
+                    child: const Text(
+                      'Verify',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  @override
+  void dispose() {
+    _passwordController.dispose();
+    super.dispose();
+  }
+}
+
+// ────────────────────────────────────────────────────────────
+// 11. EDIT GPIO DIALOG
+// ────────────────────────────────────────────────────────────
+class _EditGPIODialog extends ConsumerStatefulWidget {
+  final String deviceId;
+  final String deviceName;
+  final int currentGpio;
+
+  const _EditGPIODialog({
+    required this.deviceId,
+    required this.deviceName,
+    required this.currentGpio,
+  });
+
+  @override
+  ConsumerState<_EditGPIODialog> createState() => _EditGPIODialogState();
+}
+
+class _EditGPIODialogState extends ConsumerState<_EditGPIODialog> {
+  late int _selectedGpio;
+  bool _isLoading = false;
+  List<int> _availableGPIOs = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _selectedGpio = widget.currentGpio;
+    _loadAvailableGPIOs();
+  }
+
+  Future<void> _loadAvailableGPIOs() async {
+    try {
+      final service = ref.read(esp32DeviceServiceProvider);
+      final gpios = await service.getAvailableGPIOs();
+      setState(() {
+        _availableGPIOs = gpios;
+        if (!_availableGPIOs.contains(widget.currentGpio)) {
+          _availableGPIOs.add(widget.currentGpio);
+          _availableGPIOs.sort();
+        }
+      });
+    } catch (e) {
+      _availableGPIOs = [4, 5, 13, 14, 16, 17, 18, 19, 21, 22, 23, 25, 26, 27, 32, 33];
+      setState(() {});
+    }
+  }
+
+  Future<void> _updateGPIO() async {
+    if (_selectedGpio == widget.currentGpio) {
+      if (mounted) {
+        _showSnack(context, 'No change in GPIO', color: Colors.orange);
+        Navigator.pop(context);
+      }
+      return;
+    }
+
+    setState(() => _isLoading = true);
+
+    try {
+      final service = ref.read(esp32DeviceServiceProvider);
+      final success = await service.editDeviceGPIO(
+        id: widget.deviceId,
+        newGpio: _selectedGpio,
+      );
+
+      setState(() => _isLoading = false);
+
+      if (mounted) {
+        if (success) {
+          Navigator.pop(context, true);
+          _showSnack(context, '✅ GPIO updated successfully!', color: _DT.green);
+        } else {
+          _showSnack(context, '❌ Failed to update GPIO', color: _DT.red);
+        }
+      }
+    } catch (e) {
+      setState(() => _isLoading = false);
+      if (mounted) {
+        _showSnack(context, '❌ Error: ${e.toString()}', color: _DT.red);
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      backgroundColor: Colors.transparent,
+      child: _GCard(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 60,
+              height: 60,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: _DT.purple.withValues(alpha: 0.15),
+              ),
+              child: const Icon(
+                Icons.edit_rounded,
+                color: _DT.purple,
+                size: 30,
+              ),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              'Edit GPIO',
+              style: TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Device: ${widget.deviceName}',
+              style: TextStyle(
+                fontSize: 14,
+                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+              ),
+            ),
+            const SizedBox(height: 20),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.1),
+                ),
+              ),
+              child: DropdownButtonHideUnderline(
+                child: DropdownButton<int>(
+                  value: _selectedGpio,
+                  isExpanded: true,
+                  items: _availableGPIOs.map((gpio) {
+                    return DropdownMenuItem(
+                      value: gpio,
+                      child: Row(
+                        children: [
+                          Text('GPIO $gpio'),
+                          if (gpio == widget.currentGpio) ...[
+                            const SizedBox(width: 8),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                              decoration: BoxDecoration(
+                                borderRadius: BorderRadius.circular(10),
+                                color: _DT.purple.withValues(alpha: 0.15),
+                              ),
+                              child: const Text(
+                                'Current',
+                                style: TextStyle(
+                                  fontSize: 10,
+                                  color: _DT.purple,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                    );
+                  }).toList(),
+                  onChanged: (value) {
+                    if (value != null) {
+                      setState(() => _selectedGpio = value);
+                    }
+                  },
+                ),
+              ),
+            ),
+            const SizedBox(height: 20),
+            Row(
+              children: [
+                Expanded(
+                  child: TextButton(
+                    onPressed: _isLoading ? null : () => Navigator.pop(context),
+                    child: const Text('Cancel'),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: ElevatedButton(
+                    onPressed: _isLoading ? null : _updateGPIO,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: _DT.purple,
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                    ),
+                    child: _isLoading
+                        ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.white,
+                      ),
+                    )
+                        : const Text(
+                      'Update GPIO',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ────────────────────────────────────────────────────────────
+// 12. QUICK ACTION DIALOG
+// ────────────────────────────────────────────────────────────
+class _QuickActionDialog extends ConsumerStatefulWidget {
+  const _QuickActionDialog();
+
+  @override
+  ConsumerState<_QuickActionDialog> createState() => _QuickActionDialogState();
+}
+
+class _QuickActionDialogState extends ConsumerState<_QuickActionDialog> {
+  final _formKey = GlobalKey<FormState>();
+  final _nameController = TextEditingController();
+  final _gpioController = TextEditingController();
+
+  int _selectedType = 0;
+  String _selectedRoom = 'Living Room';
+  bool _isLoading = false;
+
+  List<String> _rooms = [];
+  List<Map<String, dynamic>> _deviceTypes = [];
+  List<int> _availableGPIOs = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _loadData();
+  }
+
+  Future<void> _loadData() async {
+    setState(() => _isLoading = true);
+
+    try {
+      final service = ref.read(esp32DeviceServiceProvider);
+
+      List<int> gpios = [];
+      List<String> rooms = [];
+      List<Map<String, dynamic>> types = [];
+
+      try {
+        gpios = await service.getAvailableGPIOs().timeout(const Duration(seconds: 3));
+      } catch (e) {
+        print('GPIO fetch failed: $e');
+        gpios = [4, 5, 13, 14, 16, 17, 18, 19, 21, 22, 23, 25, 26, 27, 32, 33];
+      }
+
+      try {
+        rooms = await service.getRooms().timeout(const Duration(seconds: 3));
+      } catch (e) {
+        print('Rooms fetch failed: $e');
+        rooms = ['Living Room', 'Bedroom', 'Kitchen', 'Bathroom'];
+      }
+
+      try {
+        types = await service.getDeviceTypes().timeout(const Duration(seconds: 3));
+      } catch (e) {
+        print('Types fetch failed: $e');
+        types = [
+          {'type': 0, 'name': 'Light', 'icon': 'lightbulb'},
+          {'type': 1, 'name': 'Fan', 'icon': 'fan'},
+          {'type': 2, 'name': 'Switch', 'icon': 'power'},
+          {'type': 3, 'name': 'Socket', 'icon': 'power_plug'},
+        ];
+      }
+
+      setState(() {
+        _availableGPIOs = gpios;
+        _rooms = rooms;
+        _deviceTypes = types;
+        _isLoading = false;
+      });
+
+      if (gpios.isEmpty && mounted) {
+        _showSnack(context, '⚠️ Using default GPIOs (ESP32 not responding)', color: Colors.orange);
+      }
+    } catch (e) {
+      setState(() {
+        _isLoading = false;
+        _availableGPIOs = [4, 5, 13, 14, 16, 17, 18, 19, 21, 22, 23, 25, 26, 27, 32, 33];
+        _rooms = ['Living Room', 'Bedroom', 'Kitchen', 'Bathroom'];
+        _deviceTypes = [
+          {'type': 0, 'name': 'Light', 'icon': 'lightbulb'},
+          {'type': 1, 'name': 'Fan', 'icon': 'fan'},
+          {'type': 2, 'name': 'Switch', 'icon': 'power'},
+          {'type': 3, 'name': 'Socket', 'icon': 'power_plug'},
+        ];
+      });
+      if (mounted) {
+        _showSnack(context, '⚠️ ESP32 not responding, using defaults', color: Colors.orange);
+      }
+    }
+  }
+
+  Future<void> _addDevice() async {
+    if (!_formKey.currentState!.validate()) return;
+
+    setState(() => _isLoading = true);
+
+    try {
+      final service = ref.read(esp32DeviceServiceProvider);
+      final success = await service.addDevice(
+        name: _nameController.text.trim(),
+        type: _selectedType,
+        gpio: int.parse(_gpioController.text.trim()),
+        room: _selectedRoom,
+      );
+
+      setState(() => _isLoading = false);
+
+      if (success) {
+        if (mounted) {
+          Navigator.pop(context);
+          _showSnack(context, '✅ Device added successfully!', color: _DT.green);
+        }
+      } else {
+        if (mounted) {
+          _showSnack(context, '❌ Failed to add device', color: _DT.red);
+        }
+      }
+    } catch (e) {
+      setState(() => _isLoading = false);
+      if (mounted) {
+        _showSnack(context, '❌ Error: ${e.toString()}', color: _DT.red);
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: MediaQuery.of(context).size.height * 0.75,
+      decoration: const BoxDecoration(
+        color: Colors.transparent,
+      ),
+      child: _GCard(
+        padding: const EdgeInsets.all(24),
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(30)),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Text(
+                  'Add New Device',
+                  style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                IconButton(
+                  onPressed: () => Navigator.pop(context),
+                  icon: Icon(
+                    Icons.close_rounded,
+                    color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Connect a new device to your ESP32',
+              style: TextStyle(
+                fontSize: 14,
+                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5),
+              ),
+            ),
+            const SizedBox(height: 20),
+
+            if (_isLoading && _rooms.isEmpty)
+              const Expanded(
+                child: Center(
+                  child: CircularProgressIndicator(color: _DT.purple),
+                ),
+              )
+            else
+              Expanded(
+                child: SingleChildScrollView(
+                  child: Form(
+                    key: _formKey,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Device Name',
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w600,
+                            color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        TextFormField(
+                          controller: _nameController,
+                          decoration: InputDecoration(
+                            hintText: 'e.g. Living Room Lamp',
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(12),
+                              borderSide: BorderSide(
+                                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.1),
+                              ),
+                            ),
+                            enabledBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(12),
+                              borderSide: BorderSide(
+                                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.1),
+                              ),
+                            ),
+                            focusedBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(12),
+                              borderSide: const BorderSide(color: _DT.purple, width: 2),
+                            ),
+                            contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                          ),
+                          validator: (value) {
+                            if (value == null || value.trim().isEmpty) {
+                              return 'Please enter a device name';
+                            }
+                            return null;
+                          },
+                        ),
+                        const SizedBox(height: 16),
+
+                        Text(
+                          'Device Type',
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w600,
+                            color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        SizedBox(
+                          height: 48,
+                          child: ListView.separated(
+                            scrollDirection: Axis.horizontal,
+                            itemCount: _deviceTypes.length,
+                            separatorBuilder: (_, __) => const SizedBox(width: 8),
+                            itemBuilder: (context, index) {
+                              final type = _deviceTypes[index];
+                              final isSelected = _selectedType == type['type'];
+                              return GestureDetector(
+                                onTap: () => setState(() => _selectedType = type['type'] as int),
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                                  decoration: BoxDecoration(
+                                    borderRadius: BorderRadius.circular(20),
+                                    color: isSelected ? _DT.purple : Colors.transparent,
+                                    border: Border.all(
+                                      color: isSelected ? _DT.purple : Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.1),
+                                      width: 1.5,
+                                    ),
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      Icon(
+                                        _getIconForType(type['type'] as int),
+                                        size: 18,
+                                        color: isSelected ? Colors.white : _DT.purple,
+                                      ),
+                                      const SizedBox(width: 6),
+                                      Text(
+                                        type['name'] as String,
+                                        style: TextStyle(
+                                          fontSize: 13,
+                                          fontWeight: FontWeight.w500,
+                                          color: isSelected ? Colors.white : Theme.of(context).colorScheme.onSurface,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    'GPIO Pin',
+                                    style: TextStyle(
+                                      fontSize: 14,
+                                      fontWeight: FontWeight.w600,
+                                      color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+                                    ),
+                                  ),
+                                  const SizedBox(height: 6),
+                                  TextFormField(
+                                    controller: _gpioController,
+                                    keyboardType: TextInputType.number,
+                                    decoration: InputDecoration(
+                                      hintText: 'e.g. 14',
+                                      border: OutlineInputBorder(
+                                        borderRadius: BorderRadius.circular(12),
+                                        borderSide: BorderSide(
+                                          color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.1),
+                                        ),
+                                      ),
+                                      enabledBorder: OutlineInputBorder(
+                                        borderRadius: BorderRadius.circular(12),
+                                        borderSide: BorderSide(
+                                          color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.1),
+                                        ),
+                                      ),
+                                      focusedBorder: OutlineInputBorder(
+                                        borderRadius: BorderRadius.circular(12),
+                                        borderSide: const BorderSide(color: _DT.purple, width: 2),
+                                      ),
+                                      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                                    ),
+                                    validator: (value) {
+                                      if (value == null || value.trim().isEmpty) {
+                                        return 'Required';
+                                      }
+                                      final pin = int.tryParse(value.trim());
+                                      if (pin == null) {
+                                        return 'Invalid number';
+                                      }
+                                      if (!_availableGPIOs.contains(pin)) {
+                                        return 'GPIO ${pin} not available';
+                                      }
+                                      return null;
+                                    },
+                                  ),
+                                ],
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    'Room',
+                                    style: TextStyle(
+                                      fontSize: 14,
+                                      fontWeight: FontWeight.w600,
+                                      color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+                                    ),
+                                  ),
+                                  const SizedBox(height: 6),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                                    decoration: BoxDecoration(
+                                      borderRadius: BorderRadius.circular(12),
+                                      border: Border.all(
+                                        color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.1),
+                                      ),
+                                    ),
+                                    child: DropdownButtonHideUnderline(
+                                      child: DropdownButton<String>(
+                                        value: _selectedRoom,
+                                        isExpanded: true,
+                                        items: _rooms.map((room) {
+                                          return DropdownMenuItem(
+                                            value: room,
+                                            child: Text(room),
+                                          );
+                                        }).toList(),
+                                        onChanged: (value) {
+                                          if (value != null) {
+                                            setState(() => _selectedRoom = value);
+                                          }
+                                        },
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 24),
+
+                        Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(12),
+                            color: _DT.purple.withValues(alpha: 0.08),
+                            border: Border.all(
+                              color: _DT.purple.withValues(alpha: 0.15),
+                            ),
+                          ),
+                          child: Row(
+                            children: [
+                              Icon(Icons.info_outline_rounded, color: _DT.purple, size: 18),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: Text(
+                                  'Available GPIOs: ${_availableGPIOs.join(", ")}',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 24),
+
+                        SizedBox(
+                          width: double.infinity,
+                          height: 52,
+                          child: ElevatedButton(
+                            onPressed: _isLoading ? null : _addDevice,
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: _DT.purple,
+                              foregroundColor: Colors.white,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(16),
+                              ),
+                              elevation: 0,
+                            ),
+                            child: _isLoading
+                                ? const SizedBox(
+                              width: 24,
+                              height: 24,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: Colors.white,
+                              ),
+                            )
+                                : const Text(
+                              'Add Device',
+                              style: TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  IconData _getIconForType(int type) {
+    switch (type) {
+      case 0: return Icons.lightbulb_rounded;
+      case 1: return Icons.air_rounded;
+      case 2: return Icons.power_settings_new_rounded;
+      case 3: return Icons.electrical_services_rounded;
+      default: return Icons.devices_rounded;
+    }
+  }
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _gpioController.dispose();
+    super.dispose();
+  }
+}
+
+// ────────────────────────────────────────────────────────────
+// 13. PURPLE FAB
 // ────────────────────────────────────────────────────────────
 class _PurpleFab extends StatelessWidget {
   final VoidCallback onTap;
@@ -542,7 +1597,7 @@ class _PurpleFab extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 10. GLASS APP BAR
+// 14. GLASS APP BAR
 // ────────────────────────────────────────────────────────────
 class _GlassAppBar extends ConsumerWidget implements PreferredSizeWidget {
   final Future<void> Function() onRefresh;
@@ -565,6 +1620,7 @@ class _GlassAppBar extends ConsumerWidget implements PreferredSizeWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
+    final greeting = _getGreeting();
 
     return ClipRect(
       child: BackdropFilter(
@@ -576,9 +1632,9 @@ class _GlassAppBar extends ConsumerWidget implements PreferredSizeWidget {
           child: AppBar(
             backgroundColor: Colors.transparent,
             elevation: 0,
-            leading: Padding(
-              padding: const EdgeInsets.only(left: 16),
-              child: const CircleAvatar(
+            leading: const Padding(
+              padding: EdgeInsets.only(left: 16),
+              child: CircleAvatar(
                 radius: 18,
                 backgroundColor: _DT.purple,
                 child: Text('JD',
@@ -599,13 +1655,11 @@ class _GlassAppBar extends ConsumerWidget implements PreferredSizeWidget {
                             .onSurface
                             .withValues(alpha: 0.5),
                         fontWeight: FontWeight.w500)),
-                const Text(
-                  'Good Morning ☀️', // This will be updated dynamically
-                  style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.w700,
-                      height: 1.2),
-                ),
+                Text(greeting,
+                    style: const TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w700,
+                        height: 1.2)),
               ],
             ),
             actions: [
@@ -652,14 +1706,12 @@ class _GlassAppBar extends ConsumerWidget implements PreferredSizeWidget {
                             .onSurface
                             .withValues(alpha: 0.7)),
                   ),
-                  Positioned(
+                  const Positioned(
                     top: 6,
                     right: 6,
-                    child: Container(
-                      width: 8,
-                      height: 8,
-                      decoration: const BoxDecoration(
-                          shape: BoxShape.circle, color: _DT.red),
+                    child: CircleAvatar(
+                      radius: 4,
+                      backgroundColor: _DT.red,
                     ),
                   ),
                 ]),
@@ -694,7 +1746,7 @@ class _GlassAppBar extends ConsumerWidget implements PreferredSizeWidget {
     return '${days[now.weekday - 1]}, ${now.day} ${months[now.month - 1]}';
   }
 
-  String _greeting() {
+  String _getGreeting() {
     final h = DateTime.now().hour;
     if (h < 12) return 'Good Morning ☀️';
     if (h < 17) return 'Good Afternoon 🌤';
@@ -716,7 +1768,7 @@ class _ABBtn extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 11. HOME CONTENT WRAPPER
+// 15. HOME CONTENT WRAPPER
 // ────────────────────────────────────────────────────────────
 class _HomeContentWrapper extends ConsumerStatefulWidget {
   const _HomeContentWrapper();
@@ -747,7 +1799,7 @@ class _HomeContentWrapperState extends ConsumerState<_HomeContentWrapper> {
 }
 
 // ────────────────────────────────────────────────────────────
-// 12. HOME CONTENT
+// 16. HOME CONTENT
 // ────────────────────────────────────────────────────────────
 class _HomeContent extends ConsumerStatefulWidget {
   final AsyncValue<Map<String, dynamic>> dataAsync;
@@ -774,17 +1826,8 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
   double _ceilingBrightness = 0.8;
   bool _bathroomLightOn = false;
 
-  // FIXED: local optimistic light state — updated instantly on tap,
-  // never waits for network before reflecting in UI.
   final Map<String, bool> _lightStates = {};
-
-  // FIXED: tracks which rooms are currently mid-toggle so
-  // we can show a subtle spinner without blocking interaction.
   final Set<String> _togglingKeys = {};
-
-  // Timestamp of the last toggle per key — stream is blocked from
-  // overwriting local state for _cooldown after each tap, preventing
-  // the on→off→on flicker caused by a poll racing the HTTP PATCH.
   final Map<String, DateTime> _lastToggled = {};
   static const _cooldown = Duration(seconds: 8);
 
@@ -802,21 +1845,18 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
     return _lightStates[key] ?? false;
   }
 
-  // FIXED: optimistic toggle — flips state immediately, fires network
-  // in background, reverts only if the call fails.
   Future<void> _toggleRoomLight(String room) async {
     final key = _lightKeyForRoom(room);
     if (key == null) return;
-    if (_togglingKeys.contains(key)) return; // debounce rapid taps
+    if (_togglingKeys.contains(key)) return;
 
     final previousValue = _lightStates[key] ?? false;
     final newValue = !previousValue;
 
-    // ── Instant UI update ──────────────────────────────────
     setState(() {
       _lightStates[key] = newValue;
       _togglingKeys.add(key);
-      _lastToggled[key] = DateTime.now(); // stamp time so cooldown kicks in
+      _lastToggled[key] = DateTime.now();
     });
 
     HapticFeedback.lightImpact();
@@ -824,7 +1864,6 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
     try {
       await ref.read(lightToggleProvider).toggle(key, newValue, context);
     } catch (_) {
-      // Revert UI and clear cooldown so server can win after a failure
       if (mounted) {
         setState(() {
           _lightStates[key] = previousValue;
@@ -871,15 +1910,10 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
       color: _DT.purple,
       child: widget.dataAsync.when(
         data: (data) {
-          // FIXED: Only sync from server if we have no local optimistic state.
-          // This prevents the stream from overwriting the instant UI update.
           final lights = (data['lights'] as Map?) ?? {};
           final serverStates = Map<String, bool>.from(
               lights.map((k, v) => MapEntry(k, v == true)));
 
-          // Merge: keep local state for keys currently toggling OR within
-          // the cooldown window — prevents a poll racing the HTTP PATCH
-          // from flickering the toggle back to the old server value.
           for (final entry in serverStates.entries) {
             final lastToggle = _lastToggled[entry.key];
             final isCoolingDown = lastToggle != null &&
@@ -948,7 +1982,6 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
                   onSoundbarToggle: () =>
                       setState(() => _soundbarOn = !_soundbarOn),
                   activeCount: _activeCount(),
-                  // FIXED: pass per-key toggling state instead of global bool
                   isToggling: isCurrentToggling,
                 ),
               ],
@@ -990,7 +2023,7 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
 }
 
 // ────────────────────────────────────────────────────────────
-// 13. ESP CONNECTION BAR
+// 17. ESP CONNECTION BAR
 // ────────────────────────────────────────────────────────────
 class _EspBar extends StatelessWidget {
   final bool online;
@@ -1099,7 +2132,7 @@ class _MiniChip extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 14. STATS ROW
+// 18. STATS ROW
 // ────────────────────────────────────────────────────────────
 class _StatsRow extends StatelessWidget {
   final double temp;
@@ -1187,7 +2220,7 @@ class _StatTile extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 15. FLAME BANNER
+// 19. FLAME BANNER
 // ────────────────────────────────────────────────────────────
 class _FlameBanner extends StatelessWidget {
   final bool flame;
@@ -1252,7 +2285,7 @@ class _FlameBanner extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 16. ROOMS HEADER + TABS
+// 20. ROOMS HEADER + TABS
 // ────────────────────────────────────────────────────────────
 class _RoomsHeader extends StatelessWidget {
   final String selectedRoom;
@@ -1346,7 +2379,7 @@ class _RoomsHeader extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 17. DEVICE GRID
+// 21. DEVICE GRID
 // ────────────────────────────────────────────────────────────
 class _DeviceGrid extends StatelessWidget {
   final String selectedRoom;
@@ -1405,7 +2438,6 @@ class _DeviceGrid extends StatelessWidget {
                 fontWeight: FontWeight.w700,
                 letterSpacing: -0.4)),
         const Spacer(),
-        // FIXED: spinner only shows while toggling, not blocking interaction
         if (isToggling)
           const SizedBox(
             width: 16,
@@ -1555,7 +2587,6 @@ class _DeviceCardTall extends StatelessWidget {
 
     return RepaintBoundary(
       child: GestureDetector(
-        // FIXED: card tap is never blocked — isToggling only drives the spinner
         onTap: onToggle,
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 250),
@@ -1600,7 +2631,6 @@ class _DeviceCardTall extends StatelessWidget {
                         borderRadius: BorderRadius.circular(11),
                         color: iconColor.withValues(alpha: 0.18),
                       ),
-                      // FIXED: spinner is decorative — it never blocks tap
                       child: isToggling
                           ? Padding(
                         padding: const EdgeInsets.all(9),
@@ -1752,7 +2782,6 @@ class _DeviceRow extends StatelessWidget {
           borderRadius: BorderRadius.circular(12),
           color: iconColor.withValues(alpha: 0.15),
         ),
-        // FIXED: spinner in icon slot, tap never blocked
         child: isToggling
             ? Padding(
           padding: const EdgeInsets.all(10),
@@ -1784,7 +2813,7 @@ class _DeviceRow extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 18. GLASS CARD
+// 22. GLASS CARD
 // ────────────────────────────────────────────────────────────
 class _GCard extends StatelessWidget {
   final Widget child;
@@ -1857,12 +2886,12 @@ class _GCard extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 19. PILL BUTTON
+// 23. PILL BUTTON
 // ────────────────────────────────────────────────────────────
 class _PillBtn extends StatelessWidget {
   final String label;
-  final VoidCallback onTap;
-  const _PillBtn({required this.label, required this.onTap});
+  final VoidCallback? onTap;
+  const _PillBtn({required this.label, this.onTap});
 
   @override
   Widget build(BuildContext context) => GestureDetector(
@@ -1889,7 +2918,7 @@ class _PillBtn extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 20. GLASS BOTTOM NAV
+// 24. GLASS BOTTOM NAV
 // ────────────────────────────────────────────────────────────
 class _GlassBottomNav extends StatefulWidget {
   final int selectedIndex;
@@ -2183,7 +3212,7 @@ class _GlassBottomNavState extends State<_GlassBottomNav>
 }
 
 // ────────────────────────────────────────────────────────────
-// 21. ENERGY SCREEN
+// 25. ENERGY SCREEN
 // ────────────────────────────────────────────────────────────
 class _EnergyScreen extends StatelessWidget {
   const _EnergyScreen();
@@ -2391,7 +3420,7 @@ class _EnergyScreen extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 22. ALERTS SCREEN
+// 26. ALERTS SCREEN
 // ────────────────────────────────────────────────────────────
 class _AlertsScreen extends StatelessWidget {
   const _AlertsScreen();
@@ -2467,7 +3496,7 @@ class _AlertsScreen extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 23. SETTINGS SCREEN
+// 27. SETTINGS SCREEN (UPDATED with ESP32 IP settings)
 // ────────────────────────────────────────────────────────────
 class _SettingsScreen extends ConsumerWidget {
   const _SettingsScreen({super.key});
@@ -2476,12 +3505,307 @@ class _SettingsScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final themeMode = ref.watch(themeModeProvider);
     final bleStatus = ref.watch(bleServiceProvider).currentStatus;
-    final onConnectBLE = () => ref.read(bleServiceProvider).connect();
-    final onRefresh = () async {
+    final esp32Ip = ref.watch(esp32IpProvider);
+    final esp32Service = ref.watch(esp32DeviceServiceProvider);
+
+    void onConnectBLE() => ref.read(bleServiceProvider).connect();
+
+    Future<void> onRefresh() async {
       final ble = ref.read(bleServiceProvider);
       await ble.connect();
       ref.invalidate(httpDataProvider);
-    };
+    }
+
+    void showEditIPDialog() {
+      final TextEditingController ipController = TextEditingController(text: esp32Ip);
+
+      showDialog(
+        context: context,
+        builder: (context) => Dialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          backgroundColor: Colors.transparent,
+          child: _GCard(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 60,
+                  height: 60,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: _DT.purple.withValues(alpha: 0.15),
+                  ),
+                  child: const Icon(
+                    Icons.wifi_rounded,
+                    color: _DT.purple,
+                    size: 30,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                const Text(
+                  'ESP32 IP Address',
+                  style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Enter the IP address of your ESP32',
+                  style: TextStyle(
+                    fontSize: 14,
+                    color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5),
+                  ),
+                ),
+                const SizedBox(height: 20),
+                TextField(
+                  controller: ipController,
+                  decoration: InputDecoration(
+                    hintText: 'e.g. 192.168.1.100',
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: BorderSide(
+                        color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.1),
+                      ),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: const BorderSide(color: _DT.purple, width: 2),
+                    ),
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                  ),
+                ),
+                const SizedBox(height: 20),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextButton(
+                        onPressed: () => Navigator.pop(context),
+                        child: const Text('Cancel'),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: ElevatedButton(
+                        onPressed: () {
+                          final newIp = ipController.text.trim();
+                          if (newIp.isNotEmpty) {
+                            ref.read(esp32IpProvider.notifier).state = newIp;
+                            Navigator.pop(context);
+                            _showSnack(context, '✅ ESP32 IP updated to $newIp', color: _DT.green);
+                          }
+                        },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: _DT.purple,
+                          foregroundColor: Colors.white,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                        ),
+                        child: const Text(
+                          'Update',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    void showTestConnectionDialog() async {
+      showDialog(
+        context: context,
+        builder: (context) => Dialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          backgroundColor: Colors.transparent,
+          child: _GCard(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const SizedBox(
+                  width: 40,
+                  height: 40,
+                  child: CircularProgressIndicator(color: _DT.purple),
+                ),
+                const SizedBox(height: 16),
+                const Text(
+                  'Testing Connection...',
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Please wait while we test the connection to ESP32',
+                  style: TextStyle(
+                    fontSize: 14,
+                    color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+
+      try {
+        final devices = await esp32Service.getDevices();
+        Navigator.pop(context); // Close loading dialog
+
+        final isConnected = devices['devices'] != null;
+
+        showDialog(
+          context: context,
+          builder: (context) => Dialog(
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+            backgroundColor: Colors.transparent,
+            child: _GCard(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 60,
+                    height: 60,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: (isConnected ? _DT.green : _DT.red).withValues(alpha: 0.15),
+                    ),
+                    child: Icon(
+                      isConnected ? Icons.check_rounded : Icons.close_rounded,
+                      color: isConnected ? _DT.green : _DT.red,
+                      size: 30,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  Text(
+                    isConnected ? '✅ Connected!' : '❌ Connection Failed',
+                    style: TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.w700,
+                      color: isConnected ? _DT.green : _DT.red,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    isConnected
+                        ? 'ESP32 is reachable at $esp32Ip'
+                        : 'Could not reach ESP32 at $esp32Ip',
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5),
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                  if (isConnected) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      'Found ${(devices['devices'] as List?)?.length ?? 0} devices',
+                      style: TextStyle(
+                        fontSize: 14,
+                        color: _DT.purple,
+                      ),
+                    ),
+                  ],
+                  const SizedBox(height: 20),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton(
+                      onPressed: () => Navigator.pop(context),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: _DT.purple,
+                        foregroundColor: Colors.white,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                      ),
+                      child: const Text('OK'),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      } catch (e) {
+        Navigator.pop(context); // Close loading dialog
+        showDialog(
+          context: context,
+          builder: (context) => Dialog(
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+            backgroundColor: Colors.transparent,
+            child: _GCard(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 60,
+                    height: 60,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: _DT.red.withValues(alpha: 0.15),
+                    ),
+                    child: const Icon(
+                      Icons.error_rounded,
+                      color: _DT.red,
+                      size: 30,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  const Text(
+                    '❌ Connection Error',
+                    style: TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.w700,
+                      color: _DT.red,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Error: ${e.toString()}',
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5),
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 20),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton(
+                      onPressed: () => Navigator.pop(context),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: _DT.purple,
+                        foregroundColor: Colors.white,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                      ),
+                      child: const Text('OK'),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      }
+    }
 
     final padding = ResponsiveHelper.getPadding(context);
     final isDesktop = ResponsiveHelper.isDesktop(context);
@@ -2522,7 +3846,7 @@ class _SettingsScreen extends ConsumerWidget {
               ),
             ),
           ),
-          _SDivider(),
+          const _SDivider(),
           _STile(
             icon: Icons.bluetooth_rounded,
             title: 'Bluetooth',
@@ -2548,7 +3872,7 @@ class _SettingsScreen extends ConsumerWidget {
             )
                 : _PillBtn(label: 'Connect', onTap: onConnectBLE),
           ),
-          _SDivider(),
+          const _SDivider(),
           _STile(
             icon: Icons.refresh_rounded,
             title: 'Manual Refresh',
@@ -2570,6 +3894,55 @@ class _SettingsScreen extends ConsumerWidget {
         const SizedBox(height: 12),
         _GCard(child: Column(children: [
           _STile(
+            icon: Icons.settings_ethernet_rounded,
+            title: 'ESP32 Settings',
+            subtitle: 'IP: $esp32Ip',
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                GestureDetector(
+                  onTap: showEditIPDialog,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(20),
+                      color: _DT.purple.withValues(alpha: 0.15),
+                    ),
+                    child: const Text(
+                      'Edit IP',
+                      style: TextStyle(
+                        color: _DT.purple,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                GestureDetector(
+                  onTap: showTestConnectionDialog,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(20),
+                      color: _DT.green.withValues(alpha: 0.15),
+                    ),
+                    child: const Text(
+                      'Test',
+                      style: TextStyle(
+                        color: _DT.green,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            onTap: showEditIPDialog,
+          ),
+          const _SDivider(),
+          _STile(
             icon: Icons.router_rounded,
             title: 'Provision ESP32',
             subtitle: 'Setup a new device',
@@ -2581,7 +3954,7 @@ class _SettingsScreen extends ConsumerWidget {
                     .withValues(alpha: 0.35)),
             onTap: () {},
           ),
-          _SDivider(),
+          const _SDivider(),
           _STile(
             icon: Icons.wifi_rounded,
             title: 'Wi-Fi Config',
@@ -2594,7 +3967,7 @@ class _SettingsScreen extends ConsumerWidget {
                     .withValues(alpha: 0.35)),
             onTap: () {},
           ),
-          _SDivider(),
+          const _SDivider(),
           _STile(
             icon: Icons.info_outline_rounded,
             title: 'About',
@@ -2680,7 +4053,7 @@ class _STile extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 24. SKELETON LOADER
+// 28. SKELETON LOADER
 // ────────────────────────────────────────────────────────────
 class _SkeletonLoader extends StatelessWidget {
   const _SkeletonLoader();
@@ -2705,31 +4078,31 @@ class _SkeletonLoader extends StatelessWidget {
           right: padding,
           bottom: isDesktop ? 40 : 100,
         ),
-        child: Column(children: [
-          const _SBox(h: 54, r: 16),
-          const SizedBox(height: 12),
+        child: const Column(children: [
+          _SBox(h: 54, r: 16),
+          SizedBox(height: 12),
           Row(children: [
-            Expanded(child: const _SBox(h: 90, r: 20)),
-            const SizedBox(width: 10),
-            Expanded(child: const _SBox(h: 90, r: 20)),
-            const SizedBox(width: 10),
-            Expanded(child: const _SBox(h: 90, r: 20)),
+            Expanded(child: _SBox(h: 90, r: 20)),
+            SizedBox(width: 10),
+            Expanded(child: _SBox(h: 90, r: 20)),
+            SizedBox(width: 10),
+            Expanded(child: _SBox(h: 90, r: 20)),
           ]),
-          const SizedBox(height: 12),
-          const _SBox(h: 64, r: 16),
-          const SizedBox(height: 12),
-          const _SBox(h: 40, r: 16),
-          const SizedBox(height: 12),
+          SizedBox(height: 12),
+          _SBox(h: 64, r: 16),
+          SizedBox(height: 12),
+          _SBox(h: 40, r: 16),
+          SizedBox(height: 12),
           Row(children: [
-            Expanded(child: const _SBox(h: 160, r: 20)),
-            const SizedBox(width: 12),
-            Expanded(child: const _SBox(h: 160, r: 20)),
+            Expanded(child: _SBox(h: 160, r: 20)),
+            SizedBox(width: 12),
+            Expanded(child: _SBox(h: 160, r: 20)),
           ]),
-          const SizedBox(height: 12),
+          SizedBox(height: 12),
           Row(children: [
-            Expanded(child: const _SBox(h: 160, r: 20)),
-            const SizedBox(width: 12),
-            Expanded(child: const _SBox(h: 160, r: 20)),
+            Expanded(child: _SBox(h: 160, r: 20)),
+            SizedBox(width: 12),
+            Expanded(child: _SBox(h: 160, r: 20)),
           ]),
         ]),
       ),
