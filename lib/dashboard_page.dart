@@ -14,6 +14,9 @@ import 'ble_service.dart';
 // ────────────────────────────────────────────────────────────
 final themeModeProvider = StateProvider<ThemeMode>((ref) => ThemeMode.system);
 
+// FIX 1: Nav index lives in a provider so theme changes don't reset it
+final selectedNavIndexProvider = StateProvider<int>((ref) => 0);
+
 final lightTheme = ThemeData(
   useMaterial3: true,
   brightness: Brightness.light,
@@ -150,9 +153,7 @@ final httpDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
 
       final response = await http.get(
         Uri.parse('$url/smartHome.json'),
-        headers: {
-          'Cache-Control': 'no-cache',
-        },
+        headers: {'Cache-Control': 'no-cache'},
       ).timeout(const Duration(seconds: 5));
 
       if (response.statusCode == 200) {
@@ -222,9 +223,7 @@ final smartHomeDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
       currentData['lights'] = Map.from(bleService.lights);
       currentData['status']['online'] = true;
       cache.set('bleData', currentData);
-      if (!controller.isClosed) {
-        controller.add(currentData);
-      }
+      if (!controller.isClosed) controller.add(currentData);
     }
   }
 
@@ -234,20 +233,14 @@ final smartHomeDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
       if (cachedBle != null) {
         currentData = Map<String, dynamic>.from(cachedBle as Map);
         currentData['status'] = httpData['status'] ?? currentData['status'];
-        if (!controller.isClosed) {
-          controller.add(currentData);
-        }
+        if (!controller.isClosed) controller.add(currentData);
         return;
       }
       currentData = httpData;
-      if (!controller.isClosed) {
-        controller.add(currentData);
-      }
+      if (!controller.isClosed) controller.add(currentData);
     } else if (httpData.containsKey('status')) {
       currentData['status'] = httpData['status'];
-      if (!controller.isClosed) {
-        controller.add(currentData);
-      }
+      if (!controller.isClosed) controller.add(currentData);
     }
   }
 
@@ -255,9 +248,7 @@ final smartHomeDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
   if (cachedData != null) {
     currentData = Map<String, dynamic>.from(cachedData as Map);
     Future.microtask(() {
-      if (!controller.isClosed) {
-        controller.add(currentData);
-      }
+      if (!controller.isClosed) controller.add(currentData);
     });
   }
 
@@ -279,9 +270,7 @@ final smartHomeDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
         break;
       } catch (_) {
         attempts++;
-        if (attempts < 3) {
-          await Future.delayed(Duration(seconds: attempts));
-        }
+        if (attempts < 3) await Future.delayed(Duration(seconds: attempts));
       }
     }
   }
@@ -375,16 +364,8 @@ class _WallpaperBackground extends StatelessWidget {
               begin: Alignment.topLeft,
               end: Alignment.bottomRight,
               colors: isDark
-                  ? const [
-                Color(0xFF0B0D1A),
-                Color(0xFF0F1228),
-                Color(0xFF0B0D1A)
-              ]
-                  : const [
-                Color(0xFFF0F2FF),
-                Color(0xFFEEEBFF),
-                Color(0xFFF0F4FF)
-              ],
+                  ? const [Color(0xFF0B0D1A), Color(0xFF0F1228), Color(0xFF0B0D1A)]
+                  : const [Color(0xFFF0F2FF), Color(0xFFEEEBFF), Color(0xFFF0F4FF)],
             ),
           ),
         ),
@@ -431,7 +412,7 @@ class _Blob extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 8. DASHBOARD PAGE
+// 8. DASHBOARD PAGE — FIX 1: uses selectedNavIndexProvider
 // ────────────────────────────────────────────────────────────
 class DashboardPage extends ConsumerStatefulWidget {
   const DashboardPage({super.key});
@@ -442,8 +423,6 @@ class DashboardPage extends ConsumerStatefulWidget {
 
 class _DashboardPageState extends ConsumerState<DashboardPage>
     with SingleTickerProviderStateMixin {
-  int _selectedIndex = 0;
-  int _previousIndex = 0;
   late final List<Widget> _pages;
 
   @override
@@ -467,7 +446,8 @@ class _DashboardPageState extends ConsumerState<DashboardPage>
   @override
   Widget build(BuildContext context) {
     final bleService = ref.watch(bleServiceProvider);
-    final isForward = _selectedIndex > _previousIndex;
+    // FIX 1: read from provider — survives theme rebuilds
+    final selectedIndex = ref.watch(selectedNavIndexProvider);
     final isDesktop = ResponsiveHelper.isDesktop(context);
 
     return Scaffold(
@@ -485,45 +465,40 @@ class _DashboardPageState extends ConsumerState<DashboardPage>
           switchInCurve: Curves.easeOutCubic,
           switchOutCurve: Curves.easeInCubic,
           transitionBuilder: (child, animation) {
-            final offset = isForward
-                ? const Offset(1.0, 0.0)
-                : const Offset(-1.0, 0.0);
-            return SlideTransition(
-              position: Tween<Offset>(begin: offset, end: Offset.zero).animate(
-                CurvedAnimation(parent: animation, curve: Curves.easeOutCubic),
-              ),
-              child: FadeTransition(
-                opacity: animation,
-                child: ScaleTransition(
-                  scale: Tween<double>(begin: 0.95, end: 1.0).animate(
-                    CurvedAnimation(
-                        parent: animation, curve: Curves.easeOutCubic),
-                  ),
-                  child: RepaintBoundary(child: child),
+            return FadeTransition(
+              opacity: animation,
+              child: ScaleTransition(
+                scale: Tween<double>(begin: 0.97, end: 1.0).animate(
+                  CurvedAnimation(parent: animation, curve: Curves.easeOutCubic),
                 ),
+                child: RepaintBoundary(child: child),
               ),
             );
           },
-          child: _pages[_selectedIndex],
+          child: KeyedSubtree(
+            key: ValueKey(selectedIndex),
+            child: _pages[selectedIndex],
+          ),
         ),
       ),
-      floatingActionButton: isDesktop ? null : _PurpleFab(onTap: () {
+      floatingActionButton: isDesktop
+          ? null
+          : _PurpleFab(onTap: () {
         HapticFeedback.mediumImpact();
-        _showSnack(context, 'Quick actions coming soon', color: _DT.purple);
+        _showSnack(context, 'Quick actions coming soon',
+            color: _DT.purple);
       }),
       floatingActionButtonLocation:
       isDesktop ? null : FloatingActionButtonLocation.centerDocked,
       bottomNavigationBar: isDesktop
           ? null
           : Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+        padding:
+        const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
         child: _GlassBottomNav(
-          selectedIndex: _selectedIndex,
+          selectedIndex: selectedIndex,
           onTap: (i) {
-            setState(() {
-              _previousIndex = _selectedIndex;
-              _selectedIndex = i;
-            });
+            ref.read(selectedNavIndexProvider.notifier).state = i;
           },
         ),
       ),
@@ -582,8 +557,10 @@ class _GlassAppBar extends ConsumerWidget implements PreferredSizeWidget {
 
   void _toggleTheme(WidgetRef ref) {
     final current = ref.read(themeModeProvider);
-    final next = current == ThemeMode.light ? ThemeMode.dark : ThemeMode.light;
+    final next =
+    current == ThemeMode.light ? ThemeMode.dark : ThemeMode.light;
     ref.read(themeModeProvider.notifier).state = next;
+    // FIX 1: selectedNavIndexProvider is untouched — tab stays put
   }
 
   @override
@@ -706,27 +683,12 @@ class _GlassAppBar extends ConsumerWidget implements PreferredSizeWidget {
   String _formattedDate() {
     final now = DateTime.now();
     const days = [
-      'Monday',
-      'Tuesday',
-      'Wednesday',
-      'Thursday',
-      'Friday',
-      'Saturday',
-      'Sunday'
+      'Monday', 'Tuesday', 'Wednesday', 'Thursday',
+      'Friday', 'Saturday', 'Sunday'
     ];
     const months = [
-      'Jan',
-      'Feb',
-      'Mar',
-      'Apr',
-      'May',
-      'Jun',
-      'Jul',
-      'Aug',
-      'Sep',
-      'Oct',
-      'Nov',
-      'Dec'
+      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
     ];
     return '${days[now.weekday - 1]}, ${now.day} ${months[now.month - 1]}';
   }
@@ -784,7 +746,7 @@ class _HomeContentWrapperState extends ConsumerState<_HomeContentWrapper> {
 }
 
 // ────────────────────────────────────────────────────────────
-// 12. HOME CONTENT - FIXED LIGHT TOGGLE
+// 12. HOME CONTENT
 // ────────────────────────────────────────────────────────────
 class _HomeContent extends ConsumerStatefulWidget {
   final AsyncValue<Map<String, dynamic>> dataAsync;
@@ -815,14 +777,10 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
 
   String? _lightKeyForRoom(String room) {
     switch (room) {
-      case 'Living Room':
-        return 'room1';
-      case 'Bedroom':
-        return 'room2';
-      case 'Kitchen':
-        return 'room3';
-      default:
-        return null;
+      case 'Living Room': return 'room1';
+      case 'Bedroom':     return 'room2';
+      case 'Kitchen':     return 'room3';
+      default:            return null;
     }
   }
 
@@ -839,19 +797,13 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
     final current = _lightStates[key] ?? false;
     final newValue = !current;
 
-    // Update UI immediately for instant feedback
-    setState(() {
-      _lightStates[key] = newValue;
-    });
+    setState(() => _lightStates[key] = newValue);
 
     try {
       await ref.read(lightToggleProvider).toggle(key, newValue, context);
       HapticFeedback.lightImpact();
     } catch (_) {
-      // Revert on error
-      setState(() {
-        _lightStates[key] = current;
-      });
+      setState(() => _lightStates[key] = current);
       _showSnack(context, 'Failed to toggle light', color: Colors.red);
     } finally {
       _isToggling = false;
@@ -990,7 +942,7 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
 }
 
 // ────────────────────────────────────────────────────────────
-// 13. ESP CONNECTION BAR
+// 13. ESP CONNECTION BAR — FIX 2: no more clipping
 // ────────────────────────────────────────────────────────────
 class _EspBar extends StatelessWidget {
   final bool online;
@@ -1010,8 +962,9 @@ class _EspBar extends StatelessWidget {
     final dotColor = online ? _DT.espConnected : _DT.red;
 
     return _GCard(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
       child: Row(children: [
+        // Status dot
         Container(
           width: 10,
           height: 10,
@@ -1023,29 +976,39 @@ class _EspBar extends StatelessWidget {
             ],
           ),
         ),
-        const SizedBox(width: 10),
+        const SizedBox(width: 8),
+        // Label — shrinks before chips do
         Text(
           online ? 'ESP32 Connected' : 'Disconnected',
           style: TextStyle(
-              fontSize: 14, fontWeight: FontWeight.w700, color: dotColor),
+              fontSize: 13, fontWeight: FontWeight.w700, color: dotColor),
         ),
-        const SizedBox(width: 10),
-        _MiniChip(label: ip, icon: Icons.settings_ethernet_rounded),
-        const SizedBox(width: 6),
-        _MiniChip(label: '${ping}ms', icon: Icons.timer_outlined),
-        const Spacer(),
-        Row(children: [
-          Icon(Icons.wifi,
-              size: 16,
-              color: online ? _DT.espConnected : Colors.grey.shade600),
-          const SizedBox(width: 4),
-          Text('${rssi}dBm',
-              style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                  color: online ? _DT.espConnected : Colors.grey.shade500)),
-        ]),
         const SizedBox(width: 8),
+        // FIX 2: Flexible + horizontal scroll keeps chips visible
+        Flexible(
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              _MiniChip(label: ip, icon: Icons.settings_ethernet_rounded),
+              const SizedBox(width: 5),
+              _MiniChip(label: '${ping}ms', icon: Icons.timer_outlined),
+              const SizedBox(width: 5),
+              Row(children: [
+                Icon(Icons.wifi,
+                    size: 14,
+                    color: online ? _DT.espConnected : Colors.grey.shade600),
+                const SizedBox(width: 3),
+                Text('${rssi}dBm',
+                    style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                        color: online
+                            ? _DT.espConnected
+                            : Colors.grey.shade500)),
+              ]),
+            ]),
+          ),
+        ),
         Icon(Icons.chevron_right_rounded,
             size: 18,
             color:
@@ -1307,7 +1270,8 @@ class _RoomsHeader extends StatelessWidget {
                       ? Colors.white.withOpacity(0.07)
                       : Colors.black.withOpacity(0.05)),
                   border: Border.all(
-                    color: selected ? Colors.white : Colors.transparent,
+                    color:
+                    selected ? Colors.white : Colors.transparent,
                     width: selected ? 1.5 : 0,
                   ),
                 ),
@@ -1337,7 +1301,7 @@ class _RoomsHeader extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 17. DEVICE GRID - FIXED
+// 17. DEVICE GRID
 // ────────────────────────────────────────────────────────────
 class _DeviceGrid extends StatelessWidget {
   final String selectedRoom;
@@ -1401,9 +1365,7 @@ class _DeviceGrid extends StatelessWidget {
             width: 20,
             height: 20,
             child: CircularProgressIndicator(
-              strokeWidth: 2,
-              color: _DT.purple,
-            ),
+                strokeWidth: 2, color: _DT.purple),
           ),
         const SizedBox(width: 8),
         Text('$activeCount Active',
@@ -1414,125 +1376,102 @@ class _DeviceGrid extends StatelessWidget {
       ]),
       const SizedBox(height: 14),
       if (isDesktop) ...[
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Expanded(
-              child: _DeviceCardTall(
-                icon: Icons.lightbulb_rounded,
-                iconColor: lightOn ? _DT.amber : Colors.grey,
-                name: 'Ceiling Light',
-                status: lightOn
-                    ? 'On • ${(ceilingBrightness * 100).round()}%'
-                    : 'Off',
-                isOn: lightOn,
-                onToggle: onLightToggle,
-                accentColor: _DT.amber,
-                sliderValue: ceilingBrightness,
-                onSliderChanged: onBrightnessChanged,
-                isToggling: isToggling,
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: _DeviceCardTall(
-                icon: Icons.tv_rounded,
-                iconColor: tvOn ? _DT.blue : Colors.grey,
-                name: 'Smart TV',
-                status: tvOn ? 'On' : 'Off',
-                isOn: tvOn,
-                onToggle: onTvToggle,
-                accentColor: _DT.blue,
-                isToggling: false,
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: _DeviceCardTall(
-                icon: Icons.air_rounded,
-                iconColor: purifierOn ? const Color(0xFF81C784) : Colors.grey,
-                name: 'Air Purifier',
-                status: purifierOn ? 'On' : 'Off',
-                isOn: purifierOn,
-                onToggle: onPurifierToggle,
-                accentColor: const Color(0xFF81C784),
-                isToggling: false,
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: _DeviceCardTall(
-                icon: Icons.speaker_rounded,
-                iconColor: soundbarOn ? const Color(0xFFCE93D8) : Colors.grey,
-                name: 'Soundbar',
-                status: soundbarOn ? 'Playing' : 'Paused',
-                isOn: soundbarOn,
-                onToggle: onSoundbarToggle,
-                accentColor: const Color(0xFFCE93D8),
-                isToggling: false,
-              ),
-            ),
-          ],
-        ),
+        Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Expanded(child: _DeviceCardTall(
+            icon: Icons.lightbulb_rounded,
+            iconColor: lightOn ? _DT.amber : Colors.grey,
+            name: 'Ceiling Light',
+            status: lightOn ? 'On • ${(ceilingBrightness * 100).round()}%' : 'Off',
+            isOn: lightOn,
+            onToggle: onLightToggle,
+            accentColor: _DT.amber,
+            sliderValue: ceilingBrightness,
+            onSliderChanged: onBrightnessChanged,
+            isToggling: isToggling,
+          )),
+          const SizedBox(width: 12),
+          Expanded(child: _DeviceCardTall(
+            icon: Icons.tv_rounded,
+            iconColor: tvOn ? _DT.blue : Colors.grey,
+            name: 'Smart TV',
+            status: tvOn ? 'On' : 'Off',
+            isOn: tvOn,
+            onToggle: onTvToggle,
+            accentColor: _DT.blue,
+            isToggling: false,
+          )),
+          const SizedBox(width: 12),
+          Expanded(child: _DeviceCardTall(
+            icon: Icons.air_rounded,
+            iconColor: purifierOn ? const Color(0xFF81C784) : Colors.grey,
+            name: 'Air Purifier',
+            status: purifierOn ? 'On' : 'Off',
+            isOn: purifierOn,
+            onToggle: onPurifierToggle,
+            accentColor: const Color(0xFF81C784),
+            isToggling: false,
+          )),
+          const SizedBox(width: 12),
+          Expanded(child: _DeviceCardTall(
+            icon: Icons.speaker_rounded,
+            iconColor: soundbarOn ? const Color(0xFFCE93D8) : Colors.grey,
+            name: 'Soundbar',
+            status: soundbarOn ? 'Playing' : 'Paused',
+            isOn: soundbarOn,
+            onToggle: onSoundbarToggle,
+            accentColor: const Color(0xFFCE93D8),
+            isToggling: false,
+          )),
+        ]),
       ] else ...[
         Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Expanded(
-            child: _DeviceCardTall(
-              icon: Icons.lightbulb_rounded,
-              iconColor: lightOn ? _DT.amber : Colors.grey,
-              name: 'Ceiling Light',
-              status: lightOn
-                  ? 'On • ${(ceilingBrightness * 100).round()}%'
-                  : 'Off',
-              isOn: lightOn,
-              onToggle: onLightToggle,
-              accentColor: _DT.amber,
-              sliderValue: ceilingBrightness,
-              onSliderChanged: onBrightnessChanged,
-              isToggling: isToggling,
-            ),
-          ),
+          Expanded(child: _DeviceCardTall(
+            icon: Icons.lightbulb_rounded,
+            iconColor: lightOn ? _DT.amber : Colors.grey,
+            name: 'Ceiling Light',
+            status: lightOn ? 'On • ${(ceilingBrightness * 100).round()}%' : 'Off',
+            isOn: lightOn,
+            onToggle: onLightToggle,
+            accentColor: _DT.amber,
+            sliderValue: ceilingBrightness,
+            onSliderChanged: onBrightnessChanged,
+            isToggling: isToggling,
+          )),
           const SizedBox(width: 12),
-          Expanded(
-            child: _DeviceCardTall(
-              icon: Icons.tv_rounded,
-              iconColor: tvOn ? _DT.blue : Colors.grey,
-              name: 'Smart TV',
-              status: tvOn ? 'On' : 'Off',
-              isOn: tvOn,
-              onToggle: onTvToggle,
-              accentColor: _DT.blue,
-              isToggling: false,
-            ),
-          ),
+          Expanded(child: _DeviceCardTall(
+            icon: Icons.tv_rounded,
+            iconColor: tvOn ? _DT.blue : Colors.grey,
+            name: 'Smart TV',
+            status: tvOn ? 'On' : 'Off',
+            isOn: tvOn,
+            onToggle: onTvToggle,
+            accentColor: _DT.blue,
+            isToggling: false,
+          )),
         ]),
         const SizedBox(height: 12),
         Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Expanded(
-            child: _DeviceCardTall(
-              icon: Icons.air_rounded,
-              iconColor: purifierOn ? const Color(0xFF81C784) : Colors.grey,
-              name: 'Air Purifier',
-              status: purifierOn ? 'On' : 'Off',
-              isOn: purifierOn,
-              onToggle: onPurifierToggle,
-              accentColor: const Color(0xFF81C784),
-              isToggling: false,
-            ),
-          ),
+          Expanded(child: _DeviceCardTall(
+            icon: Icons.air_rounded,
+            iconColor: purifierOn ? const Color(0xFF81C784) : Colors.grey,
+            name: 'Air Purifier',
+            status: purifierOn ? 'On' : 'Off',
+            isOn: purifierOn,
+            onToggle: onPurifierToggle,
+            accentColor: const Color(0xFF81C784),
+            isToggling: false,
+          )),
           const SizedBox(width: 12),
-          Expanded(
-            child: _DeviceCardTall(
-              icon: Icons.speaker_rounded,
-              iconColor: soundbarOn ? const Color(0xFFCE93D8) : Colors.grey,
-              name: 'Soundbar',
-              status: soundbarOn ? 'Playing' : 'Paused',
-              isOn: soundbarOn,
-              onToggle: onSoundbarToggle,
-              accentColor: const Color(0xFFCE93D8),
-              isToggling: false,
-            ),
-          ),
+          Expanded(child: _DeviceCardTall(
+            icon: Icons.speaker_rounded,
+            iconColor: soundbarOn ? const Color(0xFFCE93D8) : Colors.grey,
+            name: 'Soundbar',
+            status: soundbarOn ? 'Playing' : 'Paused',
+            isOn: soundbarOn,
+            onToggle: onSoundbarToggle,
+            accentColor: const Color(0xFFCE93D8),
+            isToggling: false,
+          )),
         ]),
       ],
     ]);
@@ -1600,76 +1539,78 @@ class _DeviceCardTall extends StatelessWidget {
             ]
                 : null,
           ),
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Container(
-                  width: 38,
-                  height: 38,
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(11),
-                    color: iconColor.withOpacity(0.18),
-                  ),
-                  child: isToggling && isOn
-                      ? const SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      color: _DT.purple,
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Container(
+                      width: 38,
+                      height: 38,
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(11),
+                        color: iconColor.withOpacity(0.18),
+                      ),
+                      child: isToggling && isOn
+                          ? const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2, color: _DT.purple),
+                      )
+                          : Icon(icon, color: iconColor, size: 20),
                     ),
-                  )
-                      : Icon(icon, color: iconColor, size: 20),
+                    _SmallToggle(
+                      value: isOn,
+                      onToggle: onToggle,
+                      accent: accentColor,
+                      isToggling: isToggling,
+                    ),
+                  ],
                 ),
-                _SmallToggle(
-                  value: isOn,
-                  onToggle: onToggle,
-                  accent: accentColor,
-                  isToggling: isToggling,
-                ),
-              ],
-            ),
-            const SizedBox(height: 28),
-            Text(name,
-                style: const TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
-                    height: 1.2)),
-            const SizedBox(height: 3),
-            Text(status,
-                style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w500,
-                    color: isOn ? accentColor : Colors.grey)),
-            if (sliderValue != null && onSliderChanged != null) ...[
-              const SizedBox(height: 10),
-              SliderTheme(
-                data: SliderTheme.of(context).copyWith(
-                  activeTrackColor: accentColor,
-                  inactiveTrackColor:
-                  Theme.of(context).colorScheme.onSurface.withOpacity(0.12),
-                  thumbColor: Colors.white,
-                  overlayColor: accentColor.withOpacity(0.12),
-                  thumbShape: const RoundSliderThumbShape(
-                      enabledThumbRadius: 7, elevation: 2),
-                  trackHeight: 3,
-                ),
-                child: Slider(
-                  value: sliderValue!,
-                  onChanged: isToggling ? null : onSliderChanged,
-                  min: 0,
-                  max: 1,
-                ),
-              ),
-              Text('${(sliderValue! * 100).round()}%',
-                  style: TextStyle(
-                      fontSize: 11,
-                      fontWeight: FontWeight.w600,
-                      color: accentColor)),
-            ],
-          ]),
+                const SizedBox(height: 28),
+                Text(name,
+                    style: const TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        height: 1.2)),
+                const SizedBox(height: 3),
+                Text(status,
+                    style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w500,
+                        color: isOn ? accentColor : Colors.grey)),
+                if (sliderValue != null && onSliderChanged != null) ...[
+                  const SizedBox(height: 10),
+                  SliderTheme(
+                    data: SliderTheme.of(context).copyWith(
+                      activeTrackColor: accentColor,
+                      inactiveTrackColor: Theme.of(context)
+                          .colorScheme
+                          .onSurface
+                          .withOpacity(0.12),
+                      thumbColor: Colors.white,
+                      overlayColor: accentColor.withOpacity(0.12),
+                      thumbShape: const RoundSliderThumbShape(
+                          enabledThumbRadius: 7, elevation: 2),
+                      trackHeight: 3,
+                    ),
+                    child: Slider(
+                      value: sliderValue!,
+                      onChanged: isToggling ? null : onSliderChanged,
+                      min: 0,
+                      max: 1,
+                    ),
+                  ),
+                  Text('${(sliderValue! * 100).round()}%',
+                      style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                          color: accentColor)),
+                ],
+              ]),
         ),
       ),
     );
@@ -1692,7 +1633,9 @@ class _SmallToggle extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
-      onTap: isToggling ? null : () {
+      onTap: isToggling
+          ? null
+          : () {
         HapticFeedback.lightImpact();
         onToggle();
       },
@@ -1896,7 +1839,7 @@ class _PillBtn extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 20. GLASS BOTTOM NAV - FIXED (No onHover)
+// 20. GLASS BOTTOM NAV — FIX 3: iOS 26 liquid glass sliding pill
 // ────────────────────────────────────────────────────────────
 class _GlassBottomNav extends StatefulWidget {
   final int selectedIndex;
@@ -1911,7 +1854,8 @@ class _GlassBottomNav extends StatefulWidget {
   State<_GlassBottomNav> createState() => _GlassBottomNavState();
 }
 
-class _GlassBottomNavState extends State<_GlassBottomNav> {
+class _GlassBottomNavState extends State<_GlassBottomNav>
+    with SingleTickerProviderStateMixin {
   static const _items = [
     (Icons.home_rounded, 'Home'),
     (Icons.bolt_rounded, 'Energy'),
@@ -1919,97 +1863,202 @@ class _GlassBottomNavState extends State<_GlassBottomNav> {
     (Icons.settings_rounded, 'Settings'),
   ];
 
+  late AnimationController _pillController;
+  late Animation<double> _pillPosition;
+  int _prevIndex = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _prevIndex = widget.selectedIndex;
+    _pillController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 380),
+    );
+    // Start with pill already at correct position
+    _pillPosition = AlwaysStoppedAnimation(widget.selectedIndex.toDouble());
+  }
+
+  @override
+  void didUpdateWidget(_GlassBottomNav old) {
+    super.didUpdateWidget(old);
+    if (old.selectedIndex != widget.selectedIndex) {
+      final from = _prevIndex.toDouble();
+      final to = widget.selectedIndex.toDouble();
+      _pillPosition = Tween<double>(begin: from, end: to).animate(
+        CurvedAnimation(parent: _pillController, curve: Curves.easeOutExpo),
+      );
+      _pillController.forward(from: 0);
+      _prevIndex = widget.selectedIndex;
+    }
+  }
+
+  @override
+  void dispose() {
+    _pillController.dispose();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
     return Container(
-      height: 64,
+      height: 68,
       decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(32),
+        borderRadius: BorderRadius.circular(34),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.20),
-            blurRadius: 28,
-            offset: const Offset(0, -3),
+            color: Colors.black.withOpacity(isDark ? 0.35 : 0.12),
+            blurRadius: 32,
+            offset: const Offset(0, 8),
+          ),
+          BoxShadow(
+            color: _DT.purple.withOpacity(isDark ? 0.08 : 0.05),
+            blurRadius: 20,
+            spreadRadius: 1,
           ),
         ],
       ),
       child: ClipRRect(
-        borderRadius: BorderRadius.circular(32),
+        borderRadius: BorderRadius.circular(34),
         child: BackdropFilter(
-          filter: ui.ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+          filter: ui.ImageFilter.blur(sigmaX: 28, sigmaY: 28),
           child: Container(
             decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(32),
-              color: isDark
-                  ? Colors.white.withOpacity(0.10)
-                  : Colors.white.withOpacity(0.52),
+              borderRadius: BorderRadius.circular(34),
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: isDark
+                    ? [
+                  Colors.white.withOpacity(0.13),
+                  Colors.white.withOpacity(0.07),
+                ]
+                    : [
+                  Colors.white.withOpacity(0.72),
+                  Colors.white.withOpacity(0.48),
+                ],
+              ),
               border: Border.all(
                 color: isDark
-                    ? Colors.white.withOpacity(0.12)
-                    : Colors.black.withOpacity(0.06),
-                width: 0.5,
+                    ? Colors.white.withOpacity(0.15)
+                    : Colors.white.withOpacity(0.6),
+                width: 0.8,
               ),
             ),
-            child: Row(
-              children: _items.asMap().entries.map((entry) {
-                final index = entry.key;
-                final (icon, label) = entry.value;
-                final isActive = widget.selectedIndex == index;
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final tabWidth = constraints.maxWidth / _items.length;
 
-                return Expanded(
-                  child: GestureDetector(
-                    behavior: HitTestBehavior.opaque,
-                    onTap: () {
-                      HapticFeedback.selectionClick();
-                      widget.onTap(index);
+                return Stack(children: [
+                  // ── Animated sliding glass pill ──
+                  AnimatedBuilder(
+                    animation: _pillPosition,
+                    builder: (context, _) {
+                      return Positioned(
+                        top: 8,
+                        bottom: 8,
+                        left: _pillPosition.value * tabWidth + 6,
+                        width: tabWidth - 12,
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(26),
+                          child: BackdropFilter(
+                            filter:
+                            ui.ImageFilter.blur(sigmaX: 12, sigmaY: 12),
+                            child: Container(
+                              decoration: BoxDecoration(
+                                borderRadius: BorderRadius.circular(26),
+                                gradient: LinearGradient(
+                                  begin: Alignment.topLeft,
+                                  end: Alignment.bottomRight,
+                                  colors: isDark
+                                      ? [
+                                    _DT.purple.withOpacity(0.38),
+                                    _DT.purple.withOpacity(0.20),
+                                  ]
+                                      : [
+                                    _DT.purple.withOpacity(0.20),
+                                    _DT.purple.withOpacity(0.10),
+                                  ],
+                                ),
+                                border: Border.all(
+                                  color: _DT.purple
+                                      .withOpacity(isDark ? 0.50 : 0.30),
+                                  width: 0.8,
+                                ),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: _DT.purple.withOpacity(0.28),
+                                    blurRadius: 14,
+                                    offset: const Offset(0, 2),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      );
                     },
-                    child: AnimatedContainer(
-                      duration: const Duration(milliseconds: 250),
-                      margin: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(20),
-                        color: isActive
-                            ? _DT.purple.withOpacity(0.15)
-                            : Colors.transparent,
-                      ),
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          AnimatedSwitcher(
-                            duration: const Duration(milliseconds: 200),
-                            child: Icon(
-                              icon,
-                              key: ValueKey(isActive),
-                              size: isActive ? 26 : 22,
-                              color: isActive
-                                  ? _DT.purple
-                                  : (isDark
-                                  ? Colors.white.withOpacity(0.4)
-                                  : Colors.black.withOpacity(0.3)),
-                            ),
-                          ),
-                          const SizedBox(height: 2),
-                          AnimatedDefaultTextStyle(
-                            duration: const Duration(milliseconds: 200),
-                            style: TextStyle(
-                              fontSize: 10,
-                              fontWeight: isActive ? FontWeight.w700 : FontWeight.w500,
-                              color: isActive
-                                  ? _DT.purple
-                                  : (isDark
-                                  ? Colors.white.withOpacity(0.4)
-                                  : Colors.black.withOpacity(0.3)),
-                            ),
-                            child: Text(label),
-                          ),
-                        ],
-                      ),
-                    ),
                   ),
-                );
-              }).toList(),
+
+                  // ── Tab items sit on top of pill ──
+                  Row(
+                    children: _items.asMap().entries.map((entry) {
+                      final index = entry.key;
+                      final (icon, label) = entry.value;
+                      final isActive = widget.selectedIndex == index;
+
+                      return Expanded(
+                        child: GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          onTap: () {
+                            HapticFeedback.selectionClick();
+                            widget.onTap(index);
+                          },
+                          child: SizedBox(
+                            height: 68,
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                AnimatedSwitcher(
+                                  duration: const Duration(milliseconds: 200),
+                                  child: Icon(
+                                    icon,
+                                    key: ValueKey(isActive),
+                                    size: isActive ? 24 : 21,
+                                    color: isActive
+                                        ? _DT.purple
+                                        : (isDark
+                                        ? Colors.white.withOpacity(0.38)
+                                        : Colors.black.withOpacity(0.28)),
+                                  ),
+                                ),
+                                const SizedBox(height: 3),
+                                AnimatedDefaultTextStyle(
+                                  duration: const Duration(milliseconds: 200),
+                                  style: TextStyle(
+                                    fontSize: 10,
+                                    fontWeight: isActive
+                                        ? FontWeight.w700
+                                        : FontWeight.w500,
+                                    color: isActive
+                                        ? _DT.purple
+                                        : (isDark
+                                        ? Colors.white.withOpacity(0.38)
+                                        : Colors.black.withOpacity(0.28)),
+                                  ),
+                                  child: Text(label),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      );
+                    }).toList(),
+                  ),
+                ]);
+              },
             ),
           ),
         ),
@@ -2017,6 +2066,7 @@ class _GlassBottomNavState extends State<_GlassBottomNav> {
     );
   }
 }
+
 // ────────────────────────────────────────────────────────────
 // 21. ENERGY SCREEN
 // ────────────────────────────────────────────────────────────
@@ -2038,178 +2088,188 @@ class _EnergyScreen extends StatelessWidget {
       child: Column(children: [
         _GCard(
           glowColor: _DT.purple,
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text("Today's Usage",
-                    style: TextStyle(
-                        fontSize: 17, fontWeight: FontWeight.w700)),
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 10, vertical: 4),
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(20),
-                    color: _DT.purple.withOpacity(0.15),
-                  ),
-                  child: const Text('⚡ Live',
-                      style: TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600,
-                          color: _DT.purple)),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text("Today's Usage",
+                        style: TextStyle(
+                            fontSize: 17, fontWeight: FontWeight.w700)),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 4),
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(20),
+                        color: _DT.purple.withOpacity(0.15),
+                      ),
+                      child: const Text('⚡ Live',
+                          style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: _DT.purple)),
+                    ),
+                  ],
                 ),
-              ],
-            ),
-            const SizedBox(height: 20),
-            Row(mainAxisAlignment: MainAxisAlignment.spaceEvenly, children: [
-              Column(children: [
-                Text('3.4',
-                    style: TextStyle(
-                        fontSize: 30,
-                        fontWeight: FontWeight.w800,
-                        color: Theme.of(context).colorScheme.primary)),
-                Text('kWh',
-                    style: TextStyle(
-                        fontSize: 13,
-                        color: Theme.of(context)
-                            .colorScheme
-                            .onSurface
-                            .withOpacity(0.5))),
-              ]),
-              Container(
-                  width: 0.5,
-                  height: 50,
-                  color: Theme.of(context)
-                      .colorScheme
-                      .onSurface
-                      .withOpacity(0.15)),
-              const Column(children: [
-                Text('€2.15',
-                    style: TextStyle(
-                        fontSize: 30, fontWeight: FontWeight.w800)),
-                Text('Cost',
-                    style: TextStyle(fontSize: 13, color: Colors.grey)),
-              ]),
-            ]),
-            const SizedBox(height: 20),
-            ClipRRect(
-              borderRadius: BorderRadius.circular(8),
-              child: LinearProgressIndicator(
-                value: 0.45,
-                minHeight: 6,
-                backgroundColor: Theme.of(context)
-                    .colorScheme
-                    .onSurface
-                    .withOpacity(0.1),
-                valueColor: AlwaysStoppedAnimation(
-                    Theme.of(context).colorScheme.primary),
-              ),
-            ),
-            const SizedBox(height: 8),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text('Daily target',
-                    style: TextStyle(
-                        fontSize: 12,
-                        color: Theme.of(context)
-                            .colorScheme
-                            .onSurface
-                            .withOpacity(0.5))),
-                Text('45%',
-                    style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                        color: Theme.of(context).colorScheme.primary)),
-              ],
-            ),
-          ]),
-        ),
-        const SizedBox(height: 12),
-        _GCard(child: Row(children: [
-          Expanded(child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('This Week',
-                  style: TextStyle(
-                      fontSize: 15,
-                      fontWeight: FontWeight.w600,
-                      color: Theme.of(context)
-                          .colorScheme
-                          .onSurface
-                          .withOpacity(0.6))),
-              const SizedBox(height: 6),
-              const Text('24.1 kWh',
-                  style: TextStyle(
-                      fontSize: 24,
-                      fontWeight: FontWeight.w800,
-                      letterSpacing: -0.8)),
-              const SizedBox(height: 4),
-              const Text('↓ 8% vs last week',
-                  style: TextStyle(
-                      fontSize: 12,
-                      color: _DT.green,
-                      fontWeight: FontWeight.w500)),
-            ],
-          )),
-          SizedBox(
-            width: 72,
-            height: 72,
-            child: CircularProgressIndicator(
-              value: 0.62,
-              strokeWidth: 7,
-              backgroundColor: Theme.of(context)
-                  .colorScheme
-                  .onSurface
-                  .withOpacity(0.1),
-              valueColor: AlwaysStoppedAnimation(
-                  Theme.of(context).colorScheme.primary),
-              strokeCap: StrokeCap.round,
-            ),
-          ),
-        ])),
-        const SizedBox(height: 12),
-        _GCard(child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text('Top Devices',
-                style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700)),
-            const SizedBox(height: 16),
-            ...[
-              (Icons.ac_unit_rounded, 'Living Room AC', '2.1 kWh', 0.62),
-              (Icons.kitchen_rounded, 'Kitchen Fridge', '1.8 kWh', 0.53),
-              (Icons.water_damage_rounded, 'Water Heater', '1.2 kWh', 0.35),
-            ].map((d) => Padding(
-              padding: const EdgeInsets.only(bottom: 14),
-              child: Column(children: [
-                Row(children: [
-                  Icon(d.$1, size: 20, color: _DT.purple),
-                  const SizedBox(width: 10),
-                  Expanded(child: Text(d.$2,
-                      style: const TextStyle(
-                          fontSize: 14, fontWeight: FontWeight.w500))),
-                  Text(d.$3,
-                      style: const TextStyle(
-                          fontSize: 14, fontWeight: FontWeight.w700)),
-                ]),
-                const SizedBox(height: 7),
+                const SizedBox(height: 20),
+                Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                    children: [
+                      Column(children: [
+                        Text('3.4',
+                            style: TextStyle(
+                                fontSize: 30,
+                                fontWeight: FontWeight.w800,
+                                color: Theme.of(context).colorScheme.primary)),
+                        Text('kWh',
+                            style: TextStyle(
+                                fontSize: 13,
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .onSurface
+                                    .withOpacity(0.5))),
+                      ]),
+                      Container(
+                          width: 0.5,
+                          height: 50,
+                          color: Theme.of(context)
+                              .colorScheme
+                              .onSurface
+                              .withOpacity(0.15)),
+                      const Column(children: [
+                        Text('€2.15',
+                            style: TextStyle(
+                                fontSize: 30, fontWeight: FontWeight.w800)),
+                        Text('Cost',
+                            style:
+                            TextStyle(fontSize: 13, color: Colors.grey)),
+                      ]),
+                    ]),
+                const SizedBox(height: 20),
                 ClipRRect(
-                  borderRadius: BorderRadius.circular(6),
+                  borderRadius: BorderRadius.circular(8),
                   child: LinearProgressIndicator(
-                    value: d.$4,
-                    minHeight: 4,
+                    value: 0.45,
+                    minHeight: 6,
                     backgroundColor: Theme.of(context)
                         .colorScheme
                         .onSurface
-                        .withOpacity(0.08),
+                        .withOpacity(0.1),
                     valueColor: AlwaysStoppedAnimation(
                         Theme.of(context).colorScheme.primary),
                   ),
                 ),
+                const SizedBox(height: 8),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text('Daily target',
+                        style: TextStyle(
+                            fontSize: 12,
+                            color: Theme.of(context)
+                                .colorScheme
+                                .onSurface
+                                .withOpacity(0.5))),
+                    Text('45%',
+                        style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: Theme.of(context).colorScheme.primary)),
+                  ],
+                ),
               ]),
+        ),
+        const SizedBox(height: 12),
+        _GCard(
+            child: Row(children: [
+              Expanded(child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('This Week',
+                      style: TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w600,
+                          color: Theme.of(context)
+                              .colorScheme
+                              .onSurface
+                              .withOpacity(0.6))),
+                  const SizedBox(height: 6),
+                  const Text('24.1 kWh',
+                      style: TextStyle(
+                          fontSize: 24,
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: -0.8)),
+                  const SizedBox(height: 4),
+                  const Text('↓ 8% vs last week',
+                      style: TextStyle(
+                          fontSize: 12,
+                          color: _DT.green,
+                          fontWeight: FontWeight.w500)),
+                ],
+              )),
+              SizedBox(
+                width: 72,
+                height: 72,
+                child: CircularProgressIndicator(
+                  value: 0.62,
+                  strokeWidth: 7,
+                  backgroundColor: Theme.of(context)
+                      .colorScheme
+                      .onSurface
+                      .withOpacity(0.1),
+                  valueColor: AlwaysStoppedAnimation(
+                      Theme.of(context).colorScheme.primary),
+                  strokeCap: StrokeCap.round,
+                ),
+              ),
+            ])),
+        const SizedBox(height: 12),
+        _GCard(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('Top Devices',
+                    style:
+                    TextStyle(fontSize: 17, fontWeight: FontWeight.w700)),
+                const SizedBox(height: 16),
+                ...[
+                  (Icons.ac_unit_rounded, 'Living Room AC', '2.1 kWh', 0.62),
+                  (Icons.kitchen_rounded, 'Kitchen Fridge', '1.8 kWh', 0.53),
+                  (Icons.water_damage_rounded, 'Water Heater', '1.2 kWh', 0.35),
+                ].map((d) => Padding(
+                  padding: const EdgeInsets.only(bottom: 14),
+                  child: Column(children: [
+                    Row(children: [
+                      Icon(d.$1, size: 20, color: _DT.purple),
+                      const SizedBox(width: 10),
+                      Expanded(child: Text(d.$2,
+                          style: const TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w500))),
+                      Text(d.$3,
+                          style: const TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w700)),
+                    ]),
+                    const SizedBox(height: 7),
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(6),
+                      child: LinearProgressIndicator(
+                        value: d.$4,
+                        minHeight: 4,
+                        backgroundColor: Theme.of(context)
+                            .colorScheme
+                            .onSurface
+                            .withOpacity(0.08),
+                        valueColor: AlwaysStoppedAnimation(
+                            Theme.of(context).colorScheme.primary),
+                      ),
+                    ),
+                  ]),
+                )),
+              ],
             )),
-          ],
-        )),
       ]),
     );
   }
@@ -2227,14 +2287,14 @@ class _AlertsScreen extends StatelessWidget {
     final isDesktop = ResponsiveHelper.isDesktop(context);
 
     final alerts = [
-      (Icons.motion_photos_on_rounded, Colors.orange, 'Motion in Living Room',
-      '2 minutes ago'),
-      (Icons.local_fire_department_rounded, _DT.red, 'Flame sensor test — All Clear',
-      '1 hour ago'),
-      (Icons.power_off_rounded, _DT.blue, 'Device offline: Bedroom Light',
-      '3 hours ago'),
-      (Icons.water_drop_rounded, Colors.teal, 'High humidity in Kitchen',
-      '5 hours ago'),
+      (Icons.motion_photos_on_rounded, Colors.orange,
+      'Motion in Living Room', '2 minutes ago'),
+      (Icons.local_fire_department_rounded, _DT.red,
+      'Flame sensor test — All Clear', '1 hour ago'),
+      (Icons.power_off_rounded, _DT.blue,
+      'Device offline: Bedroom Light', '3 hours ago'),
+      (Icons.water_drop_rounded, Colors.teal,
+      'High humidity in Kitchen', '5 hours ago'),
     ];
 
     return ListView.separated(
@@ -2336,10 +2396,12 @@ class _SettingsScreen extends ConsumerWidget {
                   DropdownMenuItem(
                       value: ThemeMode.dark, child: Text('Dark')),
                   DropdownMenuItem(
-                      value: ThemeMode.system, child: Text('System')),
+                      value: ThemeMode.system,
+                      child: Text('System')),
                 ],
                 onChanged: (m) {
                   if (m != null) {
+                    // FIX 1: only changes theme, never touches nav index
                     ref.read(themeModeProvider.notifier).state = m;
                   }
                 },
@@ -2361,7 +2423,8 @@ class _SettingsScreen extends ConsumerWidget {
                 borderRadius: BorderRadius.circular(20),
                 color: _DT.green.withOpacity(0.15),
                 border: Border.all(
-                    color: _DT.green.withOpacity(0.4), width: 0.8),
+                    color: _DT.green.withOpacity(0.4),
+                    width: 0.8),
               ),
               child: const Text('● Connected',
                   style: TextStyle(
@@ -2441,7 +2504,8 @@ class _SDivider extends StatelessWidget {
   Widget build(BuildContext context) => Container(
     height: 0.5,
     margin: const EdgeInsets.symmetric(vertical: 4),
-    color: Theme.of(context).colorScheme.onSurface.withOpacity(0.08),
+    color:
+    Theme.of(context).colorScheme.onSurface.withOpacity(0.08),
   );
 }
 
