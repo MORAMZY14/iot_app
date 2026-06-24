@@ -11,7 +11,7 @@ import 'dashboard_page.dart';
 import 'provisioning_page.dart';
 import 'wifi_config_page.dart';
 
-const String appVersion = '1.0.23';
+const String appVersion = '1.0.24';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
