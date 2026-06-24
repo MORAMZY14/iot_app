@@ -1839,7 +1839,7 @@ class _PillBtn extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 20. GLASS BOTTOM NAV — FIX 3: iOS 26 liquid glass sliding pill
+// 20. GLASS BOTTOM NAV — iOS 26 drag-to-slide liquid glass
 // ────────────────────────────────────────────────────────────
 class _GlassBottomNav extends StatefulWidget {
   final int selectedIndex;
@@ -1865,32 +1865,96 @@ class _GlassBottomNavState extends State<_GlassBottomNav>
 
   late AnimationController _pillController;
   late Animation<double> _pillPosition;
+
+  // The "visual" fractional position of the pill (0.0 – 3.0)
+  double _visualPosition = 0;
+  // True while finger is held down dragging
+  bool _isDragging = false;
+  // Tab width — set once LayoutBuilder measures
+  double _tabWidth = 0;
   int _prevIndex = 0;
 
   @override
   void initState() {
     super.initState();
     _prevIndex = widget.selectedIndex;
+    _visualPosition = widget.selectedIndex.toDouble();
     _pillController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 380),
     );
-    // Start with pill already at correct position
-    _pillPosition = AlwaysStoppedAnimation(widget.selectedIndex.toDouble());
+    _pillPosition = AlwaysStoppedAnimation(_visualPosition);
   }
 
   @override
   void didUpdateWidget(_GlassBottomNav old) {
     super.didUpdateWidget(old);
-    if (old.selectedIndex != widget.selectedIndex) {
-      final from = _prevIndex.toDouble();
-      final to = widget.selectedIndex.toDouble();
-      _pillPosition = Tween<double>(begin: from, end: to).animate(
-        CurvedAnimation(parent: _pillController, curve: Curves.easeOutExpo),
-      );
-      _pillController.forward(from: 0);
+    // Only animate when the index changes externally (not from our own drag)
+    if (!_isDragging && old.selectedIndex != widget.selectedIndex) {
+      _animatePillTo(widget.selectedIndex.toDouble());
       _prevIndex = widget.selectedIndex;
     }
+  }
+
+  void _animatePillTo(double target) {
+    final from = _visualPosition;
+    _pillPosition = Tween<double>(begin: from, end: target).animate(
+      CurvedAnimation(parent: _pillController, curve: Curves.easeOutExpo),
+    );
+    _pillController.forward(from: 0).then((_) {
+      _visualPosition = target;
+    });
+  }
+
+  // Convert a local dx offset → fractional tab index (clamped 0–3)
+  double _dxToIndex(double dx) {
+    if (_tabWidth <= 0) return widget.selectedIndex.toDouble();
+    return (dx / _tabWidth).clamp(0.0, _items.length - 1.0);
+  }
+
+  int _nearestTab(double fractional) => fractional.round().clamp(0, _items.length - 1);
+
+  void _onDragStart(DragStartDetails d) {
+    _isDragging = true;
+    _pillController.stop();
+    final idx = _dxToIndex(d.localPosition.dx);
+    setState(() {
+      _visualPosition = idx;
+      _pillPosition = AlwaysStoppedAnimation(idx);
+    });
+  }
+
+  void _onDragUpdate(DragUpdateDetails d) {
+    final idx = _dxToIndex(d.localPosition.dx);
+    final nearest = _nearestTab(idx);
+
+    setState(() {
+      _visualPosition = idx;
+      _pillPosition = AlwaysStoppedAnimation(idx);
+    });
+
+    // Fire haptic + callback as pill crosses each tab boundary
+    if (nearest != _prevIndex) {
+      HapticFeedback.selectionClick();
+      _prevIndex = nearest;
+      widget.onTap(nearest);
+    }
+  }
+
+  void _onDragEnd(DragEndDetails d) {
+    _isDragging = false;
+    final nearest = _nearestTab(_visualPosition);
+    // Snap pill to nearest tab
+    _animatePillTo(nearest.toDouble());
+    widget.onTap(nearest);
+  }
+
+  void _onTap(int index) {
+    if (_isDragging) return;
+    HapticFeedback.selectionClick();
+    _animatePillTo(index.toDouble());
+    _prevIndex = index;
+    widget.onTap(index);
   }
 
   @override
@@ -1949,115 +2013,126 @@ class _GlassBottomNavState extends State<_GlassBottomNav>
             ),
             child: LayoutBuilder(
               builder: (context, constraints) {
-                final tabWidth = constraints.maxWidth / _items.length;
+                _tabWidth = constraints.maxWidth / _items.length;
 
-                return Stack(children: [
-                  // ── Animated sliding glass pill ──
-                  AnimatedBuilder(
-                    animation: _pillPosition,
-                    builder: (context, _) {
-                      return Positioned(
-                        top: 8,
-                        bottom: 8,
-                        left: _pillPosition.value * tabWidth + 6,
-                        width: tabWidth - 12,
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(26),
-                          child: BackdropFilter(
-                            filter:
-                            ui.ImageFilter.blur(sigmaX: 12, sigmaY: 12),
-                            child: Container(
-                              decoration: BoxDecoration(
-                                borderRadius: BorderRadius.circular(26),
-                                gradient: LinearGradient(
-                                  begin: Alignment.topLeft,
-                                  end: Alignment.bottomRight,
-                                  colors: isDark
-                                      ? [
-                                    _DT.purple.withOpacity(0.38),
-                                    _DT.purple.withOpacity(0.20),
-                                  ]
-                                      : [
-                                    _DT.purple.withOpacity(0.20),
-                                    _DT.purple.withOpacity(0.10),
+                return GestureDetector(
+                  // Drag across the whole nav bar
+                  onHorizontalDragStart: _onDragStart,
+                  onHorizontalDragUpdate: _onDragUpdate,
+                  onHorizontalDragEnd: _onDragEnd,
+                  behavior: HitTestBehavior.opaque,
+                  child: Stack(children: [
+                    // ── Sliding glass pill ──
+                    AnimatedBuilder(
+                      animation: _pillPosition,
+                      builder: (context, _) {
+                        return Positioned(
+                          top: 8,
+                          bottom: 8,
+                          left: _pillPosition.value * _tabWidth + 6,
+                          width: _tabWidth - 12,
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(26),
+                            child: BackdropFilter(
+                              filter: ui.ImageFilter.blur(
+                                  sigmaX: 12, sigmaY: 12),
+                              child: Container(
+                                decoration: BoxDecoration(
+                                  borderRadius: BorderRadius.circular(26),
+                                  gradient: LinearGradient(
+                                    begin: Alignment.topLeft,
+                                    end: Alignment.bottomRight,
+                                    colors: isDark
+                                        ? [
+                                      _DT.purple.withOpacity(0.38),
+                                      _DT.purple.withOpacity(0.20),
+                                    ]
+                                        : [
+                                      _DT.purple.withOpacity(0.20),
+                                      _DT.purple.withOpacity(0.10),
+                                    ],
+                                  ),
+                                  border: Border.all(
+                                    color: _DT.purple.withOpacity(
+                                        isDark ? 0.50 : 0.30),
+                                    width: 0.8,
+                                  ),
+                                  boxShadow: [
+                                    BoxShadow(
+                                      color: _DT.purple.withOpacity(0.28),
+                                      blurRadius: 14,
+                                      offset: const Offset(0, 2),
+                                    ),
                                   ],
                                 ),
-                                border: Border.all(
-                                  color: _DT.purple
-                                      .withOpacity(isDark ? 0.50 : 0.30),
-                                  width: 0.8,
-                                ),
-                                boxShadow: [
-                                  BoxShadow(
-                                    color: _DT.purple.withOpacity(0.28),
-                                    blurRadius: 14,
-                                    offset: const Offset(0, 2),
+                              ),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+
+                    // ── Tab icons + labels ──
+                    Row(
+                      children: _items.asMap().entries.map((entry) {
+                        final index = entry.key;
+                        final (icon, label) = entry.value;
+                        final isActive = widget.selectedIndex == index;
+
+                        return Expanded(
+                          child: GestureDetector(
+                            behavior: HitTestBehavior.opaque,
+                            onTap: () => _onTap(index),
+                            child: SizedBox(
+                              height: 68,
+                              child: Column(
+                                mainAxisAlignment:
+                                MainAxisAlignment.center,
+                                children: [
+                                  AnimatedSwitcher(
+                                    duration:
+                                    const Duration(milliseconds: 180),
+                                    child: Icon(
+                                      icon,
+                                      key: ValueKey(isActive),
+                                      size: isActive ? 24 : 21,
+                                      color: isActive
+                                          ? _DT.purple
+                                          : (isDark
+                                          ? Colors.white
+                                          .withOpacity(0.38)
+                                          : Colors.black
+                                          .withOpacity(0.28)),
+                                    ),
+                                  ),
+                                  const SizedBox(height: 3),
+                                  AnimatedDefaultTextStyle(
+                                    duration:
+                                    const Duration(milliseconds: 180),
+                                    style: TextStyle(
+                                      fontSize: 10,
+                                      fontWeight: isActive
+                                          ? FontWeight.w700
+                                          : FontWeight.w500,
+                                      color: isActive
+                                          ? _DT.purple
+                                          : (isDark
+                                          ? Colors.white
+                                          .withOpacity(0.38)
+                                          : Colors.black
+                                          .withOpacity(0.28)),
+                                    ),
+                                    child: Text(label),
                                   ),
                                 ],
                               ),
                             ),
                           ),
-                        ),
-                      );
-                    },
-                  ),
-
-                  // ── Tab items sit on top of pill ──
-                  Row(
-                    children: _items.asMap().entries.map((entry) {
-                      final index = entry.key;
-                      final (icon, label) = entry.value;
-                      final isActive = widget.selectedIndex == index;
-
-                      return Expanded(
-                        child: GestureDetector(
-                          behavior: HitTestBehavior.opaque,
-                          onTap: () {
-                            HapticFeedback.selectionClick();
-                            widget.onTap(index);
-                          },
-                          child: SizedBox(
-                            height: 68,
-                            child: Column(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                AnimatedSwitcher(
-                                  duration: const Duration(milliseconds: 200),
-                                  child: Icon(
-                                    icon,
-                                    key: ValueKey(isActive),
-                                    size: isActive ? 24 : 21,
-                                    color: isActive
-                                        ? _DT.purple
-                                        : (isDark
-                                        ? Colors.white.withOpacity(0.38)
-                                        : Colors.black.withOpacity(0.28)),
-                                  ),
-                                ),
-                                const SizedBox(height: 3),
-                                AnimatedDefaultTextStyle(
-                                  duration: const Duration(milliseconds: 200),
-                                  style: TextStyle(
-                                    fontSize: 10,
-                                    fontWeight: isActive
-                                        ? FontWeight.w700
-                                        : FontWeight.w500,
-                                    color: isActive
-                                        ? _DT.purple
-                                        : (isDark
-                                        ? Colors.white.withOpacity(0.38)
-                                        : Colors.black.withOpacity(0.28)),
-                                  ),
-                                  child: Text(label),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      );
-                    }).toList(),
-                  ),
-                ]);
+                        );
+                      }).toList(),
+                    ),
+                  ]),
+                );
               },
             ),
           ),
