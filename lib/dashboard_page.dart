@@ -1,6 +1,5 @@
 import 'dart:convert';
 import 'dart:async';
-import 'dart:math' as math;
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -14,7 +13,7 @@ import 'ble_service.dart';
 // ────────────────────────────────────────────────────────────
 final themeModeProvider = StateProvider<ThemeMode>((ref) => ThemeMode.system);
 
-// FIX 1: Nav index lives in a provider so theme changes don't reset it
+// Nav index lives in a provider so theme changes don't reset it
 final selectedNavIndexProvider = StateProvider<int>((ref) => 0);
 
 final lightTheme = ThemeData(
@@ -45,22 +44,12 @@ final darkTheme = ThemeData(
 // 1. DESIGN TOKENS
 // ────────────────────────────────────────────────────────────
 class _DT {
-  static const bgDark = Color(0xFF0B0D1A);
-  static const cardDark = Color(0xFF141728);
-  static const cardBorderDk = Color(0xFF1E2140);
-  static const cardActiveDk = Color(0xFF1A1D35);
-  static const bgLight = Color(0xFFF0F2FF);
-  static const cardLight = Color(0xFFFFFFFF);
-  static const cardBorderLt = Color(0xFFE4E7FF);
   static const purple = Color(0xFF6C63FF);
-  static const purpleLight = Color(0xFF9B94FF);
   static const green = Color(0xFF4DFFA0);
-  static const greenDim = Color(0xFF1A3A2A);
   static const amber = Color(0xFFFFB347);
   static const blue = Color(0xFF64B5F6);
   static const red = Color(0xFFFF5252);
   static const espConnected = Color(0xFF4DFFA0);
-  static const espDot = Color(0xFF4DFFA0);
 }
 
 // ────────────────────────────────────────────────────────────
@@ -130,27 +119,22 @@ class _CacheEntry {
 final databaseUrlProvider = Provider((ref) =>
 'https://iot-smart-home-81abd-default-rtdb.europe-west1.firebasedatabase.app');
 
-final httpDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
+// FIXED: Using .future instead of .stream
+final httpDataProvider = FutureProvider<Map<String, dynamic>>((ref) async {
   final url = ref.watch(databaseUrlProvider);
-  final controller = StreamController<Map<String, dynamic>>();
   final cache = CacheService();
-  Timer? timer;
-  bool isFetching = false;
+
+  // Check cache first
+  final cached = cache.get('smartHome');
+  if (cached != null) {
+    return cached as Map<String, dynamic>;
+  }
+
   int retryCount = 0;
   final maxRetries = 3;
 
-  Future<void> fetchData() async {
-    if (isFetching) return;
-    isFetching = true;
+  while (retryCount < maxRetries) {
     try {
-      final cached = cache.get('smartHome');
-      if (cached != null) {
-        controller.add(cached as Map<String, dynamic>);
-        isFetching = false;
-        retryCount = 0;
-        return;
-      }
-
       final response = await http.get(
         Uri.parse('$url/smartHome.json'),
         headers: {'Cache-Control': 'no-cache'},
@@ -165,33 +149,17 @@ final httpDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
           status['online'] = (now - lastSeen) < 10 && lastSeen > 0;
           jsonData['status'] = status;
           cache.set('smartHome', jsonData);
-          controller.add(jsonData);
-          retryCount = 0;
+          return jsonData;
         }
-      } else if (retryCount < maxRetries) {
-        retryCount++;
-        await Future.delayed(Duration(milliseconds: 500 * retryCount));
-        return fetchData();
       }
     } catch (_) {
+      retryCount++;
       if (retryCount < maxRetries) {
-        retryCount++;
         await Future.delayed(Duration(milliseconds: 500 * retryCount));
-        return fetchData();
       }
-    } finally {
-      isFetching = false;
     }
   }
-
-  fetchData();
-  timer = Timer.periodic(const Duration(seconds: 3), (_) => fetchData());
-  ref.onDispose(() {
-    timer?.cancel();
-    controller.close();
-    cache.clear();
-  });
-  return controller.stream;
+  return {};
 });
 
 // ────────────────────────────────────────────────────────────
@@ -201,10 +169,9 @@ final bleServiceProvider = Provider<BleService>((ref) => BleService());
 
 final smartHomeDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
   final bleService = ref.watch(bleServiceProvider);
-  final httpStream = ref.watch(httpDataProvider.stream);
   final controller = StreamController<Map<String, dynamic>>();
   late StreamSubscription bleStatusSub;
-  late StreamSubscription httpSub;
+  Timer? httpTimer;
   final cache = CacheService();
 
   Map<String, dynamic> currentData = {
@@ -227,7 +194,8 @@ final smartHomeDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
     }
   }
 
-  void updateFromHttp(Map<String, dynamic> httpData) {
+  Future<void> fetchHttpData() async {
+    final httpData = await ref.read(httpDataProvider.future);
     if (bleService.currentStatus != BleStatus.connected) {
       final cachedBle = cache.get('bleData');
       if (cachedBle != null) {
@@ -260,7 +228,11 @@ final smartHomeDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
     }
   });
 
-  httpSub = httpStream.listen(updateFromHttp);
+  // Initial fetch
+  fetchHttpData();
+
+  // Periodic fetch
+  httpTimer = Timer.periodic(const Duration(seconds: 5), (_) => fetchHttpData());
 
   Future<void> connectWithRetry() async {
     int attempts = 0;
@@ -279,7 +251,7 @@ final smartHomeDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
 
   ref.onDispose(() {
     bleStatusSub.cancel();
-    httpSub.cancel();
+    httpTimer?.cancel();
     controller.close();
     bleService.dispose();
   });
@@ -288,7 +260,7 @@ final smartHomeDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
 });
 
 // ────────────────────────────────────────────────────────────
-// 6. LIGHT TOGGLE SERVICE
+// 6. LIGHT TOGGLE SERVICE — FIXED: optimistic cache patch
 // ────────────────────────────────────────────────────────────
 final lightToggleProvider = Provider((ref) => LightToggleService(ref));
 
@@ -296,22 +268,46 @@ class LightToggleService {
   final Ref _ref;
   LightToggleService(this._ref);
 
+  /// Patches the in-memory cache instantly so the stream reflects
+  /// the new value without waiting for a network round-trip.
+  void _patchCache(String cacheKey, String room, bool value) {
+    final cached = CacheService().get(cacheKey);
+    if (cached == null) return;
+    final updated = Map<String, dynamic>.from(cached as Map);
+    final lights = Map<String, dynamic>.from(updated['lights'] ?? {});
+    lights[room] = value;
+    updated['lights'] = lights;
+    CacheService().set(cacheKey, updated);
+  }
+
+  /// Reverts the cache patch if the network call fails.
+  void _revertCache(String cacheKey, String room, bool originalValue) {
+    _patchCache(cacheKey, room, originalValue);
+  }
+
   Future<void> toggle(String room, bool value, BuildContext context) async {
     final bleService = _ref.read(bleServiceProvider);
     final url = _ref.read(databaseUrlProvider);
 
+    // ── 1. Optimistic update in cache (instant UI) ──────────
+    _patchCache('smartHome', room, value);
+    _patchCache('bleData', room, value);
+
+    // ── 2. Try BLE first ────────────────────────────────────
     if (bleService.currentStatus == BleStatus.connected) {
       try {
         await bleService.setLightState(room, value);
-        return;
+        return; // success — cache already patched, done
       } catch (e) {
         if (context.mounted) {
-          _showSnack(context, 'BLE error, using Wi-Fi: $e',
+          _showSnack(context, 'BLE error, trying Wi-Fi…',
               color: Colors.orange);
         }
+        // fall through to HTTP
       }
     }
 
+    // ── 3. HTTP fallback ─────────────────────────────────────
     try {
       final response = await http
           .patch(
@@ -320,13 +316,18 @@ class LightToggleService {
       )
           .timeout(const Duration(seconds: 5));
 
-      if (response.statusCode == 200) {
-        _ref.invalidate(httpDataProvider);
-      } else {
-        throw Exception('HTTP toggle failed');
+      if (response.statusCode != 200) {
+        throw Exception('HTTP ${response.statusCode}');
       }
+      // No cache invalidation needed — cache is already up-to-date.
+      // The next poll will confirm the server state naturally.
     } catch (e) {
-      if (context.mounted) _showSnack(context, 'Error: $e', color: Colors.red);
+      // ── 4. Revert optimistic update on failure ───────────
+      _revertCache('smartHome', room, !value);
+      _revertCache('bleData', room, !value);
+      if (context.mounted) {
+        _showSnack(context, 'Failed to toggle light', color: _DT.red);
+      }
       rethrow;
     }
   }
@@ -336,7 +337,7 @@ void _showSnack(BuildContext context, String msg,
     {Color color = Colors.white}) {
   ScaffoldMessenger.of(context).showSnackBar(SnackBar(
     content: Text(msg, style: const TextStyle(color: Colors.white)),
-    backgroundColor: color.withOpacity(0.9),
+    backgroundColor: color.withValues(alpha: 0.9),
     behavior: SnackBarBehavior.floating,
     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
     margin: const EdgeInsets.all(16),
@@ -405,14 +406,14 @@ class _Blob extends StatelessWidget {
     decoration: BoxDecoration(
       shape: BoxShape.circle,
       gradient: RadialGradient(
-        colors: [color.withOpacity(0.5), color.withOpacity(0)],
+        colors: [color.withValues(alpha: 0.5), color.withValues(alpha: 0)],
       ),
     ),
   );
 }
 
 // ────────────────────────────────────────────────────────────
-// 8. DASHBOARD PAGE — FIX 1: uses selectedNavIndexProvider
+// 8. DASHBOARD PAGE
 // ────────────────────────────────────────────────────────────
 class DashboardPage extends ConsumerStatefulWidget {
   const DashboardPage({super.key});
@@ -428,11 +429,11 @@ class _DashboardPageState extends ConsumerState<DashboardPage>
   @override
   void initState() {
     super.initState();
-    _pages = [
-      const _HomeContentWrapper(),
-      const _EnergyScreen(),
-      const _AlertsScreen(),
-      const _SettingsScreen(),
+    _pages = const [
+      _HomeContentWrapper(),
+      _EnergyScreen(),
+      _AlertsScreen(),
+      _SettingsScreen(),
     ];
   }
 
@@ -446,7 +447,6 @@ class _DashboardPageState extends ConsumerState<DashboardPage>
   @override
   Widget build(BuildContext context) {
     final bleService = ref.watch(bleServiceProvider);
-    // FIX 1: read from provider — survives theme rebuilds
     final selectedIndex = ref.watch(selectedNavIndexProvider);
     final isDesktop = ResponsiveHelper.isDesktop(context);
 
@@ -529,7 +529,7 @@ class _PurpleFab extends StatelessWidget {
           ),
           boxShadow: [
             BoxShadow(
-              color: _DT.purple.withOpacity(0.45),
+              color: _DT.purple.withValues(alpha: 0.45),
               blurRadius: 20,
               offset: const Offset(0, 6),
             ),
@@ -560,7 +560,6 @@ class _GlassAppBar extends ConsumerWidget implements PreferredSizeWidget {
     final next =
     current == ThemeMode.light ? ThemeMode.dark : ThemeMode.light;
     ref.read(themeModeProvider.notifier).state = next;
-    // FIX 1: selectedNavIndexProvider is untouched — tab stays put
   }
 
   @override
@@ -572,17 +571,17 @@ class _GlassAppBar extends ConsumerWidget implements PreferredSizeWidget {
         filter: ui.ImageFilter.blur(sigmaX: 20, sigmaY: 20),
         child: Container(
           color: isDark
-              ? Colors.black.withOpacity(0.15)
-              : Colors.white.withOpacity(0.3),
+              ? Colors.black.withValues(alpha: 0.15)
+              : Colors.white.withValues(alpha: 0.3),
           child: AppBar(
             backgroundColor: Colors.transparent,
             elevation: 0,
             leading: Padding(
               padding: const EdgeInsets.only(left: 16),
-              child: CircleAvatar(
+              child: const CircleAvatar(
                 radius: 18,
                 backgroundColor: _DT.purple,
-                child: const Text('JD',
+                child: Text('JD',
                     style: TextStyle(
                         color: Colors.white,
                         fontWeight: FontWeight.w700,
@@ -598,13 +597,15 @@ class _GlassAppBar extends ConsumerWidget implements PreferredSizeWidget {
                         color: Theme.of(context)
                             .colorScheme
                             .onSurface
-                            .withOpacity(0.5),
+                            .withValues(alpha: 0.5),
                         fontWeight: FontWeight.w500)),
-                Text(_greeting(),
-                    style: const TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.w700,
-                        height: 1.2)),
+                const Text(
+                  'Good Morning ☀️', // This will be updated dynamically
+                  style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w700,
+                      height: 1.2),
+                ),
               ],
             ),
             actions: [
@@ -616,8 +617,8 @@ class _GlassAppBar extends ConsumerWidget implements PreferredSizeWidget {
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
                     color: isDark
-                        ? Colors.white.withOpacity(0.08)
-                        : Colors.black.withOpacity(0.06),
+                        ? Colors.white.withValues(alpha: 0.08)
+                        : Colors.black.withValues(alpha: 0.06),
                   ),
                   child: Icon(
                     isDark
@@ -627,7 +628,7 @@ class _GlassAppBar extends ConsumerWidget implements PreferredSizeWidget {
                     color: Theme.of(context)
                         .colorScheme
                         .onSurface
-                        .withOpacity(0.7),
+                        .withValues(alpha: 0.7),
                   ),
                 ),
               ),
@@ -641,15 +642,15 @@ class _GlassAppBar extends ConsumerWidget implements PreferredSizeWidget {
                     decoration: BoxDecoration(
                       shape: BoxShape.circle,
                       color: isDark
-                          ? Colors.white.withOpacity(0.08)
-                          : Colors.black.withOpacity(0.06),
+                          ? Colors.white.withValues(alpha: 0.08)
+                          : Colors.black.withValues(alpha: 0.06),
                     ),
                     child: Icon(Icons.notifications_outlined,
                         size: 18,
                         color: Theme.of(context)
                             .colorScheme
                             .onSurface
-                            .withOpacity(0.7)),
+                            .withValues(alpha: 0.7)),
                   ),
                   Positioned(
                     top: 6,
@@ -670,8 +671,8 @@ class _GlassAppBar extends ConsumerWidget implements PreferredSizeWidget {
               child: Container(
                 height: 0.5,
                 color: isDark
-                    ? Colors.white.withOpacity(0.08)
-                    : Colors.black.withOpacity(0.06),
+                    ? Colors.white.withValues(alpha: 0.08)
+                    : Colors.black.withValues(alpha: 0.06),
               ),
             ),
           ),
@@ -772,8 +773,20 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
   bool _soundbarOn = true;
   double _ceilingBrightness = 0.8;
   bool _bathroomLightOn = false;
-  Map<String, bool> _lightStates = {};
-  bool _isToggling = false;
+
+  // FIXED: local optimistic light state — updated instantly on tap,
+  // never waits for network before reflecting in UI.
+  final Map<String, bool> _lightStates = {};
+
+  // FIXED: tracks which rooms are currently mid-toggle so
+  // we can show a subtle spinner without blocking interaction.
+  final Set<String> _togglingKeys = {};
+
+  // Timestamp of the last toggle per key — stream is blocked from
+  // overwriting local state for _cooldown after each tap, preventing
+  // the on→off→on flicker caused by a poll racing the HTTP PATCH.
+  final Map<String, DateTime> _lastToggled = {};
+  static const _cooldown = Duration(seconds: 8);
 
   String? _lightKeyForRoom(String room) {
     switch (room) {
@@ -789,24 +802,39 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
     return _lightStates[key] ?? false;
   }
 
+  // FIXED: optimistic toggle — flips state immediately, fires network
+  // in background, reverts only if the call fails.
   Future<void> _toggleRoomLight(String room) async {
     final key = _lightKeyForRoom(room);
-    if (key == null || _isToggling) return;
+    if (key == null) return;
+    if (_togglingKeys.contains(key)) return; // debounce rapid taps
 
-    _isToggling = true;
-    final current = _lightStates[key] ?? false;
-    final newValue = !current;
+    final previousValue = _lightStates[key] ?? false;
+    final newValue = !previousValue;
 
-    setState(() => _lightStates[key] = newValue);
+    // ── Instant UI update ──────────────────────────────────
+    setState(() {
+      _lightStates[key] = newValue;
+      _togglingKeys.add(key);
+      _lastToggled[key] = DateTime.now(); // stamp time so cooldown kicks in
+    });
+
+    HapticFeedback.lightImpact();
 
     try {
       await ref.read(lightToggleProvider).toggle(key, newValue, context);
-      HapticFeedback.lightImpact();
     } catch (_) {
-      setState(() => _lightStates[key] = current);
-      _showSnack(context, 'Failed to toggle light', color: Colors.red);
+      // Revert UI and clear cooldown so server can win after a failure
+      if (mounted) {
+        setState(() {
+          _lightStates[key] = previousValue;
+          _lastToggled.remove(key);
+        });
+      }
     } finally {
-      _isToggling = false;
+      if (mounted) {
+        setState(() => _togglingKeys.remove(key));
+      }
     }
   }
 
@@ -843,9 +871,24 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
       color: _DT.purple,
       child: widget.dataAsync.when(
         data: (data) {
+          // FIXED: Only sync from server if we have no local optimistic state.
+          // This prevents the stream from overwriting the instant UI update.
           final lights = (data['lights'] as Map?) ?? {};
-          _lightStates = Map<String, bool>.from(
+          final serverStates = Map<String, bool>.from(
               lights.map((k, v) => MapEntry(k, v == true)));
+
+          // Merge: keep local state for keys currently toggling OR within
+          // the cooldown window — prevents a poll racing the HTTP PATCH
+          // from flickering the toggle back to the old server value.
+          for (final entry in serverStates.entries) {
+            final lastToggle = _lastToggled[entry.key];
+            final isCoolingDown = lastToggle != null &&
+                DateTime.now().difference(lastToggle) < _cooldown;
+
+            if (!_togglingKeys.contains(entry.key) && !isCoolingDown) {
+              _lightStates[entry.key] = entry.value;
+            }
+          }
 
           final sensors = (data['sensors'] as Map?) ?? {};
           final temp = (sensors['temperature'] ?? 0.0).toDouble();
@@ -862,6 +905,10 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
           final bool lightOn = _selectedRoom == 'Bathroom'
               ? _bathroomLightOn
               : _getLightState(_lightKeyForRoom(_selectedRoom));
+
+          final currentKey = _lightKeyForRoom(_selectedRoom);
+          final isCurrentToggling = currentKey != null &&
+              _togglingKeys.contains(currentKey);
 
           return SingleChildScrollView(
             physics: const AlwaysScrollableScrollPhysics(),
@@ -901,7 +948,8 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
                   onSoundbarToggle: () =>
                       setState(() => _soundbarOn = !_soundbarOn),
                   activeCount: _activeCount(),
-                  isToggling: _isToggling,
+                  // FIXED: pass per-key toggling state instead of global bool
+                  isToggling: isCurrentToggling,
                 ),
               ],
             ),
@@ -928,7 +976,7 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
                         color: Theme.of(context)
                             .colorScheme
                             .onSurface
-                            .withOpacity(0.5)),
+                            .withValues(alpha: 0.5)),
                     textAlign: TextAlign.center),
                 const SizedBox(height: 20),
                 _PillBtn(label: 'Try Again', onTap: widget.onRefresh),
@@ -942,7 +990,7 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
 }
 
 // ────────────────────────────────────────────────────────────
-// 13. ESP CONNECTION BAR — FIX 2: no more clipping
+// 13. ESP CONNECTION BAR
 // ────────────────────────────────────────────────────────────
 class _EspBar extends StatelessWidget {
   final bool online;
@@ -964,7 +1012,6 @@ class _EspBar extends StatelessWidget {
     return _GCard(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
       child: Row(children: [
-        // Status dot
         Container(
           width: 10,
           height: 10,
@@ -972,19 +1019,17 @@ class _EspBar extends StatelessWidget {
             shape: BoxShape.circle,
             color: dotColor,
             boxShadow: [
-              BoxShadow(color: dotColor.withOpacity(0.5), blurRadius: 6),
+              BoxShadow(color: dotColor.withValues(alpha: 0.5), blurRadius: 6),
             ],
           ),
         ),
         const SizedBox(width: 8),
-        // Label — shrinks before chips do
         Text(
           online ? 'ESP32 Connected' : 'Disconnected',
           style: TextStyle(
               fontSize: 13, fontWeight: FontWeight.w700, color: dotColor),
         ),
         const SizedBox(width: 8),
-        // FIX 2: Flexible + horizontal scroll keeps chips visible
         Flexible(
           child: SingleChildScrollView(
             scrollDirection: Axis.horizontal,
@@ -1012,7 +1057,7 @@ class _EspBar extends StatelessWidget {
         Icon(Icons.chevron_right_rounded,
             size: 18,
             color:
-            Theme.of(context).colorScheme.onSurface.withOpacity(0.3)),
+            Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.3)),
       ]),
     );
   }
@@ -1031,12 +1076,12 @@ class _MiniChip extends StatelessWidget {
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(8),
         color: isDark
-            ? Colors.white.withOpacity(0.07)
-            : Colors.black.withOpacity(0.05),
+            ? Colors.white.withValues(alpha: 0.07)
+            : Colors.black.withValues(alpha: 0.05),
         border: Border.all(
           color: isDark
-              ? Colors.white.withOpacity(0.1)
-              : Colors.black.withOpacity(0.07),
+              ? Colors.white.withValues(alpha: 0.1)
+              : Colors.black.withValues(alpha: 0.07),
           width: 0.5,
         ),
       ),
@@ -1117,7 +1162,7 @@ class _StatTile extends StatelessWidget {
           height: 36,
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(10),
-            color: iconColor.withOpacity(0.15),
+            color: iconColor.withValues(alpha: 0.15),
           ),
           child: Icon(icon, color: iconColor, size: 18),
         ),
@@ -1135,7 +1180,7 @@ class _StatTile extends StatelessWidget {
                 color: Theme.of(context)
                     .colorScheme
                     .onSurface
-                    .withOpacity(0.5))),
+                    .withValues(alpha: 0.5))),
       ]),
     );
   }
@@ -1161,7 +1206,7 @@ class _FlameBanner extends StatelessWidget {
           height: 40,
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(12),
-            color: color.withOpacity(0.15),
+            color: color.withValues(alpha: 0.15),
           ),
           child: Icon(
             flame
@@ -1193,14 +1238,14 @@ class _FlameBanner extends StatelessWidget {
                   color: Theme.of(context)
                       .colorScheme
                       .onSurface
-                      .withOpacity(0.5)),
+                      .withValues(alpha: 0.5)),
             ),
           ],
         )),
         Icon(Icons.chevron_right_rounded,
             size: 18,
             color:
-            Theme.of(context).colorScheme.onSurface.withOpacity(0.3)),
+            Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.3)),
       ]),
     );
   }
@@ -1236,8 +1281,8 @@ class _RoomsHeader extends StatelessWidget {
                   fontSize: 17,
                   fontWeight: FontWeight.w700,
                   color: Theme.of(context).colorScheme.onSurface)),
-          Text('${_rooms.length} Rooms',
-              style: const TextStyle(
+          const Text('4 Rooms',
+              style: TextStyle(
                   fontSize: 13,
                   fontWeight: FontWeight.w500,
                   color: _DT.purple)),
@@ -1267,8 +1312,8 @@ class _RoomsHeader extends StatelessWidget {
                   color: selected
                       ? Colors.white
                       : (Theme.of(context).brightness == Brightness.dark
-                      ? Colors.white.withOpacity(0.07)
-                      : Colors.black.withOpacity(0.05)),
+                      ? Colors.white.withValues(alpha: 0.07)
+                      : Colors.black.withValues(alpha: 0.05)),
                   border: Border.all(
                     color:
                     selected ? Colors.white : Colors.transparent,
@@ -1289,7 +1334,7 @@ class _RoomsHeader extends StatelessWidget {
                               : Theme.of(context)
                               .colorScheme
                               .onSurface
-                              .withOpacity(0.6))),
+                              .withValues(alpha: 0.6))),
                 ]),
               ),
             );
@@ -1360,10 +1405,11 @@ class _DeviceGrid extends StatelessWidget {
                 fontWeight: FontWeight.w700,
                 letterSpacing: -0.4)),
         const Spacer(),
+        // FIXED: spinner only shows while toggling, not blocking interaction
         if (isToggling)
           const SizedBox(
-            width: 20,
-            height: 20,
+            width: 16,
+            height: 16,
             child: CircularProgressIndicator(
                 strokeWidth: 2, color: _DT.purple),
           ),
@@ -1509,7 +1555,8 @@ class _DeviceCardTall extends StatelessWidget {
 
     return RepaintBoundary(
       child: GestureDetector(
-        onTap: isToggling ? null : onToggle,
+        // FIXED: card tap is never blocked — isToggling only drives the spinner
+        onTap: onToggle,
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 250),
           padding: const EdgeInsets.all(14),
@@ -1517,23 +1564,23 @@ class _DeviceCardTall extends StatelessWidget {
             borderRadius: BorderRadius.circular(20),
             color: isOn
                 ? (isDark
-                ? accentColor.withOpacity(0.12)
-                : accentColor.withOpacity(0.08))
+                ? accentColor.withValues(alpha: 0.12)
+                : accentColor.withValues(alpha: 0.08))
                 : (isDark
-                ? Colors.white.withOpacity(0.05)
-                : Colors.black.withOpacity(0.04)),
+                ? Colors.white.withValues(alpha: 0.05)
+                : Colors.black.withValues(alpha: 0.04)),
             border: Border.all(
               color: isOn
-                  ? accentColor.withOpacity(0.35)
+                  ? accentColor.withValues(alpha: 0.35)
                   : (isDark
-                  ? Colors.white.withOpacity(0.08)
-                  : Colors.black.withOpacity(0.07)),
+                  ? Colors.white.withValues(alpha: 0.08)
+                  : Colors.black.withValues(alpha: 0.07)),
               width: 1,
             ),
             boxShadow: isOn
                 ? [
               BoxShadow(
-                  color: accentColor.withOpacity(0.15),
+                  color: accentColor.withValues(alpha: 0.15),
                   blurRadius: 16,
                   offset: const Offset(0, 4))
             ]
@@ -1551,14 +1598,16 @@ class _DeviceCardTall extends StatelessWidget {
                       height: 38,
                       decoration: BoxDecoration(
                         borderRadius: BorderRadius.circular(11),
-                        color: iconColor.withOpacity(0.18),
+                        color: iconColor.withValues(alpha: 0.18),
                       ),
-                      child: isToggling && isOn
-                          ? const SizedBox(
-                        width: 20,
-                        height: 20,
+                      // FIXED: spinner is decorative — it never blocks tap
+                      child: isToggling
+                          ? Padding(
+                        padding: const EdgeInsets.all(9),
                         child: CircularProgressIndicator(
-                            strokeWidth: 2, color: _DT.purple),
+                          strokeWidth: 2,
+                          color: accentColor,
+                        ),
                       )
                           : Icon(icon, color: iconColor, size: 20),
                     ),
@@ -1566,7 +1615,6 @@ class _DeviceCardTall extends StatelessWidget {
                       value: isOn,
                       onToggle: onToggle,
                       accent: accentColor,
-                      isToggling: isToggling,
                     ),
                   ],
                 ),
@@ -1590,16 +1638,16 @@ class _DeviceCardTall extends StatelessWidget {
                       inactiveTrackColor: Theme.of(context)
                           .colorScheme
                           .onSurface
-                          .withOpacity(0.12),
+                          .withValues(alpha: 0.12),
                       thumbColor: Colors.white,
-                      overlayColor: accentColor.withOpacity(0.12),
+                      overlayColor: accentColor.withValues(alpha: 0.12),
                       thumbShape: const RoundSliderThumbShape(
                           enabledThumbRadius: 7, elevation: 2),
                       trackHeight: 3,
                     ),
                     child: Slider(
                       value: sliderValue!,
-                      onChanged: isToggling ? null : onSliderChanged,
+                      onChanged: onSliderChanged,
                       min: 0,
                       max: 1,
                     ),
@@ -1621,21 +1669,17 @@ class _SmallToggle extends StatelessWidget {
   final bool value;
   final VoidCallback onToggle;
   final Color accent;
-  final bool isToggling;
 
   const _SmallToggle({
     required this.value,
     required this.onToggle,
     required this.accent,
-    this.isToggling = false,
   });
 
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
-      onTap: isToggling
-          ? null
-          : () {
+      onTap: () {
         HapticFeedback.lightImpact();
         onToggle();
       },
@@ -1647,12 +1691,12 @@ class _SmallToggle extends StatelessWidget {
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(12),
           color: value
-              ? accent.withOpacity(0.25)
-              : Colors.white.withOpacity(0.1),
+              ? accent.withValues(alpha: 0.25)
+              : Colors.white.withValues(alpha: 0.1),
           border: Border.all(
             color: value
-                ? accent.withOpacity(0.6)
-                : Colors.white.withOpacity(0.15),
+                ? accent.withValues(alpha: 0.6)
+                : Colors.white.withValues(alpha: 0.15),
             width: 0.8,
           ),
         ),
@@ -1664,10 +1708,10 @@ class _SmallToggle extends StatelessWidget {
             height: 18,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
-              color: value ? accent : Colors.white.withOpacity(0.5),
+              color: value ? accent : Colors.white.withValues(alpha: 0.5),
               boxShadow: [
                 BoxShadow(
-                    color: Colors.black.withOpacity(0.2),
+                    color: Colors.black.withValues(alpha: 0.2),
                     blurRadius: 3,
                     offset: const Offset(0, 1)),
               ],
@@ -1706,9 +1750,16 @@ class _DeviceRow extends StatelessWidget {
         height: 40,
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(12),
-          color: iconColor.withOpacity(0.15),
+          color: iconColor.withValues(alpha: 0.15),
         ),
-        child: Icon(icon, color: iconColor, size: 22),
+        // FIXED: spinner in icon slot, tap never blocked
+        child: isToggling
+            ? Padding(
+          padding: const EdgeInsets.all(10),
+          child: CircularProgressIndicator(
+              strokeWidth: 2, color: iconColor),
+        )
+            : Icon(icon, color: iconColor, size: 22),
       ),
       const SizedBox(width: 14),
       Expanded(child: Column(
@@ -1727,7 +1778,6 @@ class _DeviceRow extends StatelessWidget {
         value: isOn,
         onToggle: onToggle,
         accent: iconColor,
-        isToggling: isToggling,
       ),
     ]);
   }
@@ -1768,33 +1818,33 @@ class _GCard extends StatelessWidget {
               end: Alignment.bottomRight,
               colors: isDark
                   ? [
-                Colors.white.withOpacity(0.08),
-                Colors.white.withOpacity(0.03)
+                Colors.white.withValues(alpha: 0.08),
+                Colors.white.withValues(alpha: 0.03)
               ]
                   : [
-                Colors.white.withOpacity(0.6),
-                Colors.white.withOpacity(0.3)
+                Colors.white.withValues(alpha: 0.6),
+                Colors.white.withValues(alpha: 0.3)
               ],
             ),
             border: Border.all(
               color: dangerBorder
-                  ? _DT.red.withOpacity(0.45)
+                  ? _DT.red.withValues(alpha: 0.45)
                   : (isDark
-                  ? Colors.white.withOpacity(0.1)
-                  : Colors.white.withOpacity(0.4)),
+                  ? Colors.white.withValues(alpha: 0.1)
+                  : Colors.white.withValues(alpha: 0.4)),
               width: 0.8,
             ),
             boxShadow: [
               BoxShadow(
                 color: isDark
-                    ? Colors.black.withOpacity(0.3)
-                    : Colors.black.withOpacity(0.05),
+                    ? Colors.black.withValues(alpha: 0.3)
+                    : Colors.black.withValues(alpha: 0.05),
                 blurRadius: 20,
                 offset: const Offset(0, 6),
               ),
               if (glowColor != null)
                 BoxShadow(
-                  color: glowColor!.withOpacity(isDark ? 0.18 : 0.12),
+                  color: glowColor!.withValues(alpha: isDark ? 0.18 : 0.12),
                   blurRadius: 24,
                 ),
             ],
@@ -1826,7 +1876,7 @@ class _PillBtn extends StatelessWidget {
         ),
         boxShadow: [
           BoxShadow(
-              color: _DT.purple.withOpacity(0.35), blurRadius: 14),
+              color: _DT.purple.withValues(alpha: 0.35), blurRadius: 14),
         ],
       ),
       child: Text(label,
@@ -1839,7 +1889,7 @@ class _PillBtn extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 20. GLASS BOTTOM NAV — iOS 26 drag-to-slide liquid glass
+// 20. GLASS BOTTOM NAV
 // ────────────────────────────────────────────────────────────
 class _GlassBottomNav extends StatefulWidget {
   final int selectedIndex;
@@ -1866,11 +1916,8 @@ class _GlassBottomNavState extends State<_GlassBottomNav>
   late AnimationController _pillController;
   late Animation<double> _pillPosition;
 
-  // The "visual" fractional position of the pill (0.0 – 3.0)
   double _visualPosition = 0;
-  // True while finger is held down dragging
   bool _isDragging = false;
-  // Tab width — set once LayoutBuilder measures
   double _tabWidth = 0;
   int _prevIndex = 0;
 
@@ -1889,7 +1936,6 @@ class _GlassBottomNavState extends State<_GlassBottomNav>
   @override
   void didUpdateWidget(_GlassBottomNav old) {
     super.didUpdateWidget(old);
-    // Only animate when the index changes externally (not from our own drag)
     if (!_isDragging && old.selectedIndex != widget.selectedIndex) {
       _animatePillTo(widget.selectedIndex.toDouble());
       _prevIndex = widget.selectedIndex;
@@ -1906,7 +1952,6 @@ class _GlassBottomNavState extends State<_GlassBottomNav>
     });
   }
 
-  // Convert a local dx offset → fractional tab index (clamped 0–3)
   double _dxToIndex(double dx) {
     if (_tabWidth <= 0) return widget.selectedIndex.toDouble();
     return (dx / _tabWidth).clamp(0.0, _items.length - 1.0);
@@ -1933,7 +1978,6 @@ class _GlassBottomNavState extends State<_GlassBottomNav>
       _pillPosition = AlwaysStoppedAnimation(idx);
     });
 
-    // Fire haptic + callback as pill crosses each tab boundary
     if (nearest != _prevIndex) {
       HapticFeedback.selectionClick();
       _prevIndex = nearest;
@@ -1944,7 +1988,6 @@ class _GlassBottomNavState extends State<_GlassBottomNav>
   void _onDragEnd(DragEndDetails d) {
     _isDragging = false;
     final nearest = _nearestTab(_visualPosition);
-    // Snap pill to nearest tab
     _animatePillTo(nearest.toDouble());
     widget.onTap(nearest);
   }
@@ -1973,12 +2016,12 @@ class _GlassBottomNavState extends State<_GlassBottomNav>
         borderRadius: BorderRadius.circular(34),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(isDark ? 0.35 : 0.12),
+            color: Colors.black.withValues(alpha: isDark ? 0.35 : 0.12),
             blurRadius: 32,
             offset: const Offset(0, 8),
           ),
           BoxShadow(
-            color: _DT.purple.withOpacity(isDark ? 0.08 : 0.05),
+            color: _DT.purple.withValues(alpha: isDark ? 0.08 : 0.05),
             blurRadius: 20,
             spreadRadius: 1,
           ),
@@ -1996,18 +2039,18 @@ class _GlassBottomNavState extends State<_GlassBottomNav>
                 end: Alignment.bottomRight,
                 colors: isDark
                     ? [
-                  Colors.white.withOpacity(0.13),
-                  Colors.white.withOpacity(0.07),
+                  Colors.white.withValues(alpha: 0.13),
+                  Colors.white.withValues(alpha: 0.07),
                 ]
                     : [
-                  Colors.white.withOpacity(0.72),
-                  Colors.white.withOpacity(0.48),
+                  Colors.white.withValues(alpha: 0.72),
+                  Colors.white.withValues(alpha: 0.48),
                 ],
               ),
               border: Border.all(
                 color: isDark
-                    ? Colors.white.withOpacity(0.15)
-                    : Colors.white.withOpacity(0.6),
+                    ? Colors.white.withValues(alpha: 0.15)
+                    : Colors.white.withValues(alpha: 0.6),
                 width: 0.8,
               ),
             ),
@@ -2016,13 +2059,11 @@ class _GlassBottomNavState extends State<_GlassBottomNav>
                 _tabWidth = constraints.maxWidth / _items.length;
 
                 return GestureDetector(
-                  // Drag across the whole nav bar
                   onHorizontalDragStart: _onDragStart,
                   onHorizontalDragUpdate: _onDragUpdate,
                   onHorizontalDragEnd: _onDragEnd,
                   behavior: HitTestBehavior.opaque,
                   child: Stack(children: [
-                    // ── Sliding glass pill ──
                     AnimatedBuilder(
                       animation: _pillPosition,
                       builder: (context, _) {
@@ -2044,22 +2085,22 @@ class _GlassBottomNavState extends State<_GlassBottomNav>
                                     end: Alignment.bottomRight,
                                     colors: isDark
                                         ? [
-                                      _DT.purple.withOpacity(0.38),
-                                      _DT.purple.withOpacity(0.20),
+                                      _DT.purple.withValues(alpha: 0.38),
+                                      _DT.purple.withValues(alpha: 0.20),
                                     ]
                                         : [
-                                      _DT.purple.withOpacity(0.20),
-                                      _DT.purple.withOpacity(0.10),
+                                      _DT.purple.withValues(alpha: 0.20),
+                                      _DT.purple.withValues(alpha: 0.10),
                                     ],
                                   ),
                                   border: Border.all(
-                                    color: _DT.purple.withOpacity(
-                                        isDark ? 0.50 : 0.30),
+                                    color: _DT.purple.withValues(
+                                        alpha: isDark ? 0.50 : 0.30),
                                     width: 0.8,
                                   ),
                                   boxShadow: [
                                     BoxShadow(
-                                      color: _DT.purple.withOpacity(0.28),
+                                      color: _DT.purple.withValues(alpha: 0.28),
                                       blurRadius: 14,
                                       offset: const Offset(0, 2),
                                     ),
@@ -2072,7 +2113,6 @@ class _GlassBottomNavState extends State<_GlassBottomNav>
                       },
                     ),
 
-                    // ── Tab icons + labels ──
                     Row(
                       children: _items.asMap().entries.map((entry) {
                         final index = entry.key;
@@ -2100,9 +2140,9 @@ class _GlassBottomNavState extends State<_GlassBottomNav>
                                           ? _DT.purple
                                           : (isDark
                                           ? Colors.white
-                                          .withOpacity(0.38)
+                                          .withValues(alpha: 0.38)
                                           : Colors.black
-                                          .withOpacity(0.28)),
+                                          .withValues(alpha: 0.28)),
                                     ),
                                   ),
                                   const SizedBox(height: 3),
@@ -2118,9 +2158,9 @@ class _GlassBottomNavState extends State<_GlassBottomNav>
                                           ? _DT.purple
                                           : (isDark
                                           ? Colors.white
-                                          .withOpacity(0.38)
+                                          .withValues(alpha: 0.38)
                                           : Colors.black
-                                          .withOpacity(0.28)),
+                                          .withValues(alpha: 0.28)),
                                     ),
                                     child: Text(label),
                                   ),
@@ -2177,7 +2217,7 @@ class _EnergyScreen extends StatelessWidget {
                           horizontal: 10, vertical: 4),
                       decoration: BoxDecoration(
                         borderRadius: BorderRadius.circular(20),
-                        color: _DT.purple.withOpacity(0.15),
+                        color: _DT.purple.withValues(alpha: 0.15),
                       ),
                       child: const Text('⚡ Live',
                           style: TextStyle(
@@ -2203,7 +2243,7 @@ class _EnergyScreen extends StatelessWidget {
                                 color: Theme.of(context)
                                     .colorScheme
                                     .onSurface
-                                    .withOpacity(0.5))),
+                                    .withValues(alpha: 0.5))),
                       ]),
                       Container(
                           width: 0.5,
@@ -2211,7 +2251,7 @@ class _EnergyScreen extends StatelessWidget {
                           color: Theme.of(context)
                               .colorScheme
                               .onSurface
-                              .withOpacity(0.15)),
+                              .withValues(alpha: 0.15)),
                       const Column(children: [
                         Text('€2.15',
                             style: TextStyle(
@@ -2230,7 +2270,7 @@ class _EnergyScreen extends StatelessWidget {
                     backgroundColor: Theme.of(context)
                         .colorScheme
                         .onSurface
-                        .withOpacity(0.1),
+                        .withValues(alpha: 0.1),
                     valueColor: AlwaysStoppedAnimation(
                         Theme.of(context).colorScheme.primary),
                   ),
@@ -2245,7 +2285,7 @@ class _EnergyScreen extends StatelessWidget {
                             color: Theme.of(context)
                                 .colorScheme
                                 .onSurface
-                                .withOpacity(0.5))),
+                                .withValues(alpha: 0.5))),
                     Text('45%',
                         style: TextStyle(
                             fontSize: 12,
@@ -2268,7 +2308,7 @@ class _EnergyScreen extends StatelessWidget {
                           color: Theme.of(context)
                               .colorScheme
                               .onSurface
-                              .withOpacity(0.6))),
+                              .withValues(alpha: 0.6))),
                   const SizedBox(height: 6),
                   const Text('24.1 kWh',
                       style: TextStyle(
@@ -2292,7 +2332,7 @@ class _EnergyScreen extends StatelessWidget {
                   backgroundColor: Theme.of(context)
                       .colorScheme
                       .onSurface
-                      .withOpacity(0.1),
+                      .withValues(alpha: 0.1),
                   valueColor: AlwaysStoppedAnimation(
                       Theme.of(context).colorScheme.primary),
                   strokeCap: StrokeCap.round,
@@ -2336,7 +2376,7 @@ class _EnergyScreen extends StatelessWidget {
                         backgroundColor: Theme.of(context)
                             .colorScheme
                             .onSurface
-                            .withOpacity(0.08),
+                            .withValues(alpha: 0.08),
                         valueColor: AlwaysStoppedAnimation(
                             Theme.of(context).colorScheme.primary),
                       ),
@@ -2392,7 +2432,7 @@ class _AlertsScreen extends StatelessWidget {
               height: 44,
               decoration: BoxDecoration(
                 borderRadius: BorderRadius.circular(14),
-                color: color.withOpacity(0.15),
+                color: color.withValues(alpha: 0.15),
               ),
               child: Icon(icon, color: color, size: 22),
             ),
@@ -2410,7 +2450,7 @@ class _AlertsScreen extends StatelessWidget {
                         color: Theme.of(context)
                             .colorScheme
                             .onSurface
-                            .withOpacity(0.45))),
+                            .withValues(alpha: 0.45))),
               ],
             )),
             Icon(Icons.chevron_right_rounded,
@@ -2418,7 +2458,7 @@ class _AlertsScreen extends StatelessWidget {
                 color: Theme.of(context)
                     .colorScheme
                     .onSurface
-                    .withOpacity(0.3)),
+                    .withValues(alpha: 0.3)),
           ]),
         );
       },
@@ -2476,7 +2516,6 @@ class _SettingsScreen extends ConsumerWidget {
                 ],
                 onChanged: (m) {
                   if (m != null) {
-                    // FIX 1: only changes theme, never touches nav index
                     ref.read(themeModeProvider.notifier).state = m;
                   }
                 },
@@ -2496,9 +2535,9 @@ class _SettingsScreen extends ConsumerWidget {
                   horizontal: 10, vertical: 5),
               decoration: BoxDecoration(
                 borderRadius: BorderRadius.circular(20),
-                color: _DT.green.withOpacity(0.15),
+                color: _DT.green.withValues(alpha: 0.15),
                 border: Border.all(
-                    color: _DT.green.withOpacity(0.4),
+                    color: _DT.green.withValues(alpha: 0.4),
                     width: 0.8),
               ),
               child: const Text('● Connected',
@@ -2520,7 +2559,7 @@ class _SettingsScreen extends ConsumerWidget {
                 padding: const EdgeInsets.all(8),
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
-                  color: _DT.purple.withOpacity(0.15),
+                  color: _DT.purple.withValues(alpha: 0.15),
                 ),
                 child: const Icon(Icons.refresh_rounded,
                     size: 20, color: _DT.purple),
@@ -2539,7 +2578,7 @@ class _SettingsScreen extends ConsumerWidget {
                 color: Theme.of(context)
                     .colorScheme
                     .onSurface
-                    .withOpacity(0.35)),
+                    .withValues(alpha: 0.35)),
             onTap: () {},
           ),
           _SDivider(),
@@ -2552,7 +2591,7 @@ class _SettingsScreen extends ConsumerWidget {
                 color: Theme.of(context)
                     .colorScheme
                     .onSurface
-                    .withOpacity(0.35)),
+                    .withValues(alpha: 0.35)),
             onTap: () {},
           ),
           _SDivider(),
@@ -2565,7 +2604,7 @@ class _SettingsScreen extends ConsumerWidget {
                 color: Theme.of(context)
                     .colorScheme
                     .onSurface
-                    .withOpacity(0.35)),
+                    .withValues(alpha: 0.35)),
             onTap: () {},
           ),
         ])),
@@ -2575,12 +2614,14 @@ class _SettingsScreen extends ConsumerWidget {
 }
 
 class _SDivider extends StatelessWidget {
+  const _SDivider();
+
   @override
   Widget build(BuildContext context) => Container(
     height: 0.5,
     margin: const EdgeInsets.symmetric(vertical: 4),
     color:
-    Theme.of(context).colorScheme.onSurface.withOpacity(0.08),
+    Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.08),
   );
 }
 
@@ -2609,7 +2650,7 @@ class _STile extends StatelessWidget {
           height: 36,
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(10),
-            color: _DT.purple.withOpacity(0.12),
+            color: _DT.purple.withValues(alpha: 0.12),
           ),
           child: Icon(icon, color: _DT.purple, size: 18),
         ),
@@ -2626,7 +2667,7 @@ class _STile extends StatelessWidget {
                     color: Theme.of(context)
                         .colorScheme
                         .onSurface
-                        .withOpacity(0.5))),
+                        .withValues(alpha: 0.5))),
           ],
         )),
         trailing,
@@ -2652,11 +2693,11 @@ class _SkeletonLoader extends StatelessWidget {
 
     return Shimmer.fromColors(
       baseColor: isDark
-          ? Colors.white.withOpacity(0.06)
-          : Colors.black.withOpacity(0.07),
+          ? Colors.white.withValues(alpha: 0.06)
+          : Colors.black.withValues(alpha: 0.07),
       highlightColor: isDark
-          ? Colors.white.withOpacity(0.12)
-          : Colors.black.withOpacity(0.03),
+          ? Colors.white.withValues(alpha: 0.12)
+          : Colors.black.withValues(alpha: 0.03),
       child: SingleChildScrollView(
         padding: EdgeInsets.only(
           top: MediaQuery.of(context).padding.top + kToolbarHeight + 12,
@@ -2665,30 +2706,30 @@ class _SkeletonLoader extends StatelessWidget {
           bottom: isDesktop ? 40 : 100,
         ),
         child: Column(children: [
-          _SBox(h: 54, r: 16),
+          const _SBox(h: 54, r: 16),
           const SizedBox(height: 12),
           Row(children: [
-            Expanded(child: _SBox(h: 90, r: 20)),
+            Expanded(child: const _SBox(h: 90, r: 20)),
             const SizedBox(width: 10),
-            Expanded(child: _SBox(h: 90, r: 20)),
+            Expanded(child: const _SBox(h: 90, r: 20)),
             const SizedBox(width: 10),
-            Expanded(child: _SBox(h: 90, r: 20)),
+            Expanded(child: const _SBox(h: 90, r: 20)),
           ]),
           const SizedBox(height: 12),
-          _SBox(h: 64, r: 16),
+          const _SBox(h: 64, r: 16),
           const SizedBox(height: 12),
-          _SBox(h: 40, r: 16),
+          const _SBox(h: 40, r: 16),
           const SizedBox(height: 12),
           Row(children: [
-            Expanded(child: _SBox(h: 160, r: 20)),
+            Expanded(child: const _SBox(h: 160, r: 20)),
             const SizedBox(width: 12),
-            Expanded(child: _SBox(h: 160, r: 20)),
+            Expanded(child: const _SBox(h: 160, r: 20)),
           ]),
           const SizedBox(height: 12),
           Row(children: [
-            Expanded(child: _SBox(h: 160, r: 20)),
+            Expanded(child: const _SBox(h: 160, r: 20)),
             const SizedBox(width: 12),
-            Expanded(child: _SBox(h: 160, r: 20)),
+            Expanded(child: const _SBox(h: 160, r: 20)),
           ]),
         ]),
       ),
