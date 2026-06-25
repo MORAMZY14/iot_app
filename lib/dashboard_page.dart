@@ -1799,7 +1799,7 @@ class _HomeContentWrapperState extends ConsumerState<_HomeContentWrapper> {
 }
 
 // ────────────────────────────────────────────────────────────
-// 16. HOME CONTENT
+// 16. HOME CONTENT - DYNAMIC DEVICES FROM ESP32
 // ────────────────────────────────────────────────────────────
 class _HomeContent extends ConsumerStatefulWidget {
   final AsyncValue<Map<String, dynamic>> dataAsync;
@@ -1820,83 +1820,195 @@ class _HomeContent extends ConsumerStatefulWidget {
 
 class _HomeContentState extends ConsumerState<_HomeContent> {
   String _selectedRoom = 'Living Room';
-  bool _tvOn = false;
-  bool _purifierOn = false;
-  bool _soundbarOn = true;
-  double _ceilingBrightness = 0.8;
-  bool _bathroomLightOn = false;
+  Map<String, dynamic> _esp32Devices = {};
+  bool _isLoadingDevices = false;
 
-  final Map<String, bool> _lightStates = {};
-  final Set<String> _togglingKeys = {};
-  final Map<String, DateTime> _lastToggled = {};
-  static const _cooldown = Duration(seconds: 8);
-
-  String? _lightKeyForRoom(String room) {
-    switch (room) {
-      case 'Living Room': return 'room1';
-      case 'Bedroom':     return 'room2';
-      case 'Kitchen':     return 'room3';
-      default:            return null;
-    }
+  @override
+  void initState() {
+    super.initState();
+    _loadESP32Devices();
   }
 
-  bool _getLightState(String? key) {
-    if (key == null) return false;
-    return _lightStates[key] ?? false;
-  }
-
-  Future<void> _toggleRoomLight(String room) async {
-    final key = _lightKeyForRoom(room);
-    if (key == null) return;
-    if (_togglingKeys.contains(key)) return;
-
-    final previousValue = _lightStates[key] ?? false;
-    final newValue = !previousValue;
-
-    setState(() {
-      _lightStates[key] = newValue;
-      _togglingKeys.add(key);
-      _lastToggled[key] = DateTime.now();
-    });
-
-    HapticFeedback.lightImpact();
-
+  Future<void> _loadESP32Devices() async {
+    setState(() => _isLoadingDevices = true);
     try {
-      await ref.read(lightToggleProvider).toggle(key, newValue, context);
-    } catch (_) {
-      if (mounted) {
-        setState(() {
-          _lightStates[key] = previousValue;
-          _lastToggled.remove(key);
-        });
-      }
-    } finally {
-      if (mounted) {
-        setState(() => _togglingKeys.remove(key));
-      }
+      final service = ref.read(esp32DeviceServiceProvider);
+      final result = await service.getDevices();
+      setState(() {
+        _esp32Devices = result;
+        _isLoadingDevices = false;
+      });
+    } catch (e) {
+      print('Error loading ESP32 devices: $e');
+      setState(() => _isLoadingDevices = false);
     }
   }
 
-  int _activeCount() {
-    if (_selectedRoom == 'Living Room') {
-      int count = _getLightState('room1') ? 1 : 0;
-      if (_tvOn) count++;
-      if (_purifierOn) count++;
-      if (_soundbarOn) count++;
-      return count;
-    }
-    final key = _lightKeyForRoom(_selectedRoom);
-    return _getLightState(key) ? 1 : 0;
+  Future<void> _refreshDevices() async {
+    await _loadESP32Devices();
+    await widget.onRefresh();
   }
 
-  void _toggleMainLight() {
-    if (_selectedRoom == 'Bathroom') {
-      setState(() => _bathroomLightOn = !_bathroomLightOn);
-      HapticFeedback.lightImpact();
-      _showSnack(context, 'Bathroom light toggled (local)');
-    } else {
-      _toggleRoomLight(_selectedRoom);
-    }
+  void _showDeviceOptions(String deviceId, String deviceName, int currentGpio) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (context) => _GCard(
+        padding: const EdgeInsets.all(20),
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(30)),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 60,
+              height: 60,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: _DT.purple.withValues(alpha: 0.15),
+              ),
+              child: const Icon(
+                Icons.devices_rounded,
+                color: _DT.purple,
+                size: 30,
+              ),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              deviceName,
+              style: const TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Current GPIO: $currentGpio',
+              style: TextStyle(
+                fontSize: 14,
+                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5),
+              ),
+            ),
+            const SizedBox(height: 20),
+            _OptionTile(
+              icon: Icons.edit_rounded,
+              title: 'Edit GPIO',
+              subtitle: 'Change the GPIO pin',
+              onTap: () {
+                Navigator.pop(context);
+                showDialog(
+                  context: context,
+                  builder: (context) => _EditGPIODialog(
+                    deviceId: deviceId,
+                    deviceName: deviceName,
+                    currentGpio: currentGpio,
+                  ),
+                );
+              },
+            ),
+            const Divider(height: 1),
+            _OptionTile(
+              icon: Icons.delete_rounded,
+              title: 'Remove Device',
+              subtitle: 'Delete this device',
+              onTap: () {
+                Navigator.pop(context);
+                _showRemoveDeviceDialog(deviceId, deviceName);
+              },
+              iconColor: _DT.red,
+            ),
+            const SizedBox(height: 10),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showRemoveDeviceDialog(String deviceId, String deviceName) {
+    showDialog(
+      context: context,
+      builder: (context) => Dialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        backgroundColor: Colors.transparent,
+        child: _GCard(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 60,
+                height: 60,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: _DT.red.withValues(alpha: 0.15),
+                ),
+                child: const Icon(
+                  Icons.warning_rounded,
+                  color: _DT.red,
+                  size: 30,
+                ),
+              ),
+              const SizedBox(height: 16),
+              const Text(
+                'Remove Device',
+                style: TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Are you sure you want to remove "$deviceName"?',
+                style: TextStyle(
+                  fontSize: 14,
+                  color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5),
+                ),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 20),
+              Row(
+                children: [
+                  Expanded(
+                    child: TextButton(
+                      onPressed: () => Navigator.pop(context),
+                      child: const Text('Cancel'),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: ElevatedButton(
+                      onPressed: () async {
+                        Navigator.pop(context);
+                        try {
+                          final service = ref.read(esp32DeviceServiceProvider);
+                          final success = await service.removeDevice(deviceId);
+                          if (success) {
+                            _showSnack(context, '✅ Device removed', color: _DT.green);
+                            await _loadESP32Devices();
+                          } else {
+                            _showSnack(context, '❌ Failed to remove device', color: _DT.red);
+                          }
+                        } catch (e) {
+                          _showSnack(context, '❌ Error: ${e.toString()}', color: _DT.red);
+                        }
+                      },
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: _DT.red,
+                        foregroundColor: Colors.white,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                      ),
+                      child: const Text('Remove'),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   @override
@@ -1905,25 +2017,12 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
     final isDesktop = ResponsiveHelper.isDesktop(context);
 
     return RefreshIndicator(
-      onRefresh: widget.onRefresh,
+      onRefresh: _refreshDevices,
       displacement: 100,
       color: _DT.purple,
       child: widget.dataAsync.when(
         data: (data) {
           final lights = (data['lights'] as Map?) ?? {};
-          final serverStates = Map<String, bool>.from(
-              lights.map((k, v) => MapEntry(k, v == true)));
-
-          for (final entry in serverStates.entries) {
-            final lastToggle = _lastToggled[entry.key];
-            final isCoolingDown = lastToggle != null &&
-                DateTime.now().difference(lastToggle) < _cooldown;
-
-            if (!_togglingKeys.contains(entry.key) && !isCoolingDown) {
-              _lightStates[entry.key] = entry.value;
-            }
-          }
-
           final sensors = (data['sensors'] as Map?) ?? {};
           final temp = (sensors['temperature'] ?? 0.0).toDouble();
           final hum = (sensors['humidity'] ?? 0.0).toDouble();
@@ -1936,13 +2035,16 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
           final energy = (data['energy'] as Map?) ?? {};
           final todayKw = (energy['today'] ?? 3.4).toDouble();
 
-          final bool lightOn = _selectedRoom == 'Bathroom'
-              ? _bathroomLightOn
-              : _getLightState(_lightKeyForRoom(_selectedRoom));
+          // Get devices from ESP32
+          final devicesList = _esp32Devices['devices'] as List? ?? [];
 
-          final currentKey = _lightKeyForRoom(_selectedRoom);
-          final isCurrentToggling = currentKey != null &&
-              _togglingKeys.contains(currentKey);
+          // Filter devices by selected room
+          final roomDevices = devicesList.where((d) =>
+          d['room'] == _selectedRoom || _selectedRoom == 'All Rooms'
+          ).toList();
+
+          // Count active devices in room
+          int activeCount = roomDevices.where((d) => d['state'] == true).length;
 
           return SingleChildScrollView(
             physics: const AlwaysScrollableScrollPhysics(),
@@ -1966,24 +2068,62 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
                   onRoomSelected: (r) => setState(() => _selectedRoom = r),
                 ),
                 const SizedBox(height: 14),
-                _DeviceGrid(
-                  selectedRoom: _selectedRoom,
-                  lightOn: lightOn,
-                  onLightToggle: _toggleMainLight,
-                  ceilingBrightness: _ceilingBrightness,
-                  onBrightnessChanged: (v) =>
-                      setState(() => _ceilingBrightness = v),
-                  tvOn: _tvOn,
-                  onTvToggle: () => setState(() => _tvOn = !_tvOn),
-                  purifierOn: _purifierOn,
-                  onPurifierToggle: () =>
-                      setState(() => _purifierOn = !_purifierOn),
-                  soundbarOn: _soundbarOn,
-                  onSoundbarToggle: () =>
-                      setState(() => _soundbarOn = !_soundbarOn),
-                  activeCount: _activeCount(),
-                  isToggling: isCurrentToggling,
-                ),
+
+                // Dynamic Device Grid
+                if (_isLoadingDevices)
+                  const Center(
+                    child: Padding(
+                      padding: EdgeInsets.all(20),
+                      child: CircularProgressIndicator(color: _DT.purple),
+                    ),
+                  )
+                else if (roomDevices.isEmpty)
+                  _GCard(
+                    padding: const EdgeInsets.all(30),
+                    child: Column(
+                      children: [
+                        Icon(
+                          Icons.devices_rounded,
+                          size: 48,
+                          color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.3),
+                        ),
+                        const SizedBox(height: 12),
+                        Text(
+                          'No devices in this room',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w600,
+                            color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5),
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          'Tap the + button to add a device',
+                          style: TextStyle(
+                            fontSize: 14,
+                            color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.3),
+                          ),
+                        ),
+                      ],
+                    ),
+                  )
+                else
+                  _DynamicDeviceGrid(
+                    devices: roomDevices,
+                    onDeviceTap: (device) {
+                      // Toggle device state
+                      final id = device['id'] as String;
+                      final currentState = device['state'] as bool? ?? false;
+                      _controlDevice(id, !currentState);
+                    },
+                    onLongPress: (device) {
+                      _showDeviceOptions(
+                        device['id'] as String,
+                        device['name'] as String,
+                        device['gpio'] as int,
+                      );
+                    },
+                  ),
               ],
             ),
           );
@@ -2012,10 +2152,235 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
                             .withValues(alpha: 0.5)),
                     textAlign: TextAlign.center),
                 const SizedBox(height: 20),
-                _PillBtn(label: 'Try Again', onTap: widget.onRefresh),
+                _PillBtn(label: 'Try Again', onTap: _refreshDevices),
               ]),
             ),
           ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _controlDevice(String id, bool state) async {
+    try {
+      final service = ref.read(esp32DeviceServiceProvider);
+      final success = await service.controlDevice(id: id, state: state);
+      if (success) {
+        await _loadESP32Devices();
+        _showSnack(context, state ? '✅ Device turned ON' : '✅ Device turned OFF', color: _DT.green);
+      } else {
+        _showSnack(context, '❌ Failed to control device', color: _DT.red);
+      }
+    } catch (e) {
+      _showSnack(context, '❌ Error: ${e.toString()}', color: _DT.red);
+    }
+  }
+}
+
+// ────────────────────────────────────────────────────────────
+// 16.1 DYNAMIC DEVICE GRID
+// ────────────────────────────────────────────────────────────
+class _DynamicDeviceGrid extends StatelessWidget {
+  final List devices;
+  final Function(Map<String, dynamic>) onDeviceTap;
+  final Function(Map<String, dynamic>) onLongPress;
+
+  const _DynamicDeviceGrid({
+    required this.devices,
+    required this.onDeviceTap,
+    required this.onLongPress,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final isDesktop = ResponsiveHelper.isDesktop(context);
+    final columns = isDesktop ? 4 : 2;
+
+    return GridView.builder(
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+        crossAxisCount: columns,
+        crossAxisSpacing: 12,
+        mainAxisSpacing: 12,
+        childAspectRatio: 0.9,
+      ),
+      itemCount: devices.length,
+      itemBuilder: (context, index) {
+        final device = devices[index];
+        final name = device['name'] as String? ?? 'Unknown';
+        final type = device['type'] as int? ?? 0;
+        final state = device['state'] as bool? ?? false;
+        final gpio = device['gpio'] as int? ?? 0;
+        final room = device['room'] as String? ?? '';
+
+        return GestureDetector(
+          onTap: () => onDeviceTap(device),
+          onLongPress: () => onLongPress(device),
+          child: _DynamicDeviceCard(
+            name: name,
+            type: type,
+            state: state,
+            gpio: gpio,
+            room: room,
+          ),
+        );
+      },
+    );
+  }
+}
+
+// ────────────────────────────────────────────────────────────
+// 16.2 DYNAMIC DEVICE CARD
+// ────────────────────────────────────────────────────────────
+class _DynamicDeviceCard extends StatelessWidget {
+  final String name;
+  final int type;
+  final bool state;
+  final int gpio;
+  final String room;
+
+  const _DynamicDeviceCard({
+    required this.name,
+    required this.type,
+    required this.state,
+    required this.gpio,
+    required this.room,
+  });
+
+  IconData _getIcon() {
+    switch (type) {
+      case 0: return Icons.lightbulb_rounded;
+      case 1: return Icons.air_rounded;
+      case 2: return Icons.power_settings_new_rounded;
+      case 3: return Icons.electrical_services_rounded;
+      default: return Icons.devices_rounded;
+    }
+  }
+
+  Color _getColor() {
+    return state ? _DT.amber : Colors.grey;
+  }
+
+  String _getStatus() {
+    return state ? 'On' : 'Off';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final color = _getColor();
+
+    return RepaintBoundary(
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 250),
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(20),
+          color: state
+              ? (isDark
+              ? color.withValues(alpha: 0.12)
+              : color.withValues(alpha: 0.08))
+              : (isDark
+              ? Colors.white.withValues(alpha: 0.05)
+              : Colors.black.withValues(alpha: 0.04)),
+          border: Border.all(
+            color: state
+                ? color.withValues(alpha: 0.35)
+                : (isDark
+                ? Colors.white.withValues(alpha: 0.08)
+                : Colors.black.withValues(alpha: 0.07)),
+            width: 1,
+          ),
+          boxShadow: state
+              ? [
+            BoxShadow(
+              color: color.withValues(alpha: 0.15),
+              blurRadius: 16,
+              offset: const Offset(0, 4),
+            )
+          ]
+              : null,
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  width: 38,
+                  height: 38,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(11),
+                    color: color.withValues(alpha: 0.18),
+                  ),
+                  child: Icon(
+                    _getIcon(),
+                    color: color,
+                    size: 20,
+                  ),
+                ),
+                Container(
+                  width: 40,
+                  height: 24,
+                  padding: const EdgeInsets.all(2),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(12),
+                    color: state
+                        ? color.withValues(alpha: 0.25)
+                        : Colors.white.withValues(alpha: 0.1),
+                    border: Border.all(
+                      color: state
+                          ? color.withValues(alpha: 0.6)
+                          : Colors.white.withValues(alpha: 0.15),
+                      width: 0.8,
+                    ),
+                  ),
+                  child: AnimatedAlign(
+                    duration: const Duration(milliseconds: 220),
+                    alignment: state ? Alignment.centerRight : Alignment.centerLeft,
+                    child: Container(
+                      width: 18,
+                      height: 18,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: state ? color : Colors.white.withValues(alpha: 0.5),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: 0.2),
+                            blurRadius: 3,
+                            offset: const Offset(0, 1),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 28),
+            Text(
+              name,
+              style: const TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                height: 1.2,
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+            const SizedBox(height: 3),
+            Text(
+              '${_getStatus()} • GPIO $gpio',
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w500,
+                color: state ? color : Colors.grey,
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -2379,436 +2744,43 @@ class _RoomsHeader extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 21. DEVICE GRID
+// 21. OPTION TILE
 // ────────────────────────────────────────────────────────────
-class _DeviceGrid extends StatelessWidget {
-  final String selectedRoom;
-  final bool lightOn;
-  final VoidCallback onLightToggle;
-  final double ceilingBrightness;
-  final ValueChanged<double> onBrightnessChanged;
-  final bool tvOn;
-  final VoidCallback onTvToggle;
-  final bool purifierOn;
-  final VoidCallback onPurifierToggle;
-  final bool soundbarOn;
-  final VoidCallback onSoundbarToggle;
-  final int activeCount;
-  final bool isToggling;
-
-  const _DeviceGrid({
-    required this.selectedRoom,
-    required this.lightOn,
-    required this.onLightToggle,
-    required this.ceilingBrightness,
-    required this.onBrightnessChanged,
-    required this.tvOn,
-    required this.onTvToggle,
-    required this.purifierOn,
-    required this.onPurifierToggle,
-    required this.soundbarOn,
-    required this.onSoundbarToggle,
-    required this.activeCount,
-    this.isToggling = false,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final isDesktop = ResponsiveHelper.isDesktop(context);
-
-    if (selectedRoom != 'Living Room') {
-      return _GCard(
-        child: _DeviceRow(
-          icon: Icons.lightbulb_rounded,
-          iconColor: lightOn ? _DT.amber : Colors.grey,
-          name: 'Main Light',
-          status: lightOn ? 'On' : 'Off',
-          isOn: lightOn,
-          onToggle: onLightToggle,
-          isToggling: isToggling,
-        ),
-      );
-    }
-
-    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Row(children: [
-        Text(selectedRoom,
-            style: const TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.w700,
-                letterSpacing: -0.4)),
-        const Spacer(),
-        if (isToggling)
-          const SizedBox(
-            width: 16,
-            height: 16,
-            child: CircularProgressIndicator(
-                strokeWidth: 2, color: _DT.purple),
-          ),
-        const SizedBox(width: 8),
-        Text('$activeCount Active',
-            style: const TextStyle(
-                fontSize: 13,
-                fontWeight: FontWeight.w600,
-                color: _DT.purple)),
-      ]),
-      const SizedBox(height: 14),
-      if (isDesktop) ...[
-        Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Expanded(child: _DeviceCardTall(
-            icon: Icons.lightbulb_rounded,
-            iconColor: lightOn ? _DT.amber : Colors.grey,
-            name: 'Ceiling Light',
-            status: lightOn ? 'On • ${(ceilingBrightness * 100).round()}%' : 'Off',
-            isOn: lightOn,
-            onToggle: onLightToggle,
-            accentColor: _DT.amber,
-            sliderValue: ceilingBrightness,
-            onSliderChanged: onBrightnessChanged,
-            isToggling: isToggling,
-          )),
-          const SizedBox(width: 12),
-          Expanded(child: _DeviceCardTall(
-            icon: Icons.tv_rounded,
-            iconColor: tvOn ? _DT.blue : Colors.grey,
-            name: 'Smart TV',
-            status: tvOn ? 'On' : 'Off',
-            isOn: tvOn,
-            onToggle: onTvToggle,
-            accentColor: _DT.blue,
-            isToggling: false,
-          )),
-          const SizedBox(width: 12),
-          Expanded(child: _DeviceCardTall(
-            icon: Icons.air_rounded,
-            iconColor: purifierOn ? const Color(0xFF81C784) : Colors.grey,
-            name: 'Air Purifier',
-            status: purifierOn ? 'On' : 'Off',
-            isOn: purifierOn,
-            onToggle: onPurifierToggle,
-            accentColor: const Color(0xFF81C784),
-            isToggling: false,
-          )),
-          const SizedBox(width: 12),
-          Expanded(child: _DeviceCardTall(
-            icon: Icons.speaker_rounded,
-            iconColor: soundbarOn ? const Color(0xFFCE93D8) : Colors.grey,
-            name: 'Soundbar',
-            status: soundbarOn ? 'Playing' : 'Paused',
-            isOn: soundbarOn,
-            onToggle: onSoundbarToggle,
-            accentColor: const Color(0xFFCE93D8),
-            isToggling: false,
-          )),
-        ]),
-      ] else ...[
-        Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Expanded(child: _DeviceCardTall(
-            icon: Icons.lightbulb_rounded,
-            iconColor: lightOn ? _DT.amber : Colors.grey,
-            name: 'Ceiling Light',
-            status: lightOn ? 'On • ${(ceilingBrightness * 100).round()}%' : 'Off',
-            isOn: lightOn,
-            onToggle: onLightToggle,
-            accentColor: _DT.amber,
-            sliderValue: ceilingBrightness,
-            onSliderChanged: onBrightnessChanged,
-            isToggling: isToggling,
-          )),
-          const SizedBox(width: 12),
-          Expanded(child: _DeviceCardTall(
-            icon: Icons.tv_rounded,
-            iconColor: tvOn ? _DT.blue : Colors.grey,
-            name: 'Smart TV',
-            status: tvOn ? 'On' : 'Off',
-            isOn: tvOn,
-            onToggle: onTvToggle,
-            accentColor: _DT.blue,
-            isToggling: false,
-          )),
-        ]),
-        const SizedBox(height: 12),
-        Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Expanded(child: _DeviceCardTall(
-            icon: Icons.air_rounded,
-            iconColor: purifierOn ? const Color(0xFF81C784) : Colors.grey,
-            name: 'Air Purifier',
-            status: purifierOn ? 'On' : 'Off',
-            isOn: purifierOn,
-            onToggle: onPurifierToggle,
-            accentColor: const Color(0xFF81C784),
-            isToggling: false,
-          )),
-          const SizedBox(width: 12),
-          Expanded(child: _DeviceCardTall(
-            icon: Icons.speaker_rounded,
-            iconColor: soundbarOn ? const Color(0xFFCE93D8) : Colors.grey,
-            name: 'Soundbar',
-            status: soundbarOn ? 'Playing' : 'Paused',
-            isOn: soundbarOn,
-            onToggle: onSoundbarToggle,
-            accentColor: const Color(0xFFCE93D8),
-            isToggling: false,
-          )),
-        ]),
-      ],
-    ]);
-  }
-}
-
-class _DeviceCardTall extends StatelessWidget {
+class _OptionTile extends StatelessWidget {
   final IconData icon;
-  final Color iconColor;
-  final String name;
-  final String status;
-  final bool isOn;
-  final VoidCallback onToggle;
-  final Color accentColor;
-  final double? sliderValue;
-  final ValueChanged<double>? onSliderChanged;
-  final bool isToggling;
+  final String title;
+  final String subtitle;
+  final VoidCallback onTap;
+  final Color? iconColor;
 
-  const _DeviceCardTall({
+  const _OptionTile({
     required this.icon,
-    required this.iconColor,
-    required this.name,
-    required this.status,
-    required this.isOn,
-    required this.onToggle,
-    required this.accentColor,
-    this.sliderValue,
-    this.onSliderChanged,
-    this.isToggling = false,
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+    this.iconColor,
   });
 
   @override
   Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-
-    return RepaintBoundary(
-      child: GestureDetector(
-        onTap: onToggle,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 250),
-          padding: const EdgeInsets.all(14),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(20),
-            color: isOn
-                ? (isDark
-                ? accentColor.withValues(alpha: 0.12)
-                : accentColor.withValues(alpha: 0.08))
-                : (isDark
-                ? Colors.white.withValues(alpha: 0.05)
-                : Colors.black.withValues(alpha: 0.04)),
-            border: Border.all(
-              color: isOn
-                  ? accentColor.withValues(alpha: 0.35)
-                  : (isDark
-                  ? Colors.white.withValues(alpha: 0.08)
-                  : Colors.black.withValues(alpha: 0.07)),
-              width: 1,
-            ),
-            boxShadow: isOn
-                ? [
-              BoxShadow(
-                  color: accentColor.withValues(alpha: 0.15),
-                  blurRadius: 16,
-                  offset: const Offset(0, 4))
-            ]
-                : null,
-          ),
-          child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Container(
-                      width: 38,
-                      height: 38,
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(11),
-                        color: iconColor.withValues(alpha: 0.18),
-                      ),
-                      child: isToggling
-                          ? Padding(
-                        padding: const EdgeInsets.all(9),
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          color: accentColor,
-                        ),
-                      )
-                          : Icon(icon, color: iconColor, size: 20),
-                    ),
-                    _SmallToggle(
-                      value: isOn,
-                      onToggle: onToggle,
-                      accent: accentColor,
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 28),
-                Text(name,
-                    style: const TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
-                        height: 1.2)),
-                const SizedBox(height: 3),
-                Text(status,
-                    style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w500,
-                        color: isOn ? accentColor : Colors.grey)),
-                if (sliderValue != null && onSliderChanged != null) ...[
-                  const SizedBox(height: 10),
-                  SliderTheme(
-                    data: SliderTheme.of(context).copyWith(
-                      activeTrackColor: accentColor,
-                      inactiveTrackColor: Theme.of(context)
-                          .colorScheme
-                          .onSurface
-                          .withValues(alpha: 0.12),
-                      thumbColor: Colors.white,
-                      overlayColor: accentColor.withValues(alpha: 0.12),
-                      thumbShape: const RoundSliderThumbShape(
-                          enabledThumbRadius: 7, elevation: 2),
-                      trackHeight: 3,
-                    ),
-                    child: Slider(
-                      value: sliderValue!,
-                      onChanged: onSliderChanged,
-                      min: 0,
-                      max: 1,
-                    ),
-                  ),
-                  Text('${(sliderValue! * 100).round()}%',
-                      style: TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.w600,
-                          color: accentColor)),
-                ],
-              ]),
+    return ListTile(
+      leading: Icon(
+        icon,
+        color: iconColor ?? _DT.purple,
+      ),
+      title: Text(
+        title,
+        style: TextStyle(
+          fontWeight: FontWeight.w600,
         ),
       ),
+      subtitle: Text(subtitle),
+      trailing: Icon(
+        Icons.chevron_right_rounded,
+        color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.3),
+      ),
+      onTap: onTap,
     );
-  }
-}
-
-class _SmallToggle extends StatelessWidget {
-  final bool value;
-  final VoidCallback onToggle;
-  final Color accent;
-
-  const _SmallToggle({
-    required this.value,
-    required this.onToggle,
-    required this.accent,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: () {
-        HapticFeedback.lightImpact();
-        onToggle();
-      },
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 220),
-        width: 40,
-        height: 24,
-        padding: const EdgeInsets.all(2),
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(12),
-          color: value
-              ? accent.withValues(alpha: 0.25)
-              : Colors.white.withValues(alpha: 0.1),
-          border: Border.all(
-            color: value
-                ? accent.withValues(alpha: 0.6)
-                : Colors.white.withValues(alpha: 0.15),
-            width: 0.8,
-          ),
-        ),
-        child: AnimatedAlign(
-          duration: const Duration(milliseconds: 220),
-          alignment: value ? Alignment.centerRight : Alignment.centerLeft,
-          child: Container(
-            width: 18,
-            height: 18,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: value ? accent : Colors.white.withValues(alpha: 0.5),
-              boxShadow: [
-                BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.2),
-                    blurRadius: 3,
-                    offset: const Offset(0, 1)),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _DeviceRow extends StatelessWidget {
-  final IconData icon;
-  final Color iconColor;
-  final String name;
-  final String status;
-  final bool isOn;
-  final VoidCallback onToggle;
-  final bool isToggling;
-
-  const _DeviceRow({
-    required this.icon,
-    required this.iconColor,
-    required this.name,
-    required this.status,
-    required this.isOn,
-    required this.onToggle,
-    this.isToggling = false,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(children: [
-      Container(
-        width: 40,
-        height: 40,
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(12),
-          color: iconColor.withValues(alpha: 0.15),
-        ),
-        child: isToggling
-            ? Padding(
-          padding: const EdgeInsets.all(10),
-          child: CircularProgressIndicator(
-              strokeWidth: 2, color: iconColor),
-        )
-            : Icon(icon, color: iconColor, size: 22),
-      ),
-      const SizedBox(width: 14),
-      Expanded(child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(name,
-              style: const TextStyle(
-                  fontSize: 15, fontWeight: FontWeight.w600)),
-          Text(status,
-              style: TextStyle(
-                  fontSize: 12,
-                  color: isOn ? iconColor : Colors.grey)),
-        ],
-      )),
-      _SmallToggle(
-        value: isOn,
-        onToggle: onToggle,
-        accent: iconColor,
-      ),
-    ]);
   }
 }
 
@@ -3496,7 +3468,7 @@ class _AlertsScreen extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 27. SETTINGS SCREEN (UPDATED with ESP32 IP settings)
+// 27. SETTINGS SCREEN
 // ────────────────────────────────────────────────────────────
 class _SettingsScreen extends ConsumerWidget {
   const _SettingsScreen({super.key});
@@ -3662,7 +3634,7 @@ class _SettingsScreen extends ConsumerWidget {
 
       try {
         final devices = await esp32Service.getDevices();
-        Navigator.pop(context); // Close loading dialog
+        Navigator.pop(context);
 
         final isConnected = devices['devices'] != null;
 
@@ -3741,7 +3713,7 @@ class _SettingsScreen extends ConsumerWidget {
           ),
         );
       } catch (e) {
-        Navigator.pop(context); // Close loading dialog
+        Navigator.pop(context);
         showDialog(
           context: context,
           builder: (context) => Dialog(
