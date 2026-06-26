@@ -15,7 +15,7 @@ import 'wifi_config_page.dart';
 import 'auth_service.dart';
 import 'login_screen.dart';
 
-const String appVersion = '1.0.12';
+const String appVersion = '1.0.13';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
