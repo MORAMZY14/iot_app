@@ -7,13 +7,9 @@ class AuthService {
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
 
-  // Get current user
   User? get currentUser => _auth.currentUser;
-
-  // Stream of user changes
   Stream<User?> get userChanges => _auth.authStateChanges();
 
-  // Register with email and password
   Future<User?> registerWithEmailPassword({
     required String email,
     required String password,
@@ -21,22 +17,14 @@ class AuthService {
     required String esp32Ip,
   }) async {
     try {
-      // Create user with email and password
       UserCredential result = await _auth.createUserWithEmailAndPassword(
         email: email,
         password: password,
       );
-
       User? user = result.user;
-
       if (user != null) {
-        // Update display name
         await user.updateDisplayName(displayName);
-
-        // Send email verification
         await user.sendEmailVerification();
-
-        // Save user data to Firestore with ESP32 IP
         await _firestore.collection('users').doc(user.uid).set({
           'uid': user.uid,
           'email': email,
@@ -45,20 +33,20 @@ class AuthService {
           'createdAt': FieldValue.serverTimestamp(),
           'emailVerified': false,
         });
-
         return user;
       }
       return null;
     } on FirebaseAuthException catch (e) {
-      print('Registration error: ${e.message}');
+      // 🔥 FIX: Print the exact Firebase error
+      print('🔥 Firebase Registration Error: ${e.code} - ${e.message}');
       rethrow;
     } catch (e) {
-      print('Registration error: $e');
+      // 🔥 FIX: Print the generic error
+      print('🔥 Generic Registration Error: $e');
       rethrow;
     }
   }
 
-  // Sign in with email and password
   Future<User?> signInWithEmailPassword({
     required String email,
     required String password,
@@ -68,41 +56,36 @@ class AuthService {
         email: email,
         password: password,
       );
-
       User? user = result.user;
-
-      // Check if email is verified
       if (user != null && !user.emailVerified) {
         await _auth.signOut();
         throw 'Please verify your email before signing in. Check your inbox.';
       }
-
       return user;
     } on FirebaseAuthException catch (e) {
-      print('Sign in error: ${e.message}');
+      // 🔥 FIX: Print the exact Firebase error
+      print('🔥 Firebase Sign-in Error: ${e.code} - ${e.message}');
       rethrow;
     } catch (e) {
-      print('Sign in error: $e');
+      // 🔥 FIX: Print the generic error
+      print('🔥 Generic Sign-in Error: $e');
       rethrow;
     }
   }
 
-  // Sign out
   Future<void> signOut() async {
     await _auth.signOut();
   }
 
-  // Reset password
   Future<void> resetPassword(String email) async {
     try {
       await _auth.sendPasswordResetEmail(email: email);
     } on FirebaseAuthException catch (e) {
-      print('Password reset error: ${e.message}');
+      print('Firebase Password Reset Error: ${e.code} - ${e.message}');
       rethrow;
     }
   }
 
-  // Resend verification email
   Future<void> resendVerificationEmail() async {
     User? user = _auth.currentUser;
     if (user != null && !user.emailVerified) {
@@ -110,7 +93,6 @@ class AuthService {
     }
   }
 
-  // Get user data from Firestore
   Future<Map<String, dynamic>?> getUserData(String uid) async {
     try {
       DocumentSnapshot doc = await _firestore.collection('users').doc(uid).get();
@@ -124,7 +106,6 @@ class AuthService {
     }
   }
 
-  // Update ESP32 IP
   Future<void> updateEsp32Ip(String uid, String newIp) async {
     try {
       await _firestore.collection('users').doc(uid).update({
@@ -136,7 +117,6 @@ class AuthService {
     }
   }
 
-  // Get user's ESP32 IP
   Future<String?> getUserEsp32Ip(String uid) async {
     try {
       DocumentSnapshot doc = await _firestore.collection('users').doc(uid).get();
@@ -151,14 +131,11 @@ class AuthService {
     }
   }
 
-  // Delete user account
   Future<void> deleteAccount() async {
     try {
       User? user = _auth.currentUser;
       if (user != null) {
-        // Delete user data from Firestore
         await _firestore.collection('users').doc(user.uid).delete();
-        // Delete the auth account
         await user.delete();
       }
     } catch (e) {

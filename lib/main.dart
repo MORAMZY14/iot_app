@@ -13,41 +13,54 @@ import 'login_screen.dart';
 
 const String appVersion = '1.0.31';
 
+// 🔥 FIREBASE CONFIGURATION FOR WEB
+// COPY YOUR EXACT FIREBASE CONFIG FROM index.html HERE
+const firebaseConfig = {
+  'apiKey': 'AIzaSyAsgr28RWuPj4MzbO23LpayEYg1wYSJkqs',
+  'authDomain': 'iot-smart-home-81abd.firebaseapp.com',
+  'databaseURL': 'https://iot-smart-home-81abd-default-rtdb.europe-west1.firebasedatabase.app',
+  'projectId': 'iot-smart-home-81abd',
+  'storageBucket': 'iot-smart-home-81abd.firebasestorage.app',
+  'messagingSenderId': '899142789545',
+  'appId': '1:899142789545:web:1a64f8250e9f4f6de2fcb8',
+};
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Catch any build errors to prevent the blank screen
-  ErrorWidget.builder = (FlutterErrorDetails details) {
-    return Material(
-      color: Colors.white,
-      child: SafeArea(
-        child: Center(
-          child: Padding(
-            padding: const EdgeInsets.all(24.0),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                const Icon(Icons.error_outline_rounded, size: 56, color: Color(0xFF6C63FF)),
-                const SizedBox(height: 16),
-                const Text(
-                  'Something went wrong',
-                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700, color: Color(0xFF6C63FF)),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  details.exception.toString(),
-                  style: const TextStyle(fontSize: 14, color: Colors.grey),
-                  textAlign: TextAlign.center,
-                ),
-              ],
-            ),
-          ),
+  // 🔥 FIX: Initialize Firebase with proper options for Web
+  try {
+    if (kIsWeb) {
+      // Web: Use explicit FirebaseOptions
+      await Firebase.initializeApp(
+        options: FirebaseOptions(
+          apiKey: firebaseConfig['apiKey']!,
+          authDomain: firebaseConfig['authDomain']!,
+          databaseURL: firebaseConfig['databaseURL']!,
+          projectId: firebaseConfig['projectId']!,
+          storageBucket: firebaseConfig['storageBucket']!,
+          messagingSenderId: firebaseConfig['messagingSenderId']!,
+          appId: firebaseConfig['appId']!,
         ),
-      ),
-    );
-  };
+      );
+    } else {
+      // Mobile: Use default initialization (reads google-services.json / GoogleService-Info.plist)
+      await Firebase.initializeApp();
+    }
+    debugPrint('🔥 Firebase initialized successfully');
+  } catch (e) {
+    debugPrint('🔥🔥🔥 Firebase initialization error: $e');
+  }
 
-  // Firebase initialization is moved INSIDE MyApp to handle it safely
+  // Request permissions (Mobile only)
+  if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
+    await [
+      Permission.bluetoothScan,
+      Permission.bluetoothConnect,
+      Permission.locationWhenInUse,
+    ].request();
+  }
+
   runApp(const ProviderScope(child: MyApp()));
 }
 
@@ -66,11 +79,10 @@ class MyApp extends ConsumerWidget {
       theme: lightTheme,
       darkTheme: darkTheme,
       themeMode: themeMode,
-      // FUTURE BUILDER to wait for Firebase initialization
       home: FutureBuilder(
-        future: Firebase.initializeApp(),
+        // 🔥 FIX: We simply wait for the already initialized app
+        future: Firebase.apps.isNotEmpty ? Future.value(Firebase.app()) : Future.error('Firebase not initialized'),
         builder: (context, snapshot) {
-          // 1. Show loading spinner while initializing
           if (snapshot.connectionState == ConnectionState.waiting) {
             return const Scaffold(
               body: Center(
@@ -79,7 +91,6 @@ class MyApp extends ConsumerWidget {
             );
           }
 
-          // 2. Show error if initialization fails
           if (snapshot.hasError) {
             return Scaffold(
               body: Center(
@@ -107,21 +118,17 @@ class MyApp extends ConsumerWidget {
             );
           }
 
-          // 3. Firebase initialized successfully -> handle Auth
           return StreamBuilder<User?>(
             stream: authService.userChanges,
             builder: (context, snapshot) {
               if (snapshot.connectionState == ConnectionState.active) {
                 final user = snapshot.data;
                 if (user != null && user.emailVerified) {
-                  // User is authenticated and verified
                   return const DashboardPage();
                 } else {
-                  // User is not authenticated or not verified
                   return const LoginScreen();
                 }
               }
-              // Loading auth state
               return const Scaffold(
                 body: Center(
                   child: CircularProgressIndicator(color: Color(0xFF6C63FF)),
