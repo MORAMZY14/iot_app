@@ -53,31 +53,29 @@ class DefaultFirebaseOptions {
 
   static const FirebaseOptions android = FirebaseOptions(
     apiKey: 'AIzaSyAp9XmqzwgmPxvhSWDcxya4J92oQ5WVvzM',
-    appId: '1:899142789545:android:90fe6c7eae91296ae2fcb8',
+    appId: '1:899142789545:android:6b68b038a9efe7c9e2fcb8',
     messagingSenderId: '899142789545',
     projectId: 'iot-smart-home-81abd',
     databaseURL: 'https://iot-smart-home-81abd-default-rtdb.europe-west1.firebasedatabase.app',
     storageBucket: 'iot-smart-home-81abd.firebasestorage.app',
   );
-
   static const FirebaseOptions ios = FirebaseOptions(
     apiKey: 'AIzaSyCV8jSYW6gGMvgEsYhdP39SjVUJFwbAHAc',
-    appId: '1:899142789545:ios:2d3fcf81c112eb73e2fcb8',
+    appId: '1:899142789545:ios:73c057966234df4de2fcb8',
     messagingSenderId: '899142789545',
     projectId: 'iot-smart-home-81abd',
     databaseURL: 'https://iot-smart-home-81abd-default-rtdb.europe-west1.firebasedatabase.app',
     storageBucket: 'iot-smart-home-81abd.firebasestorage.app',
-    iosBundleId: 'IoT.Smart.Home.iot',
+    iosBundleId: 'com.example.iotApp',
   );
-
   static const FirebaseOptions macos = FirebaseOptions(
     apiKey: 'AIzaSyCV8jSYW6gGMvgEsYhdP39SjVUJFwbAHAc',
-    appId: '1:899142789545:ios:2d3fcf81c112eb73e2fcb8',
+    appId: '1:899142789545:ios:73c057966234df4de2fcb8',
     messagingSenderId: '899142789545',
     projectId: 'iot-smart-home-81abd',
     databaseURL: 'https://iot-smart-home-81abd-default-rtdb.europe-west1.firebasedatabase.app',
     storageBucket: 'iot-smart-home-81abd.firebasestorage.app',
-    iosBundleId: 'IoT.Smart.Home.iot',
+    iosBundleId: 'com.example.iotApp',
   );
 
   static const FirebaseOptions windows = FirebaseOptions(
@@ -90,5 +88,4 @@ class DefaultFirebaseOptions {
     storageBucket: 'iot-smart-home-81abd.firebasestorage.app',
     measurementId: 'G-MHD4RH6GV4',
   );
-
 }
