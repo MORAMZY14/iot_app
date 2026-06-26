@@ -26,7 +26,6 @@ jobs:
         id: read_version
         run: |
           # Extract the version string from lib/main.dart
-          # Example line: const String appVersion = '1.0.0';
           VERSION=$(grep -oP "const String appVersion = '\K[^']+" lib/main.dart)
           echo "current_version=$VERSION" >> $GITHUB_OUTPUT
           echo "Current version: $VERSION"
@@ -122,8 +121,18 @@ jobs:
       - name: Flutter Pub Get
         run: flutter pub get
 
+      # 🔥 FIX: Inject GoogleService-Info.plist from GitHub Secrets
+      - name: Create GoogleService-Info.plist from Secret
+        run: |
+          echo "${{ secrets.GOOGLE_SERVICE_INFO_PLIST }}" > ios/Runner/GoogleService-Info.plist
+        shell: bash
+
       - name: Update CocoaPods
         run: pod repo update
+        working-directory: ios
+
+      - name: Install CocoaPods dependencies
+        run: pod install
         working-directory: ios
 
       - name: Build iOS (no codesign)
