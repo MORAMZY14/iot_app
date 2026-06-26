@@ -390,7 +390,7 @@ final httpDataProvider = FutureProvider<Map<String, dynamic>>((ref) async {
 });
 
 // ────────────────────────────────────────────────────────────
-// 6. BLE + HTTP MERGED DATA PROVIDER
+// 6. BLE + HTTP MERGED DATA PROVIDER (FIXED)
 // ────────────────────────────────────────────────────────────
 final bleServiceProvider = Provider<BleService>((ref) => BleService());
 
@@ -407,6 +407,9 @@ final smartHomeDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
     'status': {'online': false},
   };
 
+  // Emit initial data immediately
+  controller.add(Map.from(currentData));
+
   void updateFromBle() {
     if (bleService.currentStatus == BleStatus.connected) {
       currentData['sensors'] = {
@@ -417,33 +420,41 @@ final smartHomeDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
       currentData['lights'] = Map.from(bleService.lights);
       currentData['status']['online'] = true;
       cache.set('bleData', currentData);
-      if (!controller.isClosed) controller.add(currentData);
+      if (!controller.isClosed) controller.add(Map.from(currentData));
     }
   }
 
   Future<void> fetchHttpData() async {
-    final httpData = await ref.read(httpDataProvider.future);
-    if (bleService.currentStatus != BleStatus.connected) {
-      final cachedBle = cache.get('bleData');
-      if (cachedBle != null) {
-        currentData = Map<String, dynamic>.from(cachedBle as Map);
-        currentData['status'] = httpData['status'] ?? currentData['status'];
-        if (!controller.isClosed) controller.add(currentData);
-        return;
+    try {
+      final httpData = await ref.read(httpDataProvider.future);
+      if (bleService.currentStatus != BleStatus.connected) {
+        final cachedBle = cache.get('bleData');
+        if (cachedBle != null) {
+          currentData = Map<String, dynamic>.from(cachedBle as Map);
+          currentData['status'] = httpData['status'] ?? currentData['status'];
+          if (!controller.isClosed) controller.add(Map.from(currentData));
+          return;
+        }
+        currentData = httpData;
+        if (!controller.isClosed) controller.add(Map.from(currentData));
+      } else if (httpData.containsKey('status')) {
+        currentData['status'] = httpData['status'];
+        if (!controller.isClosed) controller.add(Map.from(currentData));
       }
-      currentData = httpData;
-      if (!controller.isClosed) controller.add(currentData);
-    } else if (httpData.containsKey('status')) {
-      currentData['status'] = httpData['status'];
-      if (!controller.isClosed) controller.add(currentData);
+    } catch (e) {
+      // If HTTP fails, emit whatever we have
+      if (!controller.isClosed && currentData.isNotEmpty) {
+        controller.add(Map.from(currentData));
+      }
     }
   }
 
+  // Check cache first
   final cachedData = cache.get('bleData');
   if (cachedData != null) {
     currentData = Map<String, dynamic>.from(cachedData as Map);
     Future.microtask(() {
-      if (!controller.isClosed) controller.add(currentData);
+      if (!controller.isClosed) controller.add(Map.from(currentData));
     });
   }
 
@@ -1095,7 +1106,7 @@ class _EditGPIODialogState extends ConsumerState<_EditGPIODialog> {
 }
 
 // ────────────────────────────────────────────────────────────
-// 12. QUICK ACTION DIALOG (FIXED)
+// 12. QUICK ACTION DIALOG
 // ────────────────────────────────────────────────────────────
 class _QuickActionDialog extends ConsumerStatefulWidget {
   const _QuickActionDialog();
@@ -1814,14 +1825,31 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
   String _selectedRoom = 'Living Room';
   Map<String, dynamic> _esp32Devices = {};
   bool _isLoadingDevices = false;
+  bool _initialLoadDone = false;
+  Timer? _refreshTimer;
 
   @override
   void initState() {
     super.initState();
     _loadESP32Devices();
+
+    // Auto-refresh devices every 10 seconds
+    _refreshTimer = Timer.periodic(const Duration(seconds: 10), (_) {
+      if (mounted) {
+        _loadESP32DevicesSilently();
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _refreshTimer?.cancel();
+    super.dispose();
   }
 
   Future<void> _loadESP32Devices() async {
+    if (_isLoadingDevices) return;
+
     setState(() => _isLoadingDevices = true);
     try {
       final service = ref.read(esp32DeviceServiceProvider);
@@ -1829,15 +1857,36 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
       setState(() {
         _esp32Devices = result;
         _isLoadingDevices = false;
+        _initialLoadDone = true;
       });
     } catch (e) {
       print('Error loading ESP32 devices: $e');
-      setState(() => _isLoadingDevices = false);
+      setState(() {
+        _esp32Devices = {'devices': []};
+        _isLoadingDevices = false;
+        _initialLoadDone = true;
+      });
+    }
+  }
+
+  Future<void> _loadESP32DevicesSilently() async {
+    try {
+      final service = ref.read(esp32DeviceServiceProvider);
+      final result = await service.getDevices();
+      if (mounted) {
+        setState(() {
+          _esp32Devices = result;
+        });
+      }
+    } catch (e) {
+      // Silent fail for auto-refresh
     }
   }
 
   Future<void> _refreshDevices() async {
     await _loadESP32Devices();
+    // Also refresh the main data
+    await widget.onRefresh();
   }
 
   void _showDeviceOptions(String deviceId, String deviceName, int currentGpio) {
@@ -2002,7 +2051,6 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
     );
   }
 
-  // FIXED: Optimistic toggle without full page refresh
   Future<void> _controlDevice(String id, bool state) async {
     try {
       final service = ref.read(esp32DeviceServiceProvider);
@@ -2020,7 +2068,9 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
       final success = await service.controlDevice(id: id, state: state);
 
       if (success) {
-        _showSnack(context, state ? '✅ Device turned ON' : '✅ Device turned OFF', color: _DT.green);
+        if (mounted) {
+          _showSnack(context, state ? '✅ Device turned ON' : '✅ Device turned OFF', color: _DT.green);
+        }
       } else {
         // Revert on failure
         setState(() {
@@ -2031,7 +2081,9 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
             _esp32Devices['devices'] = devices;
           }
         });
-        _showSnack(context, '❌ Failed to control device', color: _DT.red);
+        if (mounted) {
+          _showSnack(context, '❌ Failed to control device', color: _DT.red);
+        }
       }
     } catch (e) {
       // Revert on error
@@ -2043,7 +2095,9 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
           _esp32Devices['devices'] = devices;
         }
       });
-      _showSnack(context, '❌ Error: ${e.toString()}', color: _DT.red);
+      if (mounted) {
+        _showSnack(context, '❌ Error: ${e.toString()}', color: _DT.red);
+      }
     }
   }
 
@@ -2051,6 +2105,11 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
   Widget build(BuildContext context) {
     final padding = ResponsiveHelper.getPadding(context);
     final isDesktop = ResponsiveHelper.isDesktop(context);
+
+    // Show loading state if we haven't loaded yet
+    if (!_initialLoadDone) {
+      return const _SkeletonLoader();
+    }
 
     return RefreshIndicator(
       onRefresh: _refreshDevices,
@@ -2102,7 +2161,7 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
                 ),
                 const SizedBox(height: 14),
 
-                // Dynamic Device Grid
+                // Show device loading state
                 if (_isLoadingDevices)
                   const Center(
                     child: Padding(
@@ -2141,21 +2200,42 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
                     ),
                   )
                 else
-                  _DynamicDeviceGrid(
-                    devices: roomDevices,
-                    onDeviceTap: (device) {
-                      // Toggle device state
-                      final id = device['id'] as String;
-                      final currentState = device['state'] as bool? ?? false;
-                      _controlDevice(id, !currentState);
-                    },
-                    onLongPress: (device) {
-                      _showDeviceOptions(
-                        device['id'] as String,
-                        device['name'] as String,
-                        device['gpio'] as int,
+                // FIXED: Use Wrap instead of GridView to avoid spacing issues
+                  Wrap(
+                    spacing: 12,
+                    runSpacing: 12,
+                    children: roomDevices.map((device) {
+                      final name = device['name'] as String? ?? 'Unknown';
+                      final type = device['type'] as int? ?? 0;
+                      final state = device['state'] as bool? ?? false;
+                      final gpio = device['gpio'] as int? ?? 0;
+                      final room = device['room'] as String? ?? '';
+
+                      // Calculate width based on screen size
+                      final screenWidth = MediaQuery.of(context).size.width - (padding * 2);
+                      final cardWidth = isDesktop
+                          ? (screenWidth - 36) / 4  // 4 columns on desktop
+                          : (screenWidth - 12) / 2; // 2 columns on mobile
+
+                      return SizedBox(
+                        width: cardWidth,
+                        child: GestureDetector(
+                          onTap: () => _controlDevice(device['id'] as String, !state),
+                          onLongPress: () => _showDeviceOptions(
+                            device['id'] as String,
+                            name,
+                            gpio,
+                          ),
+                          child: _DynamicDeviceCard(
+                            name: name,
+                            type: type,
+                            state: state,
+                            gpio: gpio,
+                            room: room,
+                          ),
+                        ),
                       );
-                    },
+                    }).toList(),
                   ),
               ],
             ),
@@ -2196,57 +2276,8 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
 }
 
 // ────────────────────────────────────────────────────────────
-// 16.1 DYNAMIC DEVICE GRID
+// 16.1 DYNAMIC DEVICE GRID (REMOVED - Using Wrap instead)
 // ────────────────────────────────────────────────────────────
-class _DynamicDeviceGrid extends StatelessWidget {
-  final List devices;
-  final Function(Map<String, dynamic>) onDeviceTap;
-  final Function(Map<String, dynamic>) onLongPress;
-
-  const _DynamicDeviceGrid({
-    required this.devices,
-    required this.onDeviceTap,
-    required this.onLongPress,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final isDesktop = ResponsiveHelper.isDesktop(context);
-    final columns = isDesktop ? 4 : 2;
-
-    return GridView.builder(
-      shrinkWrap: true,
-      physics: const NeverScrollableScrollPhysics(),
-      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: columns,
-        crossAxisSpacing: 12,
-        mainAxisSpacing: 12,
-        childAspectRatio: 0.9,
-      ),
-      itemCount: devices.length,
-      itemBuilder: (context, index) {
-        final device = devices[index];
-        final name = device['name'] as String? ?? 'Unknown';
-        final type = device['type'] as int? ?? 0;
-        final state = device['state'] as bool? ?? false;
-        final gpio = device['gpio'] as int? ?? 0;
-        final room = device['room'] as String? ?? '';
-
-        return GestureDetector(
-          onTap: () => onDeviceTap(device),
-          onLongPress: () => onLongPress(device),
-          child: _DynamicDeviceCard(
-            name: name,
-            type: type,
-            state: state,
-            gpio: gpio,
-            room: room,
-          ),
-        );
-      },
-    );
-  }
-}
 
 // ────────────────────────────────────────────────────────────
 // 16.2 DYNAMIC DEVICE CARD
