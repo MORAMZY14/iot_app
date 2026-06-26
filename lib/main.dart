@@ -13,7 +13,7 @@ import 'wifi_config_page.dart';
 import 'auth_service.dart';
 import 'login_screen.dart';
 
-const String appVersion = '1.0.43';
+const String appVersion = '1.0.31';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -82,27 +82,47 @@ class MyApp extends ConsumerWidget {
       darkTheme: darkTheme,
       themeMode: themeMode,
 
-      home: StreamBuilder<User?>(
-        stream: authService.userChanges,
-        builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Scaffold(
-              body: Center(
-                child: CircularProgressIndicator(
-                  color: Color(0xFF6C63FF),
-                ),
-              ),
-            );
-          }
+      // 🔥 FIX: Use .when() to handle the FutureProvider correctly
+      home: authService.when(
+        data: (authService) {
+          return StreamBuilder<User?>(
+            stream: authService.userChanges,
+            builder: (context, snapshot) {
+              if (snapshot.connectionState == ConnectionState.waiting) {
+                return const Scaffold(
+                  body: Center(
+                    child: CircularProgressIndicator(
+                      color: Color(0xFF6C63FF),
+                    ),
+                  ),
+                );
+              }
 
-          final user = snapshot.data;
+              final user = snapshot.data;
 
-          if (user != null && user.emailVerified) {
-            return const DashboardPage();
-          }
+              if (user != null && user.emailVerified) {
+                return const DashboardPage();
+              }
 
-          return const LoginScreen();
+              return const LoginScreen();
+            },
+          );
         },
+        loading: () => const Scaffold(
+          body: Center(
+            child: CircularProgressIndicator(
+              color: Color(0xFF6C63FF),
+            ),
+          ),
+        ),
+        error: (error, stack) => Scaffold(
+          body: Center(
+            child: Text(
+              'Error loading auth service: $error',
+              style: const TextStyle(color: Colors.red),
+            ),
+          ),
+        ),
       ),
 
       routes: {

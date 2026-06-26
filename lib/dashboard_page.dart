@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 import 'package:shimmer/shimmer.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'ble_service.dart';
 import 'auth_service.dart';
 
@@ -292,24 +293,77 @@ class ESP32DeviceService {
 }
 
 // ────────────────────────────────────────────────────────────
-// 5. ESP32 IP PROVIDER (UPDATED FOR USER-SPECIFIC IP)
+// 5. ESP32 IP PROVIDER (UPDATED FOR UNIQUE CODE)
 // ────────────────────────────────────────────────────────────
-final esp32IpProvider = FutureProvider<String>((ref) async {
-  final authService = ref.watch(authServiceProvider);
+final userEsp32CodeProvider = FutureProvider<String?>((ref) async {
+  final authService = await ref.watch(authServiceProvider.future);
   final user = authService.currentUser;
 
   if (user != null) {
-    final ip = await authService.getUserEsp32Ip(user.uid);
-    if (ip != null && ip.isNotEmpty) {
-      return ip;
+    // 🔥 Force Firestore to read from the server, NOT the local cache
+    final doc = await FirebaseFirestore.instance
+        .collection('users')
+        .doc(user.uid)
+        .get(const GetOptions(source: Source.server));
+
+    if (doc.exists) {
+      return doc.data()?['esp32Code'] as String?;
     }
   }
+  return null;
+});
 
-  // Default IP if no user or no IP found
+final esp32IpProvider = FutureProvider<String>((ref) async {
+  final code = await ref.watch(userEsp32CodeProvider.future);
+  final authService = await ref.watch(authServiceProvider.future);
+  final user = authService.currentUser;
+
+  if (code == null || code.isEmpty || user == null) {
+    return '192.168.1.9';
+  }
+
+  print('🔎 Looking up IP for ESP32 Code: $code');
+
+  // 🔥 Define the URL variable inside the function
+  final String databaseUrl = 'https://iot-smart-home-81abd-default-rtdb.europe-west1.firebasedatabase.app';
+
+  // 🔥 1. Look in esp_public (The ESP32 is currently broadcasting here)
+  try {
+    final response = await http.get(
+      Uri.parse('$databaseUrl/esp_public/$code/status.json'),
+      headers: {'Cache-Control': 'no-cache'},
+    ).timeout(const Duration(seconds: 3));
+
+    if (response.statusCode == 200) {
+      final data = jsonDecode(response.body);
+      if (data != null && data['ip'] != null) {
+        return data['ip'] as String;
+      }
+    }
+  } catch (e) {
+    print('Error fetching IP from esp_public: $e');
+  }
+
+  // 🔥 2. Fallback: Check if the data was already moved to the user's private node
+  try {
+    final response = await http.get(
+      Uri.parse('$databaseUrl/smartHome/${user.uid}/status.json'),
+      headers: {'Cache-Control': 'no-cache'},
+    ).timeout(const Duration(seconds: 3));
+
+    if (response.statusCode == 200) {
+      final data = jsonDecode(response.body);
+      if (data != null && data['uniqueCode'] == code) {
+        return data['ip'] ?? '192.168.1.9';
+      }
+    }
+  } catch (e) {
+    print('Error fetching IP from user node: $e');
+  }
+
   return '192.168.1.9';
 });
 
-// ESP32 Device Service Provider (UPDATED)
 final esp32DeviceServiceProvider = FutureProvider<ESP32DeviceService>((ref) async {
   final ip = await ref.watch(esp32IpProvider.future);
   return ESP32DeviceService(ip);
@@ -323,7 +377,7 @@ final databaseUrlProvider = Provider((ref) =>
 
 final httpDataProvider = FutureProvider<Map<String, dynamic>>((ref) async {
   final url = ref.watch(databaseUrlProvider);
-  final authService = ref.watch(authServiceProvider);
+  final authService = await ref.watch(authServiceProvider.future);
   final user = authService.currentUser;
   final cache = CacheService();
 
@@ -424,7 +478,9 @@ final smartHomeDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
   late StreamSubscription bleStatusSub;
   Timer? httpTimer;
   final cache = CacheService();
-  final authService = ref.watch(authServiceProvider);
+
+  // 🔥 FIX: Convert AsyncValue to AuthService using .requireValue
+  final authService = ref.watch(authServiceProvider).requireValue;
   final user = authService.currentUser;
 
   Map<String, dynamic> currentData = {
@@ -433,7 +489,6 @@ final smartHomeDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
     'status': {'online': false},
   };
 
-  // Emit initial data immediately
   controller.add(Map.from(currentData));
 
   void updateFromBle() {
@@ -472,14 +527,12 @@ final smartHomeDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
         if (!controller.isClosed) controller.add(Map.from(currentData));
       }
     } catch (e) {
-      // If HTTP fails, emit whatever we have
       if (!controller.isClosed && currentData.isNotEmpty) {
         controller.add(Map.from(currentData));
       }
     }
   }
 
-  // Check cache first
   if (user != null) {
     final cachedData = cache.get('bleData_${user.uid}');
     if (cachedData != null) {
@@ -528,7 +581,7 @@ final smartHomeDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
 });
 
 // ────────────────────────────────────────────────────────────
-// 8. LIGHT TOGGLE SERVICE (UPDATED)
+// 8. LIGHT TOGGLE SERVICE
 // ────────────────────────────────────────────────────────────
 final lightToggleProvider = Provider((ref) => LightToggleService(ref));
 
@@ -553,7 +606,7 @@ class LightToggleService {
   Future<void> toggle(String room, bool value, BuildContext context) async {
     final bleService = _ref.read(bleServiceProvider);
     final url = _ref.read(databaseUrlProvider);
-    final authService = _ref.read(authServiceProvider);
+    final authService = _ref.watch(authServiceProvider).requireValue;
     final user = authService.currentUser;
 
     if (user == null) {
@@ -711,6 +764,9 @@ class _DashboardPageState extends ConsumerState<DashboardPage>
     final bleService = ref.read(bleServiceProvider);
     await bleService.connect();
     ref.invalidate(httpDataProvider);
+
+    // 🔥 FIX: Convert AsyncValue to AuthService using .requireValue
+    final authService = ref.read(authServiceProvider).requireValue;
     if (mounted) _showSnack(context, 'Refreshed ✓', color: _DT.green);
   }
 
@@ -931,7 +987,7 @@ class _PasswordDialogState extends State<_PasswordDialog> {
 }
 
 // ────────────────────────────────────────────────────────────
-// 12. EDIT GPIO DIALOG (FIXED)
+// 12. EDIT GPIO DIALOG
 // ────────────────────────────────────────────────────────────
 class _EditGPIODialog extends ConsumerStatefulWidget {
   final String deviceId;
@@ -1000,7 +1056,6 @@ class _EditGPIODialogState extends ConsumerState<_EditGPIODialog> {
       if (mounted) {
         if (success) {
           Navigator.pop(context, true);
-          // Refresh devices after successful GPIO update
           await _refreshDevices();
           _showSnack(context, '✅ GPIO updated successfully!', color: _DT.green);
         } else {
@@ -1020,9 +1075,7 @@ class _EditGPIODialogState extends ConsumerState<_EditGPIODialog> {
       final service = await ref.read(esp32DeviceServiceProvider.future);
       final result = await service.getDevices();
       if (mounted) {
-        setState(() {
-          // This will be updated in parent widget via context
-        });
+        setState(() {});
       }
     } catch (e) {
       print('Error refreshing devices: $e');
@@ -1166,7 +1219,7 @@ class _EditGPIODialogState extends ConsumerState<_EditGPIODialog> {
 }
 
 // ────────────────────────────────────────────────────────────
-// 13. QUICK ACTION DIALOG (FIXED)
+// 13. QUICK ACTION DIALOG
 // ────────────────────────────────────────────────────────────
 class _QuickActionDialog extends ConsumerStatefulWidget {
   const _QuickActionDialog();
@@ -1277,7 +1330,6 @@ class _QuickActionDialogState extends ConsumerState<_QuickActionDialog> {
       if (success) {
         if (mounted) {
           Navigator.pop(context);
-          // Refresh devices immediately after adding
           await _refreshDevices();
           _showSnack(context, '✅ Device added successfully!', color: _DT.green);
         }
@@ -1299,7 +1351,6 @@ class _QuickActionDialogState extends ConsumerState<_QuickActionDialog> {
       final service = await ref.read(esp32DeviceServiceProvider.future);
       final result = await service.getDevices();
       if (mounted) {
-        // Update parent widget state
         final homeContentState = context.findAncestorStateOfType<_HomeContentState>();
         if (homeContentState != null) {
           homeContentState.updateDevices(result);
@@ -1880,7 +1931,7 @@ class _HomeContentWrapperState extends ConsumerState<_HomeContentWrapper> {
 }
 
 // ────────────────────────────────────────────────────────────
-// 17. HOME CONTENT - DYNAMIC DEVICES FROM ESP32 (FIXED)
+// 17. HOME CONTENT - DYNAMIC DEVICES FROM ESP32
 // ────────────────────────────────────────────────────────────
 class _HomeContent extends ConsumerStatefulWidget {
   final AsyncValue<Map<String, dynamic>> dataAsync;
@@ -1911,7 +1962,6 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
     super.initState();
     _loadESP32Devices();
 
-    // Auto-refresh devices every 5 seconds
     _refreshTimer = Timer.periodic(const Duration(seconds: 5), (_) {
       if (mounted) {
         _loadESP32DevicesSilently();
@@ -1969,7 +2019,6 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
 
   Future<void> _refreshDevices() async {
     await _loadESP32Devices();
-    // Also refresh the main data
     await widget.onRefresh();
   }
 
@@ -2110,7 +2159,6 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
                           final service = await ref.read(esp32DeviceServiceProvider.future);
                           final success = await service.removeDevice(deviceId);
                           if (success) {
-                            // Refresh immediately after removal
                             await _loadESP32Devices();
                             _showSnack(context, '✅ Device removed', color: _DT.green);
                           } else {
@@ -2144,7 +2192,6 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
     try {
       final service = await ref.read(esp32DeviceServiceProvider.future);
 
-      // Optimistically update UI
       setState(() {
         final devices = _esp32Devices['devices'] as List? ?? [];
         final index = devices.indexWhere((d) => d['id'] == id);
@@ -2159,7 +2206,6 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
       if (success) {
         // No notification - just update silently
       } else {
-        // Revert on failure
         setState(() {
           final devices = _esp32Devices['devices'] as List? ?? [];
           final index = devices.indexWhere((d) => d['id'] == id);
@@ -2173,7 +2219,6 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
         }
       }
     } catch (e) {
-      // Revert on error
       setState(() {
         final devices = _esp32Devices['devices'] as List? ?? [];
         final index = devices.indexWhere((d) => d['id'] == id);
@@ -2193,7 +2238,6 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
     final padding = ResponsiveHelper.getPadding(context);
     final isDesktop = ResponsiveHelper.isDesktop(context);
 
-    // Show loading state if we haven't loaded yet
     if (!_initialLoadDone) {
       return const _SkeletonLoader();
     }
@@ -2217,10 +2261,8 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
           final energy = (data['energy'] as Map?) ?? {};
           final todayKw = (energy['today'] ?? 3.4).toDouble();
 
-          // Get devices from ESP32
           final devicesList = _esp32Devices['devices'] as List? ?? [];
 
-          // Filter devices by selected room
           final roomDevices = devicesList.where((d) =>
           d['room'] == _selectedRoom || _selectedRoom == 'All Rooms'
           ).toList();
@@ -2248,7 +2290,6 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
                 ),
                 const SizedBox(height: 14),
 
-                // Show device loading state
                 if (_isLoadingDevices)
                   const Center(
                     child: Padding(
@@ -2287,7 +2328,6 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
                     ),
                   )
                 else
-                // FIXED: Use Wrap instead of GridView to avoid spacing issues
                   Wrap(
                     spacing: 12,
                     runSpacing: 12,
@@ -2298,11 +2338,10 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
                       final gpio = device['gpio'] as int? ?? 0;
                       final room = device['room'] as String? ?? '';
 
-                      // Calculate width based on screen size
                       final screenWidth = MediaQuery.of(context).size.width - (padding * 2);
                       final cardWidth = isDesktop
-                          ? (screenWidth - 36) / 4  // 4 columns on desktop
-                          : (screenWidth - 12) / 2; // 2 columns on mobile
+                          ? (screenWidth - 36) / 4
+                          : (screenWidth - 12) / 2;
 
                       return SizedBox(
                         width: cardWidth,
@@ -3600,7 +3639,7 @@ class _AlertsScreen extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 29. SETTINGS SCREEN (UPDATED)
+// 29. SETTINGS SCREEN
 // ────────────────────────────────────────────────────────────
 class _SettingsScreen extends ConsumerWidget {
   const _SettingsScreen({super.key});
@@ -3609,8 +3648,8 @@ class _SettingsScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final themeMode = ref.watch(themeModeProvider);
     final bleStatus = ref.watch(bleServiceProvider).currentStatus;
-    final esp32IpAsync = ref.watch(esp32IpProvider);
-    final authService = ref.watch(authServiceProvider);
+    final esp32CodeAsync = ref.watch(userEsp32CodeProvider);
+    final authService = ref.watch(authServiceProvider).requireValue;
     final user = authService.currentUser;
 
     void onConnectBLE() => ref.read(bleServiceProvider).connect();
@@ -3621,9 +3660,9 @@ class _SettingsScreen extends ConsumerWidget {
       ref.invalidate(httpDataProvider);
     }
 
-    void showEditIPDialog() {
-      final TextEditingController ipController = TextEditingController(
-          text: esp32IpAsync.value ?? '192.168.1.9'
+    void showEditCodeDialog() {
+      final TextEditingController codeController = TextEditingController(
+          text: esp32CodeAsync.value ?? ''
       );
 
       showDialog(
@@ -3644,14 +3683,14 @@ class _SettingsScreen extends ConsumerWidget {
                     color: _DT.purple.withValues(alpha: 0.15),
                   ),
                   child: const Icon(
-                    Icons.wifi_rounded,
+                    Icons.nfc_rounded,
                     color: _DT.purple,
                     size: 30,
                   ),
                 ),
                 const SizedBox(height: 16),
                 const Text(
-                  'ESP32 IP Address',
+                  'ESP32 Unique Code',
                   style: TextStyle(
                     fontSize: 20,
                     fontWeight: FontWeight.w700,
@@ -3659,7 +3698,7 @@ class _SettingsScreen extends ConsumerWidget {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'Enter the IP address of your ESP32',
+                  'Enter the unique code of your ESP32',
                   style: TextStyle(
                     fontSize: 14,
                     color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5),
@@ -3667,9 +3706,9 @@ class _SettingsScreen extends ConsumerWidget {
                 ),
                 const SizedBox(height: 20),
                 TextField(
-                  controller: ipController,
+                  controller: codeController,
                   decoration: InputDecoration(
-                    hintText: 'e.g. 192.168.1.100',
+                    hintText: 'e.g. ESP32-ABCD-1234',
                     border: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(12),
                       borderSide: BorderSide(
@@ -3696,15 +3735,15 @@ class _SettingsScreen extends ConsumerWidget {
                     Expanded(
                       child: ElevatedButton(
                         onPressed: () async {
-                          final newIp = ipController.text.trim();
-                          if (newIp.isNotEmpty && user != null) {
+                          final newCode = codeController.text.trim();
+                          if (newCode.isNotEmpty && user != null) {
                             try {
-                              await authService.updateEsp32Ip(user.uid, newIp);
-                              ref.invalidate(esp32IpProvider);
+                              await authService.updateEsp32Code(user.uid, newCode);
+                              ref.invalidate(userEsp32CodeProvider);
                               Navigator.pop(context);
-                              _showSnack(context, '✅ ESP32 IP updated to $newIp', color: _DT.green);
+                              _showSnack(context, '✅ ESP32 Code updated to $newCode', color: _DT.green);
                             } catch (e) {
-                              _showSnack(context, '❌ Failed to update IP: ${e.toString()}', color: _DT.red);
+                              _showSnack(context, '❌ Failed to update Code: ${e.toString()}', color: _DT.red);
                             }
                           }
                         },
@@ -3717,7 +3756,7 @@ class _SettingsScreen extends ConsumerWidget {
                           padding: const EdgeInsets.symmetric(vertical: 14),
                         ),
                         child: const Text(
-                          'Update',
+                          'Update Code',
                           style: TextStyle(
                             fontSize: 16,
                             fontWeight: FontWeight.w600,
@@ -3814,8 +3853,8 @@ class _SettingsScreen extends ConsumerWidget {
                   const SizedBox(height: 8),
                   Text(
                     isConnected
-                        ? 'ESP32 is reachable at ${esp32IpAsync.value ?? "Unknown IP"}'
-                        : 'Could not reach ESP32 at ${esp32IpAsync.value ?? "Unknown IP"}',
+                        ? 'ESP32 is reachable via code ${esp32CodeAsync.value ?? "Unknown"}'
+                        : 'Could not reach ESP32 with code ${esp32CodeAsync.value ?? "Unknown"}',
                     style: TextStyle(
                       fontSize: 14,
                       color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5),
@@ -3975,7 +4014,6 @@ class _SettingsScreen extends ConsumerWidget {
                       child: ElevatedButton(
                         onPressed: () async {
                           Navigator.pop(context);
-                          final authService = ref.read(authServiceProvider);
                           await authService.signOut();
                           if (context.mounted) {
                             // The app will automatically redirect to login
@@ -4004,8 +4042,8 @@ class _SettingsScreen extends ConsumerWidget {
     final padding = ResponsiveHelper.getPadding(context);
     final isDesktop = ResponsiveHelper.isDesktop(context);
 
-    return esp32IpAsync.when(
-      data: (esp32Ip) {
+    return esp32CodeAsync.when(
+      data: (esp32Code) {
         return ListView(
           padding: EdgeInsets.only(
             top: MediaQuery.of(context).padding.top + kToolbarHeight + 12,
@@ -4090,14 +4128,14 @@ class _SettingsScreen extends ConsumerWidget {
             const SizedBox(height: 12),
             _GCard(child: Column(children: [
               _STile(
-                icon: Icons.settings_ethernet_rounded,
+                icon: Icons.nfc_rounded,
                 title: 'ESP32 Settings',
-                subtitle: 'IP: $esp32Ip',
+                subtitle: 'Code: ${esp32Code ?? "Not set"}',
                 trailing: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     GestureDetector(
-                      onTap: showEditIPDialog,
+                      onTap: showEditCodeDialog,
                       child: Container(
                         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                         decoration: BoxDecoration(
@@ -4105,7 +4143,7 @@ class _SettingsScreen extends ConsumerWidget {
                           color: _DT.purple.withValues(alpha: 0.15),
                         ),
                         child: const Text(
-                          'Edit IP',
+                          'Edit Code',
                           style: TextStyle(
                             color: _DT.purple,
                             fontSize: 12,
@@ -4135,7 +4173,7 @@ class _SettingsScreen extends ConsumerWidget {
                     ),
                   ],
                 ),
-                onTap: showEditIPDialog,
+                onTap: showEditCodeDialog,
               ),
               const _SDivider(),
               _STile(

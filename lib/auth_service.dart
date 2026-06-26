@@ -1,11 +1,14 @@
+import 'dart:convert';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 class AuthService {
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  final String databaseUrl = 'https://iot-smart-home-81abd-default-rtdb.europe-west1.firebasedatabase.app';
 
   User? get currentUser => _auth.currentUser;
   Stream<User?> get userChanges => _auth.authStateChanges();
@@ -14,35 +17,68 @@ class AuthService {
     required String email,
     required String password,
     required String displayName,
-    required String esp32Ip,
+    required String esp32Code,
   }) async {
     try {
+      print('🔍 Verifying ESP32 Code: $esp32Code');
+
+      final response = await http.get(
+        Uri.parse('$databaseUrl/esp_public/$esp32Code/status.json'),
+        headers: {'Cache-Control': 'no-cache'},
+      ).timeout(const Duration(seconds: 5));
+
+      if (response.statusCode != 200) {
+        throw 'ESP32 not found. Please check the code and try again.';
+      }
+
+      final espData = jsonDecode(response.body);
+      if (espData == null || espData['ip'] == null) {
+        throw 'ESP32 is offline or not broadcasting. Please ensure your ESP32 is powered on.';
+      }
+
+      print('✅ ESP32 Verified! IP: ${espData['ip']}');
+
       UserCredential result = await _auth.createUserWithEmailAndPassword(
         email: email,
         password: password,
       );
       User? user = result.user;
+
       if (user != null) {
         await user.updateDisplayName(displayName);
         await user.sendEmailVerification();
+
         await _firestore.collection('users').doc(user.uid).set({
           'uid': user.uid,
           'email': email,
           'displayName': displayName,
-          'esp32Ip': esp32Ip,
+          'esp32Code': esp32Code,
           'createdAt': FieldValue.serverTimestamp(),
           'emailVerified': false,
         });
+
+        print('📝 Writing ownerUID to ESP public node...');
+
+        final claimResponse = await http.put(
+          Uri.parse('$databaseUrl/esp_public/$esp32Code/ownerUID.json'),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode(user.uid),
+        ).timeout(const Duration(seconds: 5));
+
+        if (claimResponse.statusCode == 200) {
+          print('✅ ESP claimed successfully!');
+        } else {
+          print('⚠️ Failed to claim ESP: ${claimResponse.statusCode}');
+        }
+
         return user;
       }
       return null;
     } on FirebaseAuthException catch (e) {
-      // 🔥 FIX: Print the exact Firebase error
-      print('🔥 Firebase Registration Error: ${e.code} - ${e.message}');
+      print('🔥 Registration error: ${e.message}');
       rethrow;
     } catch (e) {
-      // 🔥 FIX: Print the generic error
-      print('🔥 Generic Registration Error: $e');
+      print('🔥 Registration error: $e');
       rethrow;
     }
   }
@@ -63,12 +99,10 @@ class AuthService {
       }
       return user;
     } on FirebaseAuthException catch (e) {
-      // 🔥 FIX: Print the exact Firebase error
-      print('🔥 Firebase Sign-in Error: ${e.code} - ${e.message}');
+      print('Sign in error: ${e.message}');
       rethrow;
     } catch (e) {
-      // 🔥 FIX: Print the generic error
-      print('🔥 Generic Sign-in Error: $e');
+      print('Sign in error: $e');
       rethrow;
     }
   }
@@ -81,7 +115,7 @@ class AuthService {
     try {
       await _auth.sendPasswordResetEmail(email: email);
     } on FirebaseAuthException catch (e) {
-      print('Firebase Password Reset Error: ${e.code} - ${e.message}');
+      print('Password reset error: ${e.message}');
       rethrow;
     }
   }
@@ -95,7 +129,10 @@ class AuthService {
 
   Future<Map<String, dynamic>?> getUserData(String uid) async {
     try {
-      DocumentSnapshot doc = await _firestore.collection('users').doc(uid).get();
+      DocumentSnapshot doc = await _firestore
+          .collection('users')
+          .doc(uid)
+          .get(const GetOptions(source: Source.server));
       if (doc.exists) {
         return doc.data() as Map<String, dynamic>;
       }
@@ -106,27 +143,30 @@ class AuthService {
     }
   }
 
-  Future<void> updateEsp32Ip(String uid, String newIp) async {
+  Future<void> updateEsp32Code(String uid, String newCode) async {
     try {
       await _firestore.collection('users').doc(uid).update({
-        'esp32Ip': newIp,
+        'esp32Code': newCode,
       });
     } catch (e) {
-      print('Error updating ESP32 IP: $e');
+      print('Error updating ESP32 Code: $e');
       rethrow;
     }
   }
 
-  Future<String?> getUserEsp32Ip(String uid) async {
+  Future<String?> getUserEsp32Code(String uid) async {
     try {
-      DocumentSnapshot doc = await _firestore.collection('users').doc(uid).get();
+      DocumentSnapshot doc = await _firestore
+          .collection('users')
+          .doc(uid)
+          .get(const GetOptions(source: Source.server));
       if (doc.exists) {
         Map<String, dynamic> data = doc.data() as Map<String, dynamic>;
-        return data['esp32Ip'] as String?;
+        return data['esp32Code'] as String?;
       }
       return null;
     } catch (e) {
-      print('Error getting ESP32 IP: $e');
+      print('Error getting ESP32 Code: $e');
       return null;
     }
   }
@@ -145,12 +185,13 @@ class AuthService {
   }
 }
 
-// Auth service provider
-final authServiceProvider = Provider<AuthService>((ref) => AuthService());
+// 🔥 PROVIDERS
+final authServiceProvider = FutureProvider<AuthService>((ref) async {
+  return AuthService();
+});
 
-// User data provider
 final userDataProvider = FutureProvider<Map<String, dynamic>?>((ref) async {
-  final authService = ref.watch(authServiceProvider);
+  final authService = await ref.watch(authServiceProvider.future);
   final user = authService.currentUser;
   if (user != null) {
     return await authService.getUserData(user.uid);
@@ -158,12 +199,11 @@ final userDataProvider = FutureProvider<Map<String, dynamic>?>((ref) async {
   return null;
 });
 
-// User ESP32 IP provider
-final userEsp32IpProvider = FutureProvider<String?>((ref) async {
-  final authService = ref.watch(authServiceProvider);
+final userEsp32CodeProvider = FutureProvider<String?>((ref) async {
+  final authService = await ref.watch(authServiceProvider.future);
   final user = authService.currentUser;
   if (user != null) {
-    return await authService.getUserEsp32Ip(user.uid);
+    return await authService.getUserEsp32Code(user.uid);
   }
   return null;
 });

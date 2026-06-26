@@ -41,7 +41,6 @@ class _GCard extends StatelessWidget {
           padding: padding,
           decoration: BoxDecoration(
             borderRadius: borderRadius,
-            // ✅ Add a solid fallback color so iOS has something to render
             color: isDark
                 ? Colors.white.withValues(alpha: 0.07)
                 : Colors.white.withValues(alpha: 0.5),
@@ -175,7 +174,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
   final _nameController = TextEditingController();
-  final _espIpController = TextEditingController();
+  final _espCodeController = TextEditingController();
+
   bool _isLogin = true;
   bool _isLoading = false;
   String? _errorMessage;
@@ -185,7 +185,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     _emailController.dispose();
     _passwordController.dispose();
     _nameController.dispose();
-    _espIpController.dispose();
+    _espCodeController.dispose();
     super.dispose();
   }
 
@@ -198,7 +198,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     });
 
     try {
-      final authService = ref.read(authServiceProvider);
+      final authService = await ref.read(authServiceProvider.future);
 
       if (_isLogin) {
         final user = await authService.signInWithEmailPassword(
@@ -211,11 +211,12 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
           );
         }
       } else {
+        // 🔥 UPDATED: Will now throw errors if ESP32 code is invalid
         final user = await authService.registerWithEmailPassword(
           email: _emailController.text.trim(),
           password: _passwordController.text.trim(),
           displayName: _nameController.text.trim(),
-          esp32Ip: _espIpController.text.trim(),
+          esp32Code: _espCodeController.text.trim(),
         );
         if (user != null && mounted) {
           _showVerificationDialog();
@@ -224,6 +225,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     } on FirebaseAuthException catch (e) {
       setState(() => _errorMessage = _getFirebaseErrorMessage(e));
     } catch (e) {
+      // 🔥 Show validation error to user
       setState(() => _errorMessage = e.toString());
     } finally {
       if (mounted) setState(() => _isLoading = false);
@@ -280,7 +282,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
           ElevatedButton(
             onPressed: () async {
               try {
-                final authService = ref.read(authServiceProvider);
+                final authService = await ref.read(authServiceProvider.future);
                 await authService.resendVerificationEmail();
                 if (mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
@@ -314,7 +316,6 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      // ✅ Removed Colors.transparent — fixes white screen on iOS with BackdropFilter
       body: _WallpaperBackground(
         child: Center(
           child: SingleChildScrollView(
@@ -405,16 +406,16 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                             return null;
                           },
                         ),
+
                         if (!_isLogin) ...[
                           const SizedBox(height: 16),
-                          const Text('ESP32 IP Address', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+                          const Text('ESP32 Unique Code', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
                           const SizedBox(height: 6),
                           TextFormField(
-                            controller: _espIpController,
-                            keyboardType: TextInputType.number,
+                            controller: _espCodeController,
                             decoration: InputDecoration(
-                              hintText: 'e.g. 192.168.1.100',
-                              prefixIcon: const Icon(Icons.router_rounded),
+                              hintText: 'e.g. ESP32-ABCD-1234',
+                              prefixIcon: const Icon(Icons.nfc_rounded),
                               border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
                               focusedBorder: OutlineInputBorder(
                                 borderRadius: BorderRadius.circular(12),
@@ -422,12 +423,13 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                               ),
                             ),
                             validator: (v) {
-                              if (v == null || v.trim().isEmpty) return 'Please enter your ESP32 IP';
-                              if (!RegExp(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$').hasMatch(v)) return 'Please enter a valid IP address';
+                              if (v == null || v.trim().isEmpty) return 'Please enter your ESP32 unique code';
+                              if (v.trim().length < 5) return 'Code must be at least 5 characters';
                               return null;
                             },
                           ),
                         ],
+
                         if (_errorMessage != null) ...[
                           const SizedBox(height: 16),
                           Container(
@@ -550,7 +552,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
             onPressed: () async {
               Navigator.pop(context);
               try {
-                final authService = ref.read(authServiceProvider);
+                final authService = await ref.read(authServiceProvider.future);
                 await authService.resetPassword(emailController.text.trim());
                 if (mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
