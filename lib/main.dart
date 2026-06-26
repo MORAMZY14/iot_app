@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+
 import 'dashboard_page.dart';
 import 'provisioning_page.dart';
 import 'wifi_config_page.dart';
@@ -16,7 +17,8 @@ const String appVersion = '1.0.41';
 const firebaseConfig = {
   'apiKey': 'AIzaSyAsgr28RWuPj4MzbO23LpayEYg1wYSJkqs',
   'authDomain': 'iot-smart-home-81abd.firebaseapp.com',
-  'databaseURL': 'https://iot-smart-home-81abd-default-rtdb.europe-west1.firebasedatabase.app',
+  'databaseURL':
+      'https://iot-smart-home-81abd-default-rtdb.europe-west1.firebasedatabase.app',
   'projectId': 'iot-smart-home-81abd',
   'storageBucket': 'iot-smart-home-81abd.firebasestorage.app',
   'messagingSenderId': '899142789545',
@@ -42,55 +44,38 @@ void main() async {
     } else {
       await Firebase.initializeApp();
     }
-    debugPrint('🔥 Firebase initialized successfully');
-  } catch (e) {
-    // 🚨 CRITICAL: Show error on screen instead of white screen
-    debugPrint('🔥🔥🔥 Firebase initialization error: $e');
-    runApp(_ErrorApp(error: e.toString()));
-    return; // Stop here so LoginScreen never loads
-  }
 
-  if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
-    await [
-      Permission.bluetoothScan,
-      Permission.bluetoothConnect,
-      Permission.locationWhenInUse,
-    ].request();
-  }
+    debugPrint("✅ Firebase initialized successfully");
 
-  runApp(const ProviderScope(child: MyApp()));
-}
+    if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
+      await [
+        Permission.bluetoothScan,
+        Permission.bluetoothConnect,
+        Permission.locationWhenInUse,
+      ].request();
+    }
 
-// 🚨 This widget will show up on your phone instead of a white screen!
-class _ErrorApp extends StatelessWidget {
-  final String error;
-  const _ErrorApp({required this.error});
+    runApp(const ProviderScope(child: MyApp()));
+  } catch (e, stackTrace) {
+    debugPrint("❌ Firebase Initialization Failed");
+    debugPrint(e.toString());
+    debugPrint(stackTrace.toString());
 
-  @override
-  Widget build(BuildContext context) {
-    return MaterialApp(
-      home: Scaffold(
-        backgroundColor: Colors.white,
-        body: Center(
-          child: Padding(
-            padding: const EdgeInsets.all(24.0),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                const Icon(Icons.error_outline_rounded, size: 64, color: Colors.red),
-                const SizedBox(height: 16),
-                const Text(
-                  'Firebase Initialization Failed',
-                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.red),
-                  textAlign: TextAlign.center,
+    runApp(
+      MaterialApp(
+        debugShowCheckedModeBanner: false,
+        home: Scaffold(
+          body: Center(
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Text(
+                "Firebase Initialization Failed\n\n$e",
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  fontSize: 18,
+                  color: Colors.red,
                 ),
-                const SizedBox(height: 12),
-                Text(
-                  error,
-                  style: const TextStyle(fontSize: 14, color: Colors.black87),
-                  textAlign: TextAlign.center,
-                ),
-              ],
+              ),
             ),
           ),
         ),
@@ -108,26 +93,28 @@ class MyApp extends ConsumerWidget {
     final authService = ref.watch(authServiceProvider);
 
     return MaterialApp(
-      title: 'Smart Home',
       debugShowCheckedModeBanner: false,
+      title: 'Smart Home',
       theme: lightTheme,
       darkTheme: darkTheme,
       themeMode: themeMode,
       home: StreamBuilder<User?>(
         stream: authService.userChanges,
         builder: (context, snapshot) {
-          if (snapshot.connectionState != ConnectionState.active) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
             return const Scaffold(
               body: Center(
-                child: CircularProgressIndicator(color: Color(0xFF6C63FF)),
+                child: CircularProgressIndicator(),
               ),
             );
           }
 
           final user = snapshot.data;
+
           if (user != null && user.emailVerified) {
             return const DashboardPage();
           }
+
           return const LoginScreen();
         },
       ),
