@@ -5,9 +5,6 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'auth_service.dart';
 import 'dashboard_page.dart';
 
-// ────────────────────────────────────────────────────────────
-// DESIGN TOKENS (Copied from dashboard_page.dart)
-// ────────────────────────────────────────────────────────────
 class _DT {
   static const purple = Color(0xFF6C63FF);
   static const green = Color(0xFF4DFFA0);
@@ -17,9 +14,6 @@ class _DT {
   static const espConnected = Color(0xFF4DFFA0);
 }
 
-// ────────────────────────────────────────────────────────────
-// GLASS CARD (Copied from dashboard_page.dart)
-// ────────────────────────────────────────────────────────────
 class _GCard extends StatelessWidget {
   final Widget child;
   final EdgeInsetsGeometry padding;
@@ -47,17 +41,21 @@ class _GCard extends StatelessWidget {
           padding: padding,
           decoration: BoxDecoration(
             borderRadius: borderRadius,
+            // ✅ Add a solid fallback color so iOS has something to render
+            color: isDark
+                ? Colors.white.withValues(alpha: 0.07)
+                : Colors.white.withValues(alpha: 0.5),
             gradient: LinearGradient(
               begin: Alignment.topLeft,
               end: Alignment.bottomRight,
               colors: isDark
                   ? [
                 Colors.white.withValues(alpha: 0.08),
-                Colors.white.withValues(alpha: 0.03)
+                Colors.white.withValues(alpha: 0.03),
               ]
                   : [
                 Colors.white.withValues(alpha: 0.6),
-                Colors.white.withValues(alpha: 0.3)
+                Colors.white.withValues(alpha: 0.3),
               ],
             ),
             border: Border.all(
@@ -90,9 +88,6 @@ class _GCard extends StatelessWidget {
   }
 }
 
-// ────────────────────────────────────────────────────────────
-// WALLPAPER BACKGROUND (Copied from dashboard_page.dart)
-// ────────────────────────────────────────────────────────────
 class _WallpaperBackground extends StatelessWidget {
   final Widget child;
   const _WallpaperBackground({required this.child});
@@ -157,9 +152,6 @@ class _Blob extends StatelessWidget {
   );
 }
 
-// ────────────────────────────────────────────────────────────
-// SNACK BAR HELPER
-// ────────────────────────────────────────────────────────────
 void _showSnack(BuildContext context, String msg, {Color color = Colors.white}) {
   ScaffoldMessenger.of(context).showSnackBar(SnackBar(
     content: Text(msg, style: const TextStyle(color: Colors.white)),
@@ -171,9 +163,6 @@ void _showSnack(BuildContext context, String msg, {Color color = Colors.white}) 
   ));
 }
 
-// ────────────────────────────────────────────────────────────
-// LOGIN SCREEN
-// ────────────────────────────────────────────────────────────
 class LoginScreen extends ConsumerStatefulWidget {
   const LoginScreen({super.key});
 
@@ -282,7 +271,10 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
         ),
         actions: [
           TextButton(
-            onPressed: () { Navigator.pop(context); setState(() => _isLogin = true); },
+            onPressed: () {
+              Navigator.pop(context);
+              setState(() => _isLogin = true);
+            },
             child: const Text('Go to Login'),
           ),
           ElevatedButton(
@@ -290,9 +282,17 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
               try {
                 final authService = ref.read(authServiceProvider);
                 await authService.resendVerificationEmail();
-                if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Verification email resent!'), backgroundColor: _DT.purple));
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Verification email resent!'), backgroundColor: _DT.purple),
+                  );
+                }
               } catch (e) {
-                if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: ${e.toString()}'), backgroundColor: _DT.red));
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('Error: ${e.toString()}'), backgroundColor: _DT.red),
+                  );
+                }
               }
             },
             style: ElevatedButton.styleFrom(backgroundColor: _DT.purple, foregroundColor: Colors.white),
@@ -314,7 +314,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.transparent,
+      // ✅ Removed Colors.transparent — fixes white screen on iOS with BackdropFilter
       body: _WallpaperBackground(
         child: Center(
           child: SingleChildScrollView(
@@ -323,14 +323,21 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 Container(
-                  width: 80, height: 80,
-                  decoration: BoxDecoration(shape: BoxShape.circle, color: _DT.purple.withValues(alpha: 0.15)),
+                  width: 80,
+                  height: 80,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: _DT.purple.withValues(alpha: 0.15),
+                  ),
                   child: const Icon(Icons.smartphone_rounded, size: 40, color: _DT.purple),
                 ),
                 const SizedBox(height: 16),
                 const Text('Smart Home', style: TextStyle(fontSize: 28, fontWeight: FontWeight.w700)),
                 const SizedBox(height: 8),
-                Text(_isLogin ? 'Welcome back!' : 'Create your account', style: TextStyle(fontSize: 16, color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5))),
+                Text(
+                  _isLogin ? 'Welcome back!' : 'Create your account',
+                  style: TextStyle(fontSize: 16, color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5)),
+                ),
                 const SizedBox(height: 32),
                 _GCard(
                   padding: const EdgeInsets.all(24),
@@ -348,7 +355,10 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                               hintText: 'John Doe',
                               prefixIcon: const Icon(Icons.person_outlined),
                               border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                              focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: _DT.purple, width: 2)),
+                              focusedBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(12),
+                                borderSide: const BorderSide(color: _DT.purple, width: 2),
+                              ),
                             ),
                             validator: (v) => (v == null || v.trim().isEmpty) ? 'Please enter your name' : null,
                           ),
@@ -360,9 +370,13 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                           controller: _emailController,
                           keyboardType: TextInputType.emailAddress,
                           decoration: InputDecoration(
-                            hintText: 'your@email.com', prefixIcon: const Icon(Icons.email_outlined),
+                            hintText: 'your@email.com',
+                            prefixIcon: const Icon(Icons.email_outlined),
                             border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                            focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: _DT.purple, width: 2)),
+                            focusedBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(12),
+                              borderSide: const BorderSide(color: _DT.purple, width: 2),
+                            ),
                           ),
                           validator: (v) {
                             if (v == null || v.trim().isEmpty) return 'Please enter your email';
@@ -377,9 +391,13 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                           controller: _passwordController,
                           obscureText: true,
                           decoration: InputDecoration(
-                            hintText: 'Min 6 characters', prefixIcon: const Icon(Icons.lock_outlined),
+                            hintText: 'Min 6 characters',
+                            prefixIcon: const Icon(Icons.lock_outlined),
                             border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                            focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: _DT.purple, width: 2)),
+                            focusedBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(12),
+                              borderSide: const BorderSide(color: _DT.purple, width: 2),
+                            ),
                           ),
                           validator: (v) {
                             if (v == null || v.trim().isEmpty) return 'Please enter your password';
@@ -395,9 +413,13 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                             controller: _espIpController,
                             keyboardType: TextInputType.number,
                             decoration: InputDecoration(
-                              hintText: 'e.g. 192.168.1.100', prefixIcon: const Icon(Icons.router_rounded),
+                              hintText: 'e.g. 192.168.1.100',
+                              prefixIcon: const Icon(Icons.router_rounded),
                               border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                              focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: _DT.purple, width: 2)),
+                              focusedBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(12),
+                                borderSide: const BorderSide(color: _DT.purple, width: 2),
+                              ),
                             ),
                             validator: (v) {
                               if (v == null || v.trim().isEmpty) return 'Please enter your ESP32 IP';
@@ -410,13 +432,21 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                           const SizedBox(height: 16),
                           Container(
                             padding: const EdgeInsets.all(12),
-                            decoration: BoxDecoration(borderRadius: BorderRadius.circular(8), color: _DT.red.withValues(alpha: 0.1)),
-                            child: Text(_errorMessage!, style: const TextStyle(color: _DT.red, fontSize: 13, fontWeight: FontWeight.w500), textAlign: TextAlign.center),
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(8),
+                              color: _DT.red.withValues(alpha: 0.1),
+                            ),
+                            child: Text(
+                              _errorMessage!,
+                              style: const TextStyle(color: _DT.red, fontSize: 13, fontWeight: FontWeight.w500),
+                              textAlign: TextAlign.center,
+                            ),
                           ),
                         ],
                         const SizedBox(height: 24),
                         SizedBox(
-                          width: double.infinity, height: 52,
+                          width: double.infinity,
+                          height: 52,
                           child: ElevatedButton(
                             onPressed: _isLoading ? null : _submit,
                             style: ElevatedButton.styleFrom(
@@ -426,8 +456,15 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                               elevation: 0,
                             ),
                             child: _isLoading
-                                ? const SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                                : Text(_isLogin ? 'Sign In' : 'Create Account', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+                                ? const SizedBox(
+                              width: 24,
+                              height: 24,
+                              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                            )
+                                : Text(
+                              _isLogin ? 'Sign In' : 'Create Account',
+                              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                            ),
                           ),
                         ),
                         const SizedBox(height: 16),
@@ -436,11 +473,17 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                           children: [
                             Text(
                               _isLogin ? 'Don\'t have an account? ' : 'Already have an account? ',
-                              style: TextStyle(fontSize: 14, color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5)),
+                              style: TextStyle(
+                                fontSize: 14,
+                                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5),
+                              ),
                             ),
                             GestureDetector(
                               onTap: _toggleMode,
-                              child: Text(_isLogin ? 'Sign Up' : 'Sign In', style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: _DT.purple)),
+                              child: Text(
+                                _isLogin ? 'Sign Up' : 'Sign In',
+                                style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: _DT.purple),
+                              ),
                             ),
                           ],
                         ),
@@ -452,7 +495,14 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                 if (_isLogin)
                   GestureDetector(
                     onTap: _showForgotPasswordDialog,
-                    child: Text('Forgot Password?', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500, color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5))),
+                    child: Text(
+                      'Forgot Password?',
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w500,
+                        color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5),
+                      ),
+                    ),
                   ),
               ],
             ),
@@ -477,26 +527,45 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
             const Text('Enter your email to receive a password reset link.', textAlign: TextAlign.center),
             const SizedBox(height: 16),
             TextField(
-              controller: emailController, keyboardType: TextInputType.emailAddress,
+              controller: emailController,
+              keyboardType: TextInputType.emailAddress,
               decoration: InputDecoration(
-                hintText: 'your@email.com', prefixIcon: const Icon(Icons.email_outlined),
+                hintText: 'your@email.com',
+                prefixIcon: const Icon(Icons.email_outlined),
                 border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: _DT.purple, width: 2)),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: const BorderSide(color: _DT.purple, width: 2),
+                ),
               ),
             ),
           ],
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
           ElevatedButton(
             onPressed: () async {
               Navigator.pop(context);
               try {
                 final authService = ref.read(authServiceProvider);
                 await authService.resetPassword(emailController.text.trim());
-                if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Password reset email sent! Check your inbox.'), backgroundColor: _DT.green));
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Password reset email sent! Check your inbox.'),
+                      backgroundColor: _DT.green,
+                    ),
+                  );
+                }
               } catch (e) {
-                if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: ${e.toString()}'), backgroundColor: _DT.red));
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('Error: ${e.toString()}'), backgroundColor: _DT.red),
+                  );
+                }
               }
             },
             style: ElevatedButton.styleFrom(backgroundColor: _DT.purple, foregroundColor: Colors.white),
