@@ -11,7 +11,7 @@ import 'wifi_config_page.dart';
 import 'auth_service.dart';
 import 'login_screen.dart';
 
-const String appVersion = '1.0.40';
+const String appVersion = '1.0.41';
 
 const firebaseConfig = {
   'apiKey': 'AIzaSyAsgr28RWuPj4MzbO23LpayEYg1wYSJkqs',
