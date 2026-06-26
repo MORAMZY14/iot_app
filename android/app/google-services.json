@@ -1,0 +1,30 @@
+{
+  "project_info": {
+    "project_number": "899142789545",
+    "firebase_url": "https://iot-smart-home-81abd-default-rtdb.europe-west1.firebasedatabase.app",
+    "project_id": "iot-smart-home-81abd",
+    "storage_bucket": "iot-smart-home-81abd.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:899142789545:android:90fe6c7eae91296ae2fcb8",
+        "android_client_info": {
+          "package_name": "IoT.Smart.Home.iot"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAp9XmqzwgmPxvhSWDcxya4J92oQ5WVvzM"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
