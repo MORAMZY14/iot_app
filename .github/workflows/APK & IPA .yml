@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write   # Required for pushing commits, tags, and creating releases
+  contents: write
 
 jobs:
   # ---------------------------
@@ -20,12 +20,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v3
         with:
-          fetch-depth: 0   # Get all tags and history
+          fetch-depth: 0
 
       - name: Read current version from main.dart
         id: read_version
         run: |
-          # Extract the version string from lib/main.dart
           VERSION=$(grep -oP "const String appVersion = '\K[^']+" lib/main.dart)
           echo "current_version=$VERSION" >> $GITHUB_OUTPUT
           echo "Current version: $VERSION"
@@ -121,13 +120,16 @@ jobs:
       - name: Flutter Pub Get
         run: flutter pub get
 
-      # 🔥 FIX: Inject GoogleService-Info.plist from GitHub Secrets
+      # ✅ Fix: explicitly export FLUTTER_ROOT to the environment
+      - name: Set FLUTTER_ROOT
+        run: echo "FLUTTER_ROOT=$(dirname $(dirname $(which flutter)))" >> $GITHUB_ENV
+
       - name: Create GoogleService-Info.plist from Secret
         run: |
           echo "${{ secrets.GOOGLE_SERVICE_INFO_PLIST }}" > ios/Runner/GoogleService-Info.plist
         shell: bash
 
-      - name: Update CocoaPods
+      - name: Update CocoaPods repo
         run: pod repo update
         working-directory: ios
 
