@@ -887,7 +887,7 @@ class _PasswordDialogState extends State<_PasswordDialog> {
 }
 
 // ────────────────────────────────────────────────────────────
-// 11. EDIT GPIO DIALOG
+// 11. EDIT GPIO DIALOG (FIXED)
 // ────────────────────────────────────────────────────────────
 class _EditGPIODialog extends ConsumerStatefulWidget {
   final String deviceId;
@@ -956,9 +956,11 @@ class _EditGPIODialogState extends ConsumerState<_EditGPIODialog> {
       if (mounted) {
         if (success) {
           Navigator.pop(context, true);
+          // Refresh devices after successful GPIO update
+          await _refreshDevices();
           _showSnack(context, '✅ GPIO updated successfully!', color: _DT.green);
         } else {
-          _showSnack(context, '❌ Failed to update GPIO', color: _DT.red);
+          _showSnack(context, '❌ Failed to update GPIO - Check if pin is available', color: _DT.red);
         }
       }
     } catch (e) {
@@ -966,6 +968,20 @@ class _EditGPIODialogState extends ConsumerState<_EditGPIODialog> {
       if (mounted) {
         _showSnack(context, '❌ Error: ${e.toString()}', color: _DT.red);
       }
+    }
+  }
+
+  Future<void> _refreshDevices() async {
+    try {
+      final service = ref.read(esp32DeviceServiceProvider);
+      final result = await service.getDevices();
+      if (mounted) {
+        setState(() {
+          // This will be updated in parent widget via context
+        });
+      }
+    } catch (e) {
+      print('Error refreshing devices: $e');
     }
   }
 
@@ -1106,7 +1122,7 @@ class _EditGPIODialogState extends ConsumerState<_EditGPIODialog> {
 }
 
 // ────────────────────────────────────────────────────────────
-// 12. QUICK ACTION DIALOG
+// 12. QUICK ACTION DIALOG (FIXED)
 // ────────────────────────────────────────────────────────────
 class _QuickActionDialog extends ConsumerStatefulWidget {
   const _QuickActionDialog();
@@ -1217,6 +1233,8 @@ class _QuickActionDialogState extends ConsumerState<_QuickActionDialog> {
       if (success) {
         if (mounted) {
           Navigator.pop(context);
+          // Refresh devices immediately after adding
+          await _refreshDevices();
           _showSnack(context, '✅ Device added successfully!', color: _DT.green);
         }
       } else {
@@ -1229,6 +1247,22 @@ class _QuickActionDialogState extends ConsumerState<_QuickActionDialog> {
       if (mounted) {
         _showSnack(context, '❌ Error: ${e.toString()}', color: _DT.red);
       }
+    }
+  }
+
+  Future<void> _refreshDevices() async {
+    try {
+      final service = ref.read(esp32DeviceServiceProvider);
+      final result = await service.getDevices();
+      if (mounted) {
+        // Update parent widget state
+        final homeContentState = context.findAncestorStateOfType<_HomeContentState>();
+        if (homeContentState != null) {
+          homeContentState.updateDevices(result);
+        }
+      }
+    } catch (e) {
+      print('Error refreshing devices: $e');
     }
   }
 
@@ -1833,8 +1867,8 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
     super.initState();
     _loadESP32Devices();
 
-    // Auto-refresh devices every 10 seconds
-    _refreshTimer = Timer.periodic(const Duration(seconds: 10), (_) {
+    // Auto-refresh devices every 5 seconds
+    _refreshTimer = Timer.periodic(const Duration(seconds: 5), (_) {
       if (mounted) {
         _loadESP32DevicesSilently();
       }
@@ -1845,6 +1879,12 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
   void dispose() {
     _refreshTimer?.cancel();
     super.dispose();
+  }
+
+  void updateDevices(Map<String, dynamic> newDevices) {
+    setState(() {
+      _esp32Devices = newDevices;
+    });
   }
 
   Future<void> _loadESP32Devices() async {
@@ -1942,7 +1982,11 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
                     deviceName: deviceName,
                     currentGpio: currentGpio,
                   ),
-                );
+                ).then((refreshed) {
+                  if (refreshed == true) {
+                    _loadESP32Devices();
+                  }
+                });
               },
             ),
             const Divider(height: 1),
@@ -2022,8 +2066,9 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
                           final service = ref.read(esp32DeviceServiceProvider);
                           final success = await service.removeDevice(deviceId);
                           if (success) {
-                            _showSnack(context, '✅ Device removed', color: _DT.green);
+                            // Refresh immediately after removal
                             await _loadESP32Devices();
+                            _showSnack(context, '✅ Device removed', color: _DT.green);
                           } else {
                             _showSnack(context, '❌ Failed to remove device', color: _DT.red);
                           }
@@ -2068,9 +2113,7 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
       final success = await service.controlDevice(id: id, state: state);
 
       if (success) {
-        if (mounted) {
-          _showSnack(context, state ? '✅ Device turned ON' : '✅ Device turned OFF', color: _DT.green);
-        }
+        // No notification - just update silently
       } else {
         // Revert on failure
         setState(() {
@@ -2274,10 +2317,6 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
     );
   }
 }
-
-// ────────────────────────────────────────────────────────────
-// 16.1 DYNAMIC DEVICE GRID (REMOVED - Using Wrap instead)
-// ────────────────────────────────────────────────────────────
 
 // ────────────────────────────────────────────────────────────
 // 16.2 DYNAMIC DEVICE CARD
