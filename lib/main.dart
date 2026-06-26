@@ -11,7 +11,7 @@ import 'wifi_config_page.dart';
 import 'auth_service.dart';
 import 'login_screen.dart';
 
-const String appVersion = '1.0.35';
+const String appVersion = '1.0.36';
 
 // 🔥 FIREBASE CONFIGURATION FOR WEB
 // COPY YOUR EXACT FIREBASE CONFIG FROM index.html HERE
