@@ -120,14 +120,25 @@ jobs:
       - name: Flutter Pub Get
         run: flutter pub get
 
-      # ✅ Fix: explicitly export FLUTTER_ROOT to the environment
       - name: Set FLUTTER_ROOT
         run: echo "FLUTTER_ROOT=$(dirname $(dirname $(which flutter)))" >> $GITHUB_ENV
+
+      - name: Delete bad Podfile
+        run: rm -f ios/Podfile
+
+      - name: Regenerate Podfile
+        run: flutter pub get
+        env:
+          FLUTTER_ROOT: ${{ env.FLUTTER_ROOT }}
+
+      - name: Patch Podfile flutter_root
+        run: |
+          sed -i '' "s|flutter_root = '.*'|flutter_root = ENV['FLUTTER_ROOT']|g" ios/Podfile
+          cat ios/Podfile
 
       - name: Create GoogleService-Info.plist from Secret
         run: |
           echo "${{ secrets.GOOGLE_SERVICE_INFO_PLIST }}" > ios/Runner/GoogleService-Info.plist
-        shell: bash
 
       - name: Update CocoaPods repo
         run: pod repo update
