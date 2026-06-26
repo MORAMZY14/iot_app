@@ -1095,7 +1095,7 @@ class _EditGPIODialogState extends ConsumerState<_EditGPIODialog> {
 }
 
 // ────────────────────────────────────────────────────────────
-// 12. QUICK ACTION DIALOG
+// 12. QUICK ACTION DIALOG (FIXED)
 // ────────────────────────────────────────────────────────────
 class _QuickActionDialog extends ConsumerStatefulWidget {
   const _QuickActionDialog();
@@ -1262,281 +1262,273 @@ class _QuickActionDialogState extends ConsumerState<_QuickActionDialog> {
               ),
             ),
             const SizedBox(height: 20),
-
-            if (_isLoading && _rooms.isEmpty)
-              const Expanded(
-                child: Center(
-                  child: CircularProgressIndicator(color: _DT.purple),
-                ),
+            Expanded(
+              child: _isLoading && _rooms.isEmpty
+                  ? const Center(
+                child: CircularProgressIndicator(color: _DT.purple),
               )
-            else
-              Expanded(
-                child: SingleChildScrollView(
-                  child: Form(
-                    key: _formKey,
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'Device Name',
-                          style: TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w600,
-                            color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
-                          ),
+                  : SingleChildScrollView(
+                child: Form(
+                  key: _formKey,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Device Name',
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                          color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
                         ),
-                        const SizedBox(height: 6),
-                        TextFormField(
-                          controller: _nameController,
-                          decoration: InputDecoration(
-                            hintText: 'e.g. Living Room Lamp',
-                            border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(12),
-                              borderSide: BorderSide(
-                                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.1),
-                              ),
+                      ),
+                      const SizedBox(height: 6),
+                      TextFormField(
+                        controller: _nameController,
+                        decoration: InputDecoration(
+                          hintText: 'e.g. Living Room Lamp',
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                            borderSide: BorderSide(
+                              color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.1),
                             ),
-                            enabledBorder: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(12),
-                              borderSide: BorderSide(
-                                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.1),
-                              ),
-                            ),
-                            focusedBorder: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(12),
-                              borderSide: const BorderSide(color: _DT.purple, width: 2),
-                            ),
-                            contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
                           ),
-                          validator: (value) {
-                            if (value == null || value.trim().isEmpty) {
-                              return 'Please enter a device name';
-                            }
-                            return null;
-                          },
-                        ),
-                        const SizedBox(height: 16),
-
-                        Text(
-                          'Device Type',
-                          style: TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w600,
-                            color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+                          enabledBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                            borderSide: BorderSide(
+                              color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.1),
+                            ),
                           ),
+                          focusedBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                            borderSide: const BorderSide(color: _DT.purple, width: 2),
+                          ),
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
                         ),
-                        const SizedBox(height: 6),
-                        SizedBox(
-                          height: 48,
-                          child: ListView.separated(
-                            scrollDirection: Axis.horizontal,
-                            itemCount: _deviceTypes.length,
-                            separatorBuilder: (_, __) => const SizedBox(width: 8),
-                            itemBuilder: (context, index) {
-                              final type = _deviceTypes[index];
-                              final isSelected = _selectedType == type['type'];
-                              return GestureDetector(
-                                onTap: () => setState(() => _selectedType = type['type'] as int),
-                                child: Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                                  decoration: BoxDecoration(
-                                    borderRadius: BorderRadius.circular(20),
-                                    color: isSelected ? _DT.purple : Colors.transparent,
-                                    border: Border.all(
-                                      color: isSelected ? _DT.purple : Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.1),
-                                      width: 1.5,
-                                    ),
-                                  ),
-                                  child: Row(
-                                    children: [
-                                      Icon(
-                                        _getIconForType(type['type'] as int),
-                                        size: 18,
-                                        color: isSelected ? Colors.white : _DT.purple,
-                                      ),
-                                      const SizedBox(width: 6),
-                                      Text(
-                                        type['name'] as String,
-                                        style: TextStyle(
-                                          fontSize: 13,
-                                          fontWeight: FontWeight.w500,
-                                          color: isSelected ? Colors.white : Theme.of(context).colorScheme.onSurface,
-                                        ),
-                                      ),
-                                    ],
+                        validator: (value) {
+                          if (value == null || value.trim().isEmpty) {
+                            return 'Please enter a device name';
+                          }
+                          return null;
+                        },
+                      ),
+                      const SizedBox(height: 16),
+                      Text(
+                        'Device Type',
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                          color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      SizedBox(
+                        height: 48,
+                        child: ListView.separated(
+                          scrollDirection: Axis.horizontal,
+                          itemCount: _deviceTypes.length,
+                          separatorBuilder: (_, __) => const SizedBox(width: 8),
+                          itemBuilder: (context, index) {
+                            final type = _deviceTypes[index];
+                            final isSelected = _selectedType == type['type'];
+                            return GestureDetector(
+                              onTap: () => setState(() => _selectedType = type['type'] as int),
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                                decoration: BoxDecoration(
+                                  borderRadius: BorderRadius.circular(20),
+                                  color: isSelected ? _DT.purple : Colors.transparent,
+                                  border: Border.all(
+                                    color: isSelected ? _DT.purple : Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.1),
+                                    width: 1.5,
                                   ),
                                 ),
-                              );
-                            },
-                          ),
-                        ),
-                        const SizedBox(height: 16),
-
-                        Row(
-                          children: [
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    'GPIO Pin',
-                                    style: TextStyle(
-                                      fontSize: 14,
-                                      fontWeight: FontWeight.w600,
-                                      color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+                                child: Row(
+                                  children: [
+                                    Icon(
+                                      _getIconForType(type['type'] as int),
+                                      size: 18,
+                                      color: isSelected ? Colors.white : _DT.purple,
                                     ),
-                                  ),
-                                  const SizedBox(height: 6),
-                                  TextFormField(
-                                    controller: _gpioController,
-                                    keyboardType: TextInputType.number,
-                                    decoration: InputDecoration(
-                                      hintText: 'e.g. 14',
-                                      border: OutlineInputBorder(
-                                        borderRadius: BorderRadius.circular(12),
-                                        borderSide: BorderSide(
-                                          color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.1),
-                                        ),
+                                    const SizedBox(width: 6),
+                                    Text(
+                                      type['name'] as String,
+                                      style: TextStyle(
+                                        fontSize: 13,
+                                        fontWeight: FontWeight.w500,
+                                        color: isSelected ? Colors.white : Theme.of(context).colorScheme.onSurface,
                                       ),
-                                      enabledBorder: OutlineInputBorder(
-                                        borderRadius: BorderRadius.circular(12),
-                                        borderSide: BorderSide(
-                                          color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.1),
-                                        ),
-                                      ),
-                                      focusedBorder: OutlineInputBorder(
-                                        borderRadius: BorderRadius.circular(12),
-                                        borderSide: const BorderSide(color: _DT.purple, width: 2),
-                                      ),
-                                      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
                                     ),
-                                    validator: (value) {
-                                      if (value == null || value.trim().isEmpty) {
-                                        return 'Required';
-                                      }
-                                      final pin = int.tryParse(value.trim());
-                                      if (pin == null) {
-                                        return 'Invalid number';
-                                      }
-                                      if (!_availableGPIOs.contains(pin)) {
-                                        return 'GPIO ${pin} not available';
-                                      }
-                                      return null;
-                                    },
-                                  ),
-                                ],
+                                  ],
+                                ),
                               ),
-                            ),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    'Room',
-                                    style: TextStyle(
-                                      fontSize: 14,
-                                      fontWeight: FontWeight.w600,
-                                      color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
-                                    ),
+                            );
+                          },
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'GPIO Pin',
+                                  style: TextStyle(
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w600,
+                                    color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
                                   ),
-                                  const SizedBox(height: 6),
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 12),
-                                    decoration: BoxDecoration(
+                                ),
+                                const SizedBox(height: 6),
+                                TextFormField(
+                                  controller: _gpioController,
+                                  keyboardType: TextInputType.number,
+                                  decoration: InputDecoration(
+                                    hintText: 'e.g. 14',
+                                    border: OutlineInputBorder(
                                       borderRadius: BorderRadius.circular(12),
-                                      border: Border.all(
+                                      borderSide: BorderSide(
                                         color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.1),
                                       ),
                                     ),
-                                    child: DropdownButtonHideUnderline(
-                                      child: DropdownButton<String>(
-                                        value: _selectedRoom,
-                                        isExpanded: true,
-                                        items: _rooms.map((room) {
-                                          return DropdownMenuItem(
-                                            value: room,
-                                            child: Text(room),
-                                          );
-                                        }).toList(),
-                                        onChanged: (value) {
-                                          if (value != null) {
-                                            setState(() => _selectedRoom = value);
-                                          }
-                                        },
+                                    enabledBorder: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(12),
+                                      borderSide: BorderSide(
+                                        color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.1),
                                       ),
                                     ),
+                                    focusedBorder: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(12),
+                                      borderSide: const BorderSide(color: _DT.purple, width: 2),
+                                    ),
+                                    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
                                   ),
-                                ],
+                                  validator: (value) {
+                                    if (value == null || value.trim().isEmpty) {
+                                      return 'Required';
+                                    }
+                                    final pin = int.tryParse(value.trim());
+                                    if (pin == null) {
+                                      return 'Invalid number';
+                                    }
+                                    if (!_availableGPIOs.contains(pin)) {
+                                      return 'GPIO ${pin} not available';
+                                    }
+                                    return null;
+                                  },
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'Room',
+                                  style: TextStyle(
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w600,
+                                    color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+                                  ),
+                                ),
+                                const SizedBox(height: 6),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                                  decoration: BoxDecoration(
+                                    borderRadius: BorderRadius.circular(12),
+                                    border: Border.all(
+                                      color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.1),
+                                    ),
+                                  ),
+                                  child: DropdownButtonHideUnderline(
+                                    child: DropdownButton<String>(
+                                      value: _selectedRoom,
+                                      isExpanded: true,
+                                      items: _rooms.map((room) {
+                                        return DropdownMenuItem(
+                                          value: room,
+                                          child: Text(room),
+                                        );
+                                      }).toList(),
+                                      onChanged: (value) {
+                                        if (value != null) {
+                                          setState(() => _selectedRoom = value);
+                                        }
+                                      },
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 24),
+                      Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(12),
+                          color: _DT.purple.withValues(alpha: 0.08),
+                          border: Border.all(
+                            color: _DT.purple.withValues(alpha: 0.15),
+                          ),
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(Icons.info_outline_rounded, color: _DT.purple, size: 18),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Text(
+                                'Available GPIOs: ${_availableGPIOs.join(", ")}',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+                                ),
                               ),
                             ),
                           ],
                         ),
-                        const SizedBox(height: 24),
-
-                        Container(
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            borderRadius: BorderRadius.circular(12),
-                            color: _DT.purple.withValues(alpha: 0.08),
-                            border: Border.all(
-                              color: _DT.purple.withValues(alpha: 0.15),
+                      ),
+                      const SizedBox(height: 24),
+                      SizedBox(
+                        width: double.infinity,
+                        height: 52,
+                        child: ElevatedButton(
+                          onPressed: _isLoading ? null : _addDevice,
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: _DT.purple,
+                            foregroundColor: Colors.white,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(16),
                             ),
+                            elevation: 0,
                           ),
-                          child: Row(
-                            children: [
-                              Icon(Icons.info_outline_rounded, color: _DT.purple, size: 18),
-                              const SizedBox(width: 10),
-                              Expanded(
-                                child: Text(
-                                  'Available GPIOs: ${_availableGPIOs.join(", ")}',
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        const SizedBox(height: 24),
-
-                        SizedBox(
-                          width: double.infinity,
-                          height: 52,
-                          child: ElevatedButton(
-                            onPressed: _isLoading ? null : _addDevice,
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: _DT.purple,
-                              foregroundColor: Colors.white,
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(16),
-                              ),
-                              elevation: 0,
+                          child: _isLoading
+                              ? const SizedBox(
+                            width: 24,
+                            height: 24,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: Colors.white,
                             ),
-                            child: _isLoading
-                                ? const SizedBox(
-                              width: 24,
-                              height: 24,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2,
-                                color: Colors.white,
-                              ),
-                            )
-                                : const Text(
-                              'Add Device',
-                              style: TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.w600,
-                              ),
+                          )
+                              : const Text(
+                            'Add Device',
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w600,
                             ),
                           ),
                         ),
-                      ],
-                    ),
+                      ),
+                    ],
                   ),
                 ),
               ),
+            ),
           ],
         ),
       ),
@@ -1799,7 +1791,7 @@ class _HomeContentWrapperState extends ConsumerState<_HomeContentWrapper> {
 }
 
 // ────────────────────────────────────────────────────────────
-// 16. HOME CONTENT - DYNAMIC DEVICES FROM ESP32
+// 16. HOME CONTENT - DYNAMIC DEVICES FROM ESP32 (FIXED)
 // ────────────────────────────────────────────────────────────
 class _HomeContent extends ConsumerStatefulWidget {
   final AsyncValue<Map<String, dynamic>> dataAsync;
@@ -1846,7 +1838,6 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
 
   Future<void> _refreshDevices() async {
     await _loadESP32Devices();
-    await widget.onRefresh();
   }
 
   void _showDeviceOptions(String deviceId, String deviceName, int currentGpio) {
@@ -2011,6 +2002,51 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
     );
   }
 
+  // FIXED: Optimistic toggle without full page refresh
+  Future<void> _controlDevice(String id, bool state) async {
+    try {
+      final service = ref.read(esp32DeviceServiceProvider);
+
+      // Optimistically update UI
+      setState(() {
+        final devices = _esp32Devices['devices'] as List? ?? [];
+        final index = devices.indexWhere((d) => d['id'] == id);
+        if (index != -1) {
+          devices[index]['state'] = state;
+          _esp32Devices['devices'] = devices;
+        }
+      });
+
+      final success = await service.controlDevice(id: id, state: state);
+
+      if (success) {
+        _showSnack(context, state ? '✅ Device turned ON' : '✅ Device turned OFF', color: _DT.green);
+      } else {
+        // Revert on failure
+        setState(() {
+          final devices = _esp32Devices['devices'] as List? ?? [];
+          final index = devices.indexWhere((d) => d['id'] == id);
+          if (index != -1) {
+            devices[index]['state'] = !state;
+            _esp32Devices['devices'] = devices;
+          }
+        });
+        _showSnack(context, '❌ Failed to control device', color: _DT.red);
+      }
+    } catch (e) {
+      // Revert on error
+      setState(() {
+        final devices = _esp32Devices['devices'] as List? ?? [];
+        final index = devices.indexWhere((d) => d['id'] == id);
+        if (index != -1) {
+          devices[index]['state'] = !state;
+          _esp32Devices['devices'] = devices;
+        }
+      });
+      _showSnack(context, '❌ Error: ${e.toString()}', color: _DT.red);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final padding = ResponsiveHelper.getPadding(context);
@@ -2042,9 +2078,6 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
           final roomDevices = devicesList.where((d) =>
           d['room'] == _selectedRoom || _selectedRoom == 'All Rooms'
           ).toList();
-
-          // Count active devices in room
-          int activeCount = roomDevices.where((d) => d['state'] == true).length;
 
           return SingleChildScrollView(
             physics: const AlwaysScrollableScrollPhysics(),
@@ -2159,21 +2192,6 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
         ),
       ),
     );
-  }
-
-  Future<void> _controlDevice(String id, bool state) async {
-    try {
-      final service = ref.read(esp32DeviceServiceProvider);
-      final success = await service.controlDevice(id: id, state: state);
-      if (success) {
-        await _loadESP32Devices();
-        _showSnack(context, state ? '✅ Device turned ON' : '✅ Device turned OFF', color: _DT.green);
-      } else {
-        _showSnack(context, '❌ Failed to control device', color: _DT.red);
-      }
-    } catch (e) {
-      _showSnack(context, '❌ Error: ${e.toString()}', color: _DT.red);
-    }
   }
 }
 
@@ -4052,7 +4070,7 @@ class _SkeletonLoader extends StatelessWidget {
         ),
         child: const Column(children: [
           _SBox(h: 54, r: 16),
-          SizedBox(height: 12),
+          const SizedBox(height: 12),
           Row(children: [
             Expanded(child: _SBox(h: 90, r: 20)),
             SizedBox(width: 10),
