@@ -11,10 +11,8 @@ import 'wifi_config_page.dart';
 import 'auth_service.dart';
 import 'login_screen.dart';
 
-const String appVersion = '1.0.37';
+const String appVersion = '1.0.31';
 
-// 🔥 FIREBASE CONFIGURATION FOR WEB
-// COPY YOUR EXACT FIREBASE CONFIG FROM index.html HERE
 const firebaseConfig = {
   'apiKey': 'AIzaSyAsgr28RWuPj4MzbO23LpayEYg1wYSJkqs',
   'authDomain': 'iot-smart-home-81abd.firebaseapp.com',
@@ -28,10 +26,9 @@ const firebaseConfig = {
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // 🔥 FIX: Initialize Firebase with proper options for Web
+  // 🔥 Initialize Firebase BEFORE runApp
   try {
     if (kIsWeb) {
-      // Web: Use explicit FirebaseOptions
       await Firebase.initializeApp(
         options: FirebaseOptions(
           apiKey: firebaseConfig['apiKey']!,
@@ -44,7 +41,7 @@ void main() async {
         ),
       );
     } else {
-      // Mobile: Use default initialization (reads google-services.json / GoogleService-Info.plist)
+      // Mobile: reads GoogleService-Info.plist (iOS) / google-services.json (Android)
       await Firebase.initializeApp();
     }
     debugPrint('🔥 Firebase initialized successfully');
@@ -73,17 +70,17 @@ class MyApp extends ConsumerWidget {
     final authService = ref.watch(authServiceProvider);
 
     return MaterialApp(
-      key: ValueKey(themeMode),
       title: 'Smart Home',
       debugShowCheckedModeBanner: false,
       theme: lightTheme,
       darkTheme: darkTheme,
       themeMode: themeMode,
-      home: FutureBuilder(
-        // 🔥 FIX: We simply wait for the already initialized app
-        future: Firebase.apps.isNotEmpty ? Future.value(Firebase.app()) : Future.error('Firebase not initialized'),
+      // ✅ Firebase is already initialized before runApp(), no FutureBuilder needed
+      home: StreamBuilder<User?>(
+        stream: authService.userChanges,
         builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
+          // Still waiting for auth state
+          if (snapshot.connectionState != ConnectionState.active) {
             return const Scaffold(
               body: Center(
                 child: CircularProgressIndicator(color: Color(0xFF6C63FF)),
@@ -91,51 +88,15 @@ class MyApp extends ConsumerWidget {
             );
           }
 
-          if (snapshot.hasError) {
-            return Scaffold(
-              body: Center(
-                child: Padding(
-                  padding: const EdgeInsets.all(24.0),
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      const Icon(Icons.error_outline_rounded, size: 56, color: Colors.red),
-                      const SizedBox(height: 16),
-                      const Text(
-                        'Firebase Initialization Error',
-                        style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700, color: Colors.red),
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        '${snapshot.error}',
-                        style: const TextStyle(fontSize: 14, color: Colors.grey),
-                        textAlign: TextAlign.center,
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            );
+          final user = snapshot.data;
+
+          // User is logged in and email is verified
+          if (user != null && user.emailVerified) {
+            return const DashboardPage();
           }
 
-          return StreamBuilder<User?>(
-            stream: authService.userChanges,
-            builder: (context, snapshot) {
-              if (snapshot.connectionState == ConnectionState.active) {
-                final user = snapshot.data;
-                if (user != null && user.emailVerified) {
-                  return const DashboardPage();
-                } else {
-                  return const LoginScreen();
-                }
-              }
-              return const Scaffold(
-                body: Center(
-                  child: CircularProgressIndicator(color: Color(0xFF6C63FF)),
-                ),
-              );
-            },
-          );
+          // Not logged in or email not verified
+          return const LoginScreen();
         },
       ),
       routes: {
