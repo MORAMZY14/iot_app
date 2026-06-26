@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-const String appVersion = '1.0.39';
+const String appVersion = '1.0.40';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
