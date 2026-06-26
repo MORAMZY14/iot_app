@@ -1,7 +1,8 @@
 #!/bin/sh
 # This is a generated file; do not edit or check into version control.
 export "FLUTTER_ROOT=E:\flutter"
-export "FLUTTER_APPLICATION_PATH=C:\Users\Admin\StudioProjects\iot_app"
+export "FLUTTER_APPLICATION_PATH=F:\Smart-Home\iot-app\iot_app-master"
+export "FLUTTER_FRAMEWORK_SWIFT_PACKAGE_PATH=F:\Smart-Home\iot-app\iot_app-master\ios\Flutter\ephemeral\Packages\.packages\FlutterFramework"
 export "COCOAPODS_PARALLEL_CODE_SIGN=true"
 export "FLUTTER_TARGET=lib\main.dart"
 export "FLUTTER_BUILD_DIR=build"

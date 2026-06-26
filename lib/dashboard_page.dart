@@ -6,7 +6,9 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 import 'package:shimmer/shimmer.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'ble_service.dart';
+import 'auth_service.dart';
 
 // ────────────────────────────────────────────────────────────
 // 0. THEME MANAGEMENT
@@ -289,26 +291,52 @@ class ESP32DeviceService {
   }
 }
 
-// ESP32 IP provider
-final esp32IpProvider = StateProvider<String>((ref) => '192.168.1.9');
+// ────────────────────────────────────────────────────────────
+// 5. ESP32 IP PROVIDER (UPDATED FOR USER-SPECIFIC IP)
+// ────────────────────────────────────────────────────────────
+final esp32IpProvider = FutureProvider<String>((ref) async {
+  final authService = ref.watch(authServiceProvider);
+  final user = authService.currentUser;
 
-// ESP32 Device Service Provider
-final esp32DeviceServiceProvider = Provider<ESP32DeviceService>((ref) {
-  final ip = ref.watch(esp32IpProvider);
+  if (user != null) {
+    final ip = await authService.getUserEsp32Ip(user.uid);
+    if (ip != null && ip.isNotEmpty) {
+      return ip;
+    }
+  }
+
+  // Default IP if no user or no IP found
+  return '192.168.1.9';
+});
+
+// ESP32 Device Service Provider (UPDATED)
+final esp32DeviceServiceProvider = FutureProvider<ESP32DeviceService>((ref) async {
+  final ip = await ref.watch(esp32IpProvider.future);
   return ESP32DeviceService(ip);
 });
 
 // ────────────────────────────────────────────────────────────
-// 5. HTTP POLLING SERVICE WITH CACHING
+// 6. HTTP POLLING SERVICE WITH CACHING (UPDATED)
 // ────────────────────────────────────────────────────────────
 final databaseUrlProvider = Provider((ref) =>
 'https://iot-smart-home-81abd-default-rtdb.europe-west1.firebasedatabase.app');
 
 final httpDataProvider = FutureProvider<Map<String, dynamic>>((ref) async {
   final url = ref.watch(databaseUrlProvider);
+  final authService = ref.watch(authServiceProvider);
+  final user = authService.currentUser;
   final cache = CacheService();
 
-  final cached = cache.get('smartHome');
+  if (user == null) {
+    return {
+      'sensors': {'temperature': 0.0, 'humidity': 0.0, 'flame': false},
+      'lights': {},
+      'status': {'online': false},
+    };
+  }
+
+  final cacheKey = 'smartHome_${user.uid}';
+  final cached = cache.get(cacheKey);
   if (cached != null) {
     return cached as Map<String, dynamic>;
   }
@@ -319,7 +347,7 @@ final httpDataProvider = FutureProvider<Map<String, dynamic>>((ref) async {
   while (retryCount < maxRetries) {
     try {
       final response = await http.get(
-        Uri.parse('$url/smartHome.json'),
+        Uri.parse('$url/smartHome/${user.uid}.json'),
         headers: {'Cache-Control': 'no-cache'},
       ).timeout(const Duration(seconds: 5));
 
@@ -354,11 +382,7 @@ final httpDataProvider = FutureProvider<Map<String, dynamic>>((ref) async {
           }
 
           if (!processedData.containsKey('lights')) {
-            processedData['lights'] = {
-              'room1': false,
-              'room2': false,
-              'room3': false,
-            };
+            processedData['lights'] = {};
           }
 
           if (!processedData.containsKey('status')) {
@@ -371,7 +395,7 @@ final httpDataProvider = FutureProvider<Map<String, dynamic>>((ref) async {
           status['online'] = (now - lastSeen) < 10 && lastSeen > 0;
           processedData['status'] = status;
 
-          cache.set('smartHome', processedData);
+          cache.set(cacheKey, processedData);
           return processedData;
         }
       }
@@ -384,13 +408,13 @@ final httpDataProvider = FutureProvider<Map<String, dynamic>>((ref) async {
   }
   return {
     'sensors': {'temperature': 0.0, 'humidity': 0.0, 'flame': false},
-    'lights': {'room1': false, 'room2': false, 'room3': false},
+    'lights': {},
     'status': {'online': false},
   };
 });
 
 // ────────────────────────────────────────────────────────────
-// 6. BLE + HTTP MERGED DATA PROVIDER (FIXED)
+// 7. BLE + HTTP MERGED DATA PROVIDER (FIXED)
 // ────────────────────────────────────────────────────────────
 final bleServiceProvider = Provider<BleService>((ref) => BleService());
 
@@ -400,10 +424,12 @@ final smartHomeDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
   late StreamSubscription bleStatusSub;
   Timer? httpTimer;
   final cache = CacheService();
+  final authService = ref.watch(authServiceProvider);
+  final user = authService.currentUser;
 
   Map<String, dynamic> currentData = {
     'sensors': {'temperature': 0.0, 'humidity': 0.0, 'flame': false},
-    'lights': {'room1': false, 'room2': false, 'room3': false},
+    'lights': {},
     'status': {'online': false},
   };
 
@@ -419,7 +445,9 @@ final smartHomeDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
       };
       currentData['lights'] = Map.from(bleService.lights);
       currentData['status']['online'] = true;
-      cache.set('bleData', currentData);
+      if (user != null) {
+        cache.set('bleData_${user.uid}', currentData);
+      }
       if (!controller.isClosed) controller.add(Map.from(currentData));
     }
   }
@@ -428,12 +456,14 @@ final smartHomeDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
     try {
       final httpData = await ref.read(httpDataProvider.future);
       if (bleService.currentStatus != BleStatus.connected) {
-        final cachedBle = cache.get('bleData');
-        if (cachedBle != null) {
-          currentData = Map<String, dynamic>.from(cachedBle as Map);
-          currentData['status'] = httpData['status'] ?? currentData['status'];
-          if (!controller.isClosed) controller.add(Map.from(currentData));
-          return;
+        if (user != null) {
+          final cachedBle = cache.get('bleData_${user.uid}');
+          if (cachedBle != null) {
+            currentData = Map<String, dynamic>.from(cachedBle as Map);
+            currentData['status'] = httpData['status'] ?? currentData['status'];
+            if (!controller.isClosed) controller.add(Map.from(currentData));
+            return;
+          }
         }
         currentData = httpData;
         if (!controller.isClosed) controller.add(Map.from(currentData));
@@ -450,12 +480,14 @@ final smartHomeDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
   }
 
   // Check cache first
-  final cachedData = cache.get('bleData');
-  if (cachedData != null) {
-    currentData = Map<String, dynamic>.from(cachedData as Map);
-    Future.microtask(() {
-      if (!controller.isClosed) controller.add(Map.from(currentData));
-    });
+  if (user != null) {
+    final cachedData = cache.get('bleData_${user.uid}');
+    if (cachedData != null) {
+      currentData = Map<String, dynamic>.from(cachedData as Map);
+      Future.microtask(() {
+        if (!controller.isClosed) controller.add(Map.from(currentData));
+      });
+    }
   }
 
   bleStatusSub = bleService.statusStream.listen((status) {
@@ -496,7 +528,7 @@ final smartHomeDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
 });
 
 // ────────────────────────────────────────────────────────────
-// 7. LIGHT TOGGLE SERVICE
+// 8. LIGHT TOGGLE SERVICE (UPDATED)
 // ────────────────────────────────────────────────────────────
 final lightToggleProvider = Provider((ref) => LightToggleService(ref));
 
@@ -521,9 +553,21 @@ class LightToggleService {
   Future<void> toggle(String room, bool value, BuildContext context) async {
     final bleService = _ref.read(bleServiceProvider);
     final url = _ref.read(databaseUrlProvider);
+    final authService = _ref.read(authServiceProvider);
+    final user = authService.currentUser;
 
-    _patchCache('smartHome', room, value);
-    _patchCache('bleData', room, value);
+    if (user == null) {
+      if (context.mounted) {
+        _showSnack(context, '❌ User not authenticated', color: _DT.red);
+      }
+      return;
+    }
+
+    final cacheKey = 'smartHome_${user.uid}';
+    final bleCacheKey = 'bleData_${user.uid}';
+
+    _patchCache(cacheKey, room, value);
+    _patchCache(bleCacheKey, room, value);
 
     if (bleService.currentStatus == BleStatus.connected) {
       try {
@@ -540,7 +584,7 @@ class LightToggleService {
     try {
       final response = await http
           .patch(
-        Uri.parse('$url/smartHome/lights.json'),
+        Uri.parse('$url/smartHome/${user.uid}/lights.json'),
         body: jsonEncode({room: value}),
       )
           .timeout(const Duration(seconds: 5));
@@ -549,8 +593,8 @@ class LightToggleService {
         throw Exception('HTTP ${response.statusCode}');
       }
     } catch (e) {
-      _revertCache('smartHome', room, !value);
-      _revertCache('bleData', room, !value);
+      _revertCache(cacheKey, room, !value);
+      _revertCache(bleCacheKey, room, !value);
       if (context.mounted) {
         _showSnack(context, 'Failed to toggle light', color: _DT.red);
       }
@@ -572,7 +616,7 @@ void _showSnack(BuildContext context, String msg,
 }
 
 // ────────────────────────────────────────────────────────────
-// 8. WALLPAPER BACKGROUND
+// 9. WALLPAPER BACKGROUND
 // ────────────────────────────────────────────────────────────
 class _WallpaperBackground extends StatelessWidget {
   final Widget child;
@@ -639,7 +683,7 @@ class _Blob extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 9. DASHBOARD PAGE
+// 10. DASHBOARD PAGE
 // ────────────────────────────────────────────────────────────
 class DashboardPage extends ConsumerStatefulWidget {
   const DashboardPage({super.key});
@@ -741,7 +785,7 @@ class _DashboardPageState extends ConsumerState<DashboardPage>
 }
 
 // ────────────────────────────────────────────────────────────
-// 10. PASSWORD DIALOG
+// 11. PASSWORD DIALOG
 // ────────────────────────────────────────────────────────────
 class _PasswordDialog extends StatefulWidget {
   final VoidCallback onSuccess;
@@ -887,7 +931,7 @@ class _PasswordDialogState extends State<_PasswordDialog> {
 }
 
 // ────────────────────────────────────────────────────────────
-// 11. EDIT GPIO DIALOG (FIXED)
+// 12. EDIT GPIO DIALOG (FIXED)
 // ────────────────────────────────────────────────────────────
 class _EditGPIODialog extends ConsumerStatefulWidget {
   final String deviceId;
@@ -918,7 +962,7 @@ class _EditGPIODialogState extends ConsumerState<_EditGPIODialog> {
 
   Future<void> _loadAvailableGPIOs() async {
     try {
-      final service = ref.read(esp32DeviceServiceProvider);
+      final service = await ref.read(esp32DeviceServiceProvider.future);
       final gpios = await service.getAvailableGPIOs();
       setState(() {
         _availableGPIOs = gpios;
@@ -945,7 +989,7 @@ class _EditGPIODialogState extends ConsumerState<_EditGPIODialog> {
     setState(() => _isLoading = true);
 
     try {
-      final service = ref.read(esp32DeviceServiceProvider);
+      final service = await ref.read(esp32DeviceServiceProvider.future);
       final success = await service.editDeviceGPIO(
         id: widget.deviceId,
         newGpio: _selectedGpio,
@@ -973,7 +1017,7 @@ class _EditGPIODialogState extends ConsumerState<_EditGPIODialog> {
 
   Future<void> _refreshDevices() async {
     try {
-      final service = ref.read(esp32DeviceServiceProvider);
+      final service = await ref.read(esp32DeviceServiceProvider.future);
       final result = await service.getDevices();
       if (mounted) {
         setState(() {
@@ -1122,7 +1166,7 @@ class _EditGPIODialogState extends ConsumerState<_EditGPIODialog> {
 }
 
 // ────────────────────────────────────────────────────────────
-// 12. QUICK ACTION DIALOG (FIXED)
+// 13. QUICK ACTION DIALOG (FIXED)
 // ────────────────────────────────────────────────────────────
 class _QuickActionDialog extends ConsumerStatefulWidget {
   const _QuickActionDialog();
@@ -1154,7 +1198,7 @@ class _QuickActionDialogState extends ConsumerState<_QuickActionDialog> {
     setState(() => _isLoading = true);
 
     try {
-      final service = ref.read(esp32DeviceServiceProvider);
+      final service = await ref.read(esp32DeviceServiceProvider.future);
 
       List<int> gpios = [];
       List<String> rooms = [];
@@ -1220,7 +1264,7 @@ class _QuickActionDialogState extends ConsumerState<_QuickActionDialog> {
     setState(() => _isLoading = true);
 
     try {
-      final service = ref.read(esp32DeviceServiceProvider);
+      final service = await ref.read(esp32DeviceServiceProvider.future);
       final success = await service.addDevice(
         name: _nameController.text.trim(),
         type: _selectedType,
@@ -1252,7 +1296,7 @@ class _QuickActionDialogState extends ConsumerState<_QuickActionDialog> {
 
   Future<void> _refreshDevices() async {
     try {
-      final service = ref.read(esp32DeviceServiceProvider);
+      final service = await ref.read(esp32DeviceServiceProvider.future);
       final result = await service.getDevices();
       if (mounted) {
         // Update parent widget state
@@ -1599,7 +1643,7 @@ class _QuickActionDialogState extends ConsumerState<_QuickActionDialog> {
 }
 
 // ────────────────────────────────────────────────────────────
-// 13. PURPLE FAB
+// 14. PURPLE FAB
 // ────────────────────────────────────────────────────────────
 class _PurpleFab extends StatelessWidget {
   final VoidCallback onTap;
@@ -1634,7 +1678,7 @@ class _PurpleFab extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 14. GLASS APP BAR
+// 15. GLASS APP BAR
 // ────────────────────────────────────────────────────────────
 class _GlassAppBar extends ConsumerWidget implements PreferredSizeWidget {
   final Future<void> Function() onRefresh;
@@ -1805,7 +1849,7 @@ class _ABBtn extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 15. HOME CONTENT WRAPPER
+// 16. HOME CONTENT WRAPPER
 // ────────────────────────────────────────────────────────────
 class _HomeContentWrapper extends ConsumerStatefulWidget {
   const _HomeContentWrapper();
@@ -1836,7 +1880,7 @@ class _HomeContentWrapperState extends ConsumerState<_HomeContentWrapper> {
 }
 
 // ────────────────────────────────────────────────────────────
-// 16. HOME CONTENT - DYNAMIC DEVICES FROM ESP32 (FIXED)
+// 17. HOME CONTENT - DYNAMIC DEVICES FROM ESP32 (FIXED)
 // ────────────────────────────────────────────────────────────
 class _HomeContent extends ConsumerStatefulWidget {
   final AsyncValue<Map<String, dynamic>> dataAsync;
@@ -1892,7 +1936,7 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
 
     setState(() => _isLoadingDevices = true);
     try {
-      final service = ref.read(esp32DeviceServiceProvider);
+      final service = await ref.read(esp32DeviceServiceProvider.future);
       final result = await service.getDevices();
       setState(() {
         _esp32Devices = result;
@@ -1911,7 +1955,7 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
 
   Future<void> _loadESP32DevicesSilently() async {
     try {
-      final service = ref.read(esp32DeviceServiceProvider);
+      final service = await ref.read(esp32DeviceServiceProvider.future);
       final result = await service.getDevices();
       if (mounted) {
         setState(() {
@@ -2063,7 +2107,7 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
                       onPressed: () async {
                         Navigator.pop(context);
                         try {
-                          final service = ref.read(esp32DeviceServiceProvider);
+                          final service = await ref.read(esp32DeviceServiceProvider.future);
                           final success = await service.removeDevice(deviceId);
                           if (success) {
                             // Refresh immediately after removal
@@ -2098,7 +2142,7 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
 
   Future<void> _controlDevice(String id, bool state) async {
     try {
-      final service = ref.read(esp32DeviceServiceProvider);
+      final service = await ref.read(esp32DeviceServiceProvider.future);
 
       // Optimistically update UI
       setState(() {
@@ -2319,7 +2363,7 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
 }
 
 // ────────────────────────────────────────────────────────────
-// 16.2 DYNAMIC DEVICE CARD
+// 18. DYNAMIC DEVICE CARD
 // ────────────────────────────────────────────────────────────
 class _DynamicDeviceCard extends StatelessWidget {
   final String name;
@@ -2476,7 +2520,7 @@ class _DynamicDeviceCard extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 17. ESP CONNECTION BAR
+// 19. ESP CONNECTION BAR
 // ────────────────────────────────────────────────────────────
 class _EspBar extends StatelessWidget {
   final bool online;
@@ -2585,7 +2629,7 @@ class _MiniChip extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 18. STATS ROW
+// 20. STATS ROW
 // ────────────────────────────────────────────────────────────
 class _StatsRow extends StatelessWidget {
   final double temp;
@@ -2673,7 +2717,7 @@ class _StatTile extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 19. FLAME BANNER
+// 21. FLAME BANNER
 // ────────────────────────────────────────────────────────────
 class _FlameBanner extends StatelessWidget {
   final bool flame;
@@ -2738,7 +2782,7 @@ class _FlameBanner extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 20. ROOMS HEADER + TABS
+// 22. ROOMS HEADER + TABS
 // ────────────────────────────────────────────────────────────
 class _RoomsHeader extends StatelessWidget {
   final String selectedRoom;
@@ -2832,7 +2876,7 @@ class _RoomsHeader extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 21. OPTION TILE
+// 23. OPTION TILE
 // ────────────────────────────────────────────────────────────
 class _OptionTile extends StatelessWidget {
   final IconData icon;
@@ -2873,7 +2917,7 @@ class _OptionTile extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 22. GLASS CARD
+// 24. GLASS CARD
 // ────────────────────────────────────────────────────────────
 class _GCard extends StatelessWidget {
   final Widget child;
@@ -2946,7 +2990,7 @@ class _GCard extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 23. PILL BUTTON
+// 25. PILL BUTTON
 // ────────────────────────────────────────────────────────────
 class _PillBtn extends StatelessWidget {
   final String label;
@@ -2978,7 +3022,7 @@ class _PillBtn extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 24. GLASS BOTTOM NAV
+// 26. GLASS BOTTOM NAV
 // ────────────────────────────────────────────────────────────
 class _GlassBottomNav extends StatefulWidget {
   final int selectedIndex;
@@ -3272,7 +3316,7 @@ class _GlassBottomNavState extends State<_GlassBottomNav>
 }
 
 // ────────────────────────────────────────────────────────────
-// 25. ENERGY SCREEN
+// 27. ENERGY SCREEN
 // ────────────────────────────────────────────────────────────
 class _EnergyScreen extends StatelessWidget {
   const _EnergyScreen();
@@ -3480,7 +3524,7 @@ class _EnergyScreen extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 26. ALERTS SCREEN
+// 28. ALERTS SCREEN
 // ────────────────────────────────────────────────────────────
 class _AlertsScreen extends StatelessWidget {
   const _AlertsScreen();
@@ -3556,7 +3600,7 @@ class _AlertsScreen extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 27. SETTINGS SCREEN
+// 29. SETTINGS SCREEN (UPDATED)
 // ────────────────────────────────────────────────────────────
 class _SettingsScreen extends ConsumerWidget {
   const _SettingsScreen({super.key});
@@ -3565,8 +3609,9 @@ class _SettingsScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final themeMode = ref.watch(themeModeProvider);
     final bleStatus = ref.watch(bleServiceProvider).currentStatus;
-    final esp32Ip = ref.watch(esp32IpProvider);
-    final esp32Service = ref.watch(esp32DeviceServiceProvider);
+    final esp32IpAsync = ref.watch(esp32IpProvider);
+    final authService = ref.watch(authServiceProvider);
+    final user = authService.currentUser;
 
     void onConnectBLE() => ref.read(bleServiceProvider).connect();
 
@@ -3577,7 +3622,9 @@ class _SettingsScreen extends ConsumerWidget {
     }
 
     void showEditIPDialog() {
-      final TextEditingController ipController = TextEditingController(text: esp32Ip);
+      final TextEditingController ipController = TextEditingController(
+          text: esp32IpAsync.value ?? '192.168.1.9'
+      );
 
       showDialog(
         context: context,
@@ -3648,12 +3695,17 @@ class _SettingsScreen extends ConsumerWidget {
                     const SizedBox(width: 12),
                     Expanded(
                       child: ElevatedButton(
-                        onPressed: () {
+                        onPressed: () async {
                           final newIp = ipController.text.trim();
-                          if (newIp.isNotEmpty) {
-                            ref.read(esp32IpProvider.notifier).state = newIp;
-                            Navigator.pop(context);
-                            _showSnack(context, '✅ ESP32 IP updated to $newIp', color: _DT.green);
+                          if (newIp.isNotEmpty && user != null) {
+                            try {
+                              await authService.updateEsp32Ip(user.uid, newIp);
+                              ref.invalidate(esp32IpProvider);
+                              Navigator.pop(context);
+                              _showSnack(context, '✅ ESP32 IP updated to $newIp', color: _DT.green);
+                            } catch (e) {
+                              _showSnack(context, '❌ Failed to update IP: ${e.toString()}', color: _DT.red);
+                            }
                           }
                         },
                         style: ElevatedButton.styleFrom(
@@ -3721,6 +3773,7 @@ class _SettingsScreen extends ConsumerWidget {
       );
 
       try {
+        final esp32Service = await ref.read(esp32DeviceServiceProvider.future);
         final devices = await esp32Service.getDevices();
         Navigator.pop(context);
 
@@ -3761,8 +3814,8 @@ class _SettingsScreen extends ConsumerWidget {
                   const SizedBox(height: 8),
                   Text(
                     isConnected
-                        ? 'ESP32 is reachable at $esp32Ip'
-                        : 'Could not reach ESP32 at $esp32Ip',
+                        ? 'ESP32 is reachable at ${esp32IpAsync.value ?? "Unknown IP"}'
+                        : 'Could not reach ESP32 at ${esp32IpAsync.value ?? "Unknown IP"}',
                     style: TextStyle(
                       fontSize: 14,
                       color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5),
@@ -3867,181 +3920,296 @@ class _SettingsScreen extends ConsumerWidget {
       }
     }
 
-    final padding = ResponsiveHelper.getPadding(context);
-    final isDesktop = ResponsiveHelper.isDesktop(context);
-
-    return ListView(
-      padding: EdgeInsets.only(
-        top: MediaQuery.of(context).padding.top + kToolbarHeight + 12,
-        left: padding,
-        right: padding,
-        bottom: isDesktop ? 40 : 100,
-      ),
-      children: [
-        _GCard(child: Column(children: [
-          _STile(
-            icon: Icons.palette_rounded,
-            title: 'Appearance',
-            subtitle: 'Theme mode',
-            trailing: DropdownButtonHideUnderline(
-              child: DropdownButton<ThemeMode>(
-                value: themeMode,
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 10, vertical: 4),
-                borderRadius: BorderRadius.circular(16),
-                items: const [
-                  DropdownMenuItem(
-                      value: ThemeMode.light, child: Text('Light')),
-                  DropdownMenuItem(
-                      value: ThemeMode.dark, child: Text('Dark')),
-                  DropdownMenuItem(
-                      value: ThemeMode.system,
-                      child: Text('System')),
-                ],
-                onChanged: (m) {
-                  if (m != null) {
-                    ref.read(themeModeProvider.notifier).state = m;
-                  }
-                },
-              ),
-            ),
-          ),
-          const _SDivider(),
-          _STile(
-            icon: Icons.bluetooth_rounded,
-            title: 'Bluetooth',
-            subtitle: bleStatus == BleStatus.connected
-                ? 'Connected'
-                : 'Not connected',
-            trailing: bleStatus == BleStatus.connected
-                ? Container(
-              padding: const EdgeInsets.symmetric(
-                  horizontal: 10, vertical: 5),
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(20),
-                color: _DT.green.withValues(alpha: 0.15),
-                border: Border.all(
-                    color: _DT.green.withValues(alpha: 0.4),
-                    width: 0.8),
-              ),
-              child: const Text('● Connected',
-                  style: TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
-                      color: _DT.green)),
-            )
-                : _PillBtn(label: 'Connect', onTap: onConnectBLE),
-          ),
-          const _SDivider(),
-          _STile(
-            icon: Icons.refresh_rounded,
-            title: 'Manual Refresh',
-            subtitle: 'Pull from BLE / Cloud',
-            trailing: GestureDetector(
-              onTap: onRefresh,
-              child: Container(
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: _DT.purple.withValues(alpha: 0.15),
-                ),
-                child: const Icon(Icons.refresh_rounded,
-                    size: 20, color: _DT.purple),
-              ),
-            ),
-          ),
-        ])),
-        const SizedBox(height: 12),
-        _GCard(child: Column(children: [
-          _STile(
-            icon: Icons.settings_ethernet_rounded,
-            title: 'ESP32 Settings',
-            subtitle: 'IP: $esp32Ip',
-            trailing: Row(
+    void showSignOutDialog() {
+      showDialog(
+        context: context,
+        builder: (context) => Dialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          backgroundColor: Colors.transparent,
+          child: _GCard(
+            padding: const EdgeInsets.all(24),
+            child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                GestureDetector(
-                  onTap: showEditIPDialog,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(20),
-                      color: _DT.purple.withValues(alpha: 0.15),
-                    ),
-                    child: const Text(
-                      'Edit IP',
-                      style: TextStyle(
-                        color: _DT.purple,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
+                Container(
+                  width: 60,
+                  height: 60,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: _DT.red.withValues(alpha: 0.15),
+                  ),
+                  child: const Icon(
+                    Icons.logout_rounded,
+                    color: _DT.red,
+                    size: 30,
                   ),
                 ),
-                const SizedBox(width: 8),
-                GestureDetector(
-                  onTap: showTestConnectionDialog,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(20),
-                      color: _DT.green.withValues(alpha: 0.15),
-                    ),
-                    child: const Text(
-                      'Test',
-                      style: TextStyle(
-                        color: _DT.green,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
+                const SizedBox(height: 16),
+                const Text(
+                  'Sign Out',
+                  style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                const Text(
+                  'Are you sure you want to sign out?',
+                  style: TextStyle(
+                    fontSize: 14,
+                    color: Colors.grey,
+                  ),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 20),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextButton(
+                        onPressed: () => Navigator.pop(context),
+                        child: const Text('Cancel'),
                       ),
                     ),
-                  ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: ElevatedButton(
+                        onPressed: () async {
+                          Navigator.pop(context);
+                          final authService = ref.read(authServiceProvider);
+                          await authService.signOut();
+                          if (context.mounted) {
+                            // The app will automatically redirect to login
+                          }
+                        },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: _DT.red,
+                          foregroundColor: Colors.white,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                        ),
+                        child: const Text('Sign Out'),
+                      ),
+                    ),
+                  ],
                 ),
               ],
             ),
-            onTap: showEditIPDialog,
           ),
-          const _SDivider(),
-          _STile(
-            icon: Icons.router_rounded,
-            title: 'Provision ESP32',
-            subtitle: 'Setup a new device',
-            trailing: Icon(Icons.chevron_right_rounded,
-                size: 20,
-                color: Theme.of(context)
-                    .colorScheme
-                    .onSurface
-                    .withValues(alpha: 0.35)),
-            onTap: () {},
+        ),
+      );
+    }
+
+    final padding = ResponsiveHelper.getPadding(context);
+    final isDesktop = ResponsiveHelper.isDesktop(context);
+
+    return esp32IpAsync.when(
+      data: (esp32Ip) {
+        return ListView(
+          padding: EdgeInsets.only(
+            top: MediaQuery.of(context).padding.top + kToolbarHeight + 12,
+            left: padding,
+            right: padding,
+            bottom: isDesktop ? 40 : 100,
           ),
-          const _SDivider(),
-          _STile(
-            icon: Icons.wifi_rounded,
-            title: 'Wi-Fi Config',
-            subtitle: 'Change network settings',
-            trailing: Icon(Icons.chevron_right_rounded,
-                size: 20,
-                color: Theme.of(context)
-                    .colorScheme
-                    .onSurface
-                    .withValues(alpha: 0.35)),
-            onTap: () {},
-          ),
-          const _SDivider(),
-          _STile(
-            icon: Icons.info_outline_rounded,
-            title: 'About',
-            subtitle: 'Smart Home v1.0.0',
-            trailing: Icon(Icons.chevron_right_rounded,
-                size: 20,
-                color: Theme.of(context)
-                    .colorScheme
-                    .onSurface
-                    .withValues(alpha: 0.35)),
-            onTap: () {},
-          ),
-        ])),
-      ],
+          children: [
+            _GCard(child: Column(children: [
+              _STile(
+                icon: Icons.palette_rounded,
+                title: 'Appearance',
+                subtitle: 'Theme mode',
+                trailing: DropdownButtonHideUnderline(
+                  child: DropdownButton<ThemeMode>(
+                    value: themeMode,
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 10, vertical: 4),
+                    borderRadius: BorderRadius.circular(16),
+                    items: const [
+                      DropdownMenuItem(
+                          value: ThemeMode.light, child: Text('Light')),
+                      DropdownMenuItem(
+                          value: ThemeMode.dark, child: Text('Dark')),
+                      DropdownMenuItem(
+                          value: ThemeMode.system,
+                          child: Text('System')),
+                    ],
+                    onChanged: (m) {
+                      if (m != null) {
+                        ref.read(themeModeProvider.notifier).state = m;
+                      }
+                    },
+                  ),
+                ),
+              ),
+              const _SDivider(),
+              _STile(
+                icon: Icons.bluetooth_rounded,
+                title: 'Bluetooth',
+                subtitle: bleStatus == BleStatus.connected
+                    ? 'Connected'
+                    : 'Not connected',
+                trailing: bleStatus == BleStatus.connected
+                    ? Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 10, vertical: 5),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(20),
+                    color: _DT.green.withValues(alpha: 0.15),
+                    border: Border.all(
+                        color: _DT.green.withValues(alpha: 0.4),
+                        width: 0.8),
+                  ),
+                  child: const Text('● Connected',
+                      style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: _DT.green)),
+                )
+                    : _PillBtn(label: 'Connect', onTap: onConnectBLE),
+              ),
+              const _SDivider(),
+              _STile(
+                icon: Icons.refresh_rounded,
+                title: 'Manual Refresh',
+                subtitle: 'Pull from BLE / Cloud',
+                trailing: GestureDetector(
+                  onTap: onRefresh,
+                  child: Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: _DT.purple.withValues(alpha: 0.15),
+                    ),
+                    child: const Icon(Icons.refresh_rounded,
+                        size: 20, color: _DT.purple),
+                  ),
+                ),
+              ),
+            ])),
+            const SizedBox(height: 12),
+            _GCard(child: Column(children: [
+              _STile(
+                icon: Icons.settings_ethernet_rounded,
+                title: 'ESP32 Settings',
+                subtitle: 'IP: $esp32Ip',
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    GestureDetector(
+                      onTap: showEditIPDialog,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(20),
+                          color: _DT.purple.withValues(alpha: 0.15),
+                        ),
+                        child: const Text(
+                          'Edit IP',
+                          style: TextStyle(
+                            color: _DT.purple,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    GestureDetector(
+                      onTap: showTestConnectionDialog,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(20),
+                          color: _DT.green.withValues(alpha: 0.15),
+                        ),
+                        child: const Text(
+                          'Test',
+                          style: TextStyle(
+                            color: _DT.green,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                onTap: showEditIPDialog,
+              ),
+              const _SDivider(),
+              _STile(
+                icon: Icons.logout_rounded,
+                title: 'Sign Out',
+                subtitle: 'Sign out of your account',
+                trailing: GestureDetector(
+                  onTap: showSignOutDialog,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(20),
+                      color: _DT.red.withValues(alpha: 0.15),
+                    ),
+                    child: const Text(
+                      'Sign Out',
+                      style: TextStyle(
+                        color: _DT.red,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              const _SDivider(),
+              _STile(
+                icon: Icons.router_rounded,
+                title: 'Provision ESP32',
+                subtitle: 'Setup a new device',
+                trailing: Icon(Icons.chevron_right_rounded,
+                    size: 20,
+                    color: Theme.of(context)
+                        .colorScheme
+                        .onSurface
+                        .withValues(alpha: 0.35)),
+                onTap: () {
+                  Navigator.pushNamed(context, '/provision');
+                },
+              ),
+              const _SDivider(),
+              _STile(
+                icon: Icons.wifi_rounded,
+                title: 'Wi-Fi Config',
+                subtitle: 'Change network settings',
+                trailing: Icon(Icons.chevron_right_rounded,
+                    size: 20,
+                    color: Theme.of(context)
+                        .colorScheme
+                        .onSurface
+                        .withValues(alpha: 0.35)),
+                onTap: () {
+                  Navigator.pushNamed(context, '/wifiConfig');
+                },
+              ),
+              const _SDivider(),
+              _STile(
+                icon: Icons.info_outline_rounded,
+                title: 'About',
+                subtitle: 'Smart Home v1.0.0',
+                trailing: Icon(Icons.chevron_right_rounded,
+                    size: 20,
+                    color: Theme.of(context)
+                        .colorScheme
+                        .onSurface
+                        .withValues(alpha: 0.35)),
+                onTap: () {},
+              ),
+            ])),
+          ],
+        );
+      },
+      loading: () => const Center(child: CircularProgressIndicator()),
+      error: (err, _) => Center(child: Text('Error: $err')),
     );
   }
 }
@@ -4113,7 +4281,7 @@ class _STile extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 28. SKELETON LOADER
+// 30. SKELETON LOADER
 // ────────────────────────────────────────────────────────────
 class _SkeletonLoader extends StatelessWidget {
   const _SkeletonLoader();
