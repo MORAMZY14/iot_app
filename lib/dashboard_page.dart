@@ -129,7 +129,7 @@ class ESP32DeviceService {
       final response = await http.get(
         Uri.parse('http://$esp32Ip/api/devices'),
         headers: {'Cache-Control': 'no-cache'},
-      ).timeout(const Duration(seconds: 3));
+      ).timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200) {
         return jsonDecode(response.body) as Map<String, dynamic>;
@@ -300,7 +300,6 @@ final userEsp32CodeProvider = FutureProvider<String?>((ref) async {
   final user = authService.currentUser;
 
   if (user != null) {
-    // 🔥 FIX: Use Realtime Database instead of Firestore
     final String databaseUrl = 'https://iot-smart-home-81abd-default-rtdb.europe-west1.firebasedatabase.app';
     final response = await http.get(
       Uri.parse('$databaseUrl/users/${user.uid}/esp32Code.json'),
@@ -326,10 +325,8 @@ final esp32IpProvider = FutureProvider<String>((ref) async {
 
   print('🔎 Looking up IP for ESP32 Code: $code');
 
-  // 🔥 Define the URL variable inside the function
   final String databaseUrl = 'https://iot-smart-home-81abd-default-rtdb.europe-west1.firebasedatabase.app';
 
-  // 🔥 1. Look in esp_public (The ESP32 is currently broadcasting here)
   try {
     final response = await http.get(
       Uri.parse('$databaseUrl/esp_public/$code/status.json'),
@@ -346,7 +343,6 @@ final esp32IpProvider = FutureProvider<String>((ref) async {
     print('Error fetching IP from esp_public: $e');
   }
 
-  // 🔥 2. Fallback: Check if the data was already moved to the user's private node
   try {
     final response = await http.get(
       Uri.parse('$databaseUrl/smartHome/${user.uid}/status.json'),
@@ -767,7 +763,6 @@ class _DashboardPageState extends ConsumerState<DashboardPage>
     await bleService.connect();
     ref.invalidate(httpDataProvider);
 
-    // 🔥 FIX: Convert AsyncValue to AuthService using .requireValue
     final authService = ref.read(authServiceProvider).requireValue;
     if (mounted) _showSnack(context, 'Refreshed ✓', color: _DT.green);
   }
@@ -1221,7 +1216,7 @@ class _EditGPIODialogState extends ConsumerState<_EditGPIODialog> {
 }
 
 // ────────────────────────────────────────────────────────────
-// 13. QUICK ACTION DIALOG
+// 13. QUICK ACTION DIALOG (UPDATED WITH ROOM MANAGEMENT)
 // ────────────────────────────────────────────────────────────
 class _QuickActionDialog extends ConsumerStatefulWidget {
   const _QuickActionDialog();
@@ -1313,6 +1308,24 @@ class _QuickActionDialogState extends ConsumerState<_QuickActionDialog> {
     }
   }
 
+  // 🔥 NEW: Show Room Management Dialog
+  void _showRoomManagementDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => _RoomManagementDialog(
+        rooms: _rooms,
+        onRoomsUpdated: (updatedRooms) {
+          setState(() {
+            _rooms = updatedRooms;
+            if (!_rooms.contains(_selectedRoom)) {
+              _selectedRoom = _rooms.isNotEmpty ? _rooms.first : '';
+            }
+          });
+        },
+      ),
+    );
+  }
+
   Future<void> _addDevice() async {
     if (!_formKey.currentState!.validate()) return;
 
@@ -1386,12 +1399,22 @@ class _QuickActionDialogState extends ConsumerState<_QuickActionDialog> {
                     fontWeight: FontWeight.w700,
                   ),
                 ),
-                IconButton(
-                  onPressed: () => Navigator.pop(context),
-                  icon: Icon(
-                    Icons.close_rounded,
-                    color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5),
-                  ),
+                Row(
+                  children: [
+                    // 🔥 NEW: Manage Rooms Button
+                    IconButton(
+                      icon: const Icon(Icons.settings_rounded),
+                      onPressed: _showRoomManagementDialog,
+                      tooltip: 'Manage Rooms',
+                    ),
+                    IconButton(
+                      onPressed: () => Navigator.pop(context),
+                      icon: Icon(
+                        Icons.close_rounded,
+                        color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5),
+                      ),
+                    ),
+                  ],
                 ),
               ],
             ),
@@ -1508,105 +1531,115 @@ class _QuickActionDialogState extends ConsumerState<_QuickActionDialog> {
                         ),
                       ),
                       const SizedBox(height: 16),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: Column(
+
+                      // 🔥 FIX: GPIO + Room Row with keyboard handling
+                      SingleChildScrollView(
+                        child: Column(
+                          children: [
+                            Row(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Text(
-                                  'GPIO Pin',
-                                  style: TextStyle(
-                                    fontSize: 14,
-                                    fontWeight: FontWeight.w600,
-                                    color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        'GPIO Pin',
+                                        style: TextStyle(
+                                          fontSize: 14,
+                                          fontWeight: FontWeight.w600,
+                                          color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+                                        ),
+                                      ),
+                                      const SizedBox(height: 6),
+                                      TextFormField(
+                                        controller: _gpioController,
+                                        keyboardType: TextInputType.number,
+                                        decoration: InputDecoration(
+                                          hintText: 'e.g. 14',
+                                          border: OutlineInputBorder(
+                                            borderRadius: BorderRadius.circular(12),
+                                            borderSide: BorderSide(
+                                              color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.1),
+                                            ),
+                                          ),
+                                          enabledBorder: OutlineInputBorder(
+                                            borderRadius: BorderRadius.circular(12),
+                                            borderSide: BorderSide(
+                                              color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.1),
+                                            ),
+                                          ),
+                                          focusedBorder: OutlineInputBorder(
+                                            borderRadius: BorderRadius.circular(12),
+                                            borderSide: const BorderSide(color: _DT.purple, width: 2),
+                                          ),
+                                          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                                        ),
+                                        validator: (value) {
+                                          if (value == null || value.trim().isEmpty) {
+                                            return 'Required';
+                                          }
+                                          final pin = int.tryParse(value.trim());
+                                          if (pin == null) {
+                                            return 'Invalid number';
+                                          }
+                                          if (!_availableGPIOs.contains(pin)) {
+                                            return 'GPIO ${pin} not available';
+                                          }
+                                          return null;
+                                        },
+                                      ),
+                                    ],
                                   ),
                                 ),
-                                const SizedBox(height: 6),
-                                TextFormField(
-                                  controller: _gpioController,
-                                  keyboardType: TextInputType.number,
-                                  decoration: InputDecoration(
-                                    hintText: 'e.g. 14',
-                                    border: OutlineInputBorder(
-                                      borderRadius: BorderRadius.circular(12),
-                                      borderSide: BorderSide(
-                                        color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.1),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        'Room',
+                                        style: TextStyle(
+                                          fontSize: 14,
+                                          fontWeight: FontWeight.w600,
+                                          color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+                                        ),
                                       ),
-                                    ),
-                                    enabledBorder: OutlineInputBorder(
-                                      borderRadius: BorderRadius.circular(12),
-                                      borderSide: BorderSide(
-                                        color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.1),
+                                      const SizedBox(height: 6),
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                                        decoration: BoxDecoration(
+                                          borderRadius: BorderRadius.circular(12),
+                                          border: Border.all(
+                                            color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.1),
+                                          ),
+                                        ),
+                                        child: DropdownButtonHideUnderline(
+                                          child: DropdownButton<String>(
+                                            value: _rooms.contains(_selectedRoom) ? _selectedRoom : null,
+                                            isExpanded: true,
+                                            hint: const Text('Select Room'),
+                                            items: _rooms.map((room) {
+                                              return DropdownMenuItem(
+                                                value: room,
+                                                child: Text(room),
+                                              );
+                                            }).toList(),
+                                            onChanged: (value) {
+                                              if (value != null) {
+                                                setState(() => _selectedRoom = value);
+                                              }
+                                            },
+                                          ),
+                                        ),
                                       ),
-                                    ),
-                                    focusedBorder: OutlineInputBorder(
-                                      borderRadius: BorderRadius.circular(12),
-                                      borderSide: const BorderSide(color: _DT.purple, width: 2),
-                                    ),
-                                    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                                    ],
                                   ),
-                                  validator: (value) {
-                                    if (value == null || value.trim().isEmpty) {
-                                      return 'Required';
-                                    }
-                                    final pin = int.tryParse(value.trim());
-                                    if (pin == null) {
-                                      return 'Invalid number';
-                                    }
-                                    if (!_availableGPIOs.contains(pin)) {
-                                      return 'GPIO ${pin} not available';
-                                    }
-                                    return null;
-                                  },
                                 ),
                               ],
                             ),
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  'Room',
-                                  style: TextStyle(
-                                    fontSize: 14,
-                                    fontWeight: FontWeight.w600,
-                                    color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
-                                  ),
-                                ),
-                                const SizedBox(height: 6),
-                                Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 12),
-                                  decoration: BoxDecoration(
-                                    borderRadius: BorderRadius.circular(12),
-                                    border: Border.all(
-                                      color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.1),
-                                    ),
-                                  ),
-                                  child: DropdownButtonHideUnderline(
-                                    child: DropdownButton<String>(
-                                      value: _selectedRoom,
-                                      isExpanded: true,
-                                      items: _rooms.map((room) {
-                                        return DropdownMenuItem(
-                                          value: room,
-                                          child: Text(room),
-                                        );
-                                      }).toList(),
-                                      onChanged: (value) {
-                                        if (value != null) {
-                                          setState(() => _selectedRoom = value);
-                                        }
-                                      },
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ],
+                          ],
+                        ),
                       ),
                       const SizedBox(height: 24),
                       Container(
@@ -1696,7 +1729,156 @@ class _QuickActionDialogState extends ConsumerState<_QuickActionDialog> {
 }
 
 // ────────────────────────────────────────────────────────────
-// 14. PURPLE FAB
+// 14. ROOM MANAGEMENT DIALOG (NEW)
+// ────────────────────────────────────────────────────────────
+class _RoomManagementDialog extends StatefulWidget {
+  final List<String> rooms;
+  final Function(List<String>) onRoomsUpdated;
+
+  const _RoomManagementDialog({
+    required this.rooms,
+    required this.onRoomsUpdated,
+  });
+
+  @override
+  State<_RoomManagementDialog> createState() => _RoomManagementDialogState();
+}
+
+class _RoomManagementDialogState extends State<_RoomManagementDialog> {
+  late List<String> _rooms;
+  final TextEditingController _newRoomController = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    _rooms = List.from(widget.rooms);
+  }
+
+  void _addRoom() {
+    final name = _newRoomController.text.trim();
+    if (name.isNotEmpty && !_rooms.contains(name)) {
+      setState(() {
+        _rooms.add(name);
+        _newRoomController.clear();
+      });
+      widget.onRoomsUpdated(_rooms);
+    }
+  }
+
+  void _removeRoom(String room) {
+    setState(() {
+      _rooms.remove(room);
+    });
+    widget.onRoomsUpdated(_rooms);
+  }
+
+  @override
+  void dispose() {
+    _newRoomController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      backgroundColor: Colors.transparent,
+      child: _GCard(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              'Manage Rooms',
+              style: TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                Expanded(
+                  child: TextFormField(
+                    controller: _newRoomController,
+                    decoration: InputDecoration(
+                      hintText: 'New room name',
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                    ),
+                    onFieldSubmitted: (_) => _addRoom(),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                ElevatedButton(
+                  onPressed: _addRoom,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: _DT.purple,
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+                  ),
+                  child: const Text('Add'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            SizedBox(
+              height: 200,
+              child: ListView.separated(
+                itemCount: _rooms.length,
+                separatorBuilder: (_, __) => const SizedBox(height: 8),
+                itemBuilder: (context, index) {
+                  final room = _rooms[index];
+                  return Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(8),
+                      color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.05),
+                    ),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(room),
+                        IconButton(
+                          icon: const Icon(Icons.delete_rounded, color: _DT.red),
+                          onPressed: () => _removeRoom(room),
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+            ),
+            const SizedBox(height: 20),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                onPressed: () => Navigator.pop(context),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: _DT.purple,
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                ),
+                child: const Text('Done'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ────────────────────────────────────────────────────────────
+// 15. PURPLE FAB
 // ────────────────────────────────────────────────────────────
 class _PurpleFab extends StatelessWidget {
   final VoidCallback onTap;
@@ -1731,7 +1913,7 @@ class _PurpleFab extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 15. GLASS APP BAR
+// 16. GLASS APP BAR
 // ────────────────────────────────────────────────────────────
 class _GlassAppBar extends ConsumerWidget implements PreferredSizeWidget {
   final Future<void> Function() onRefresh;
@@ -1902,7 +2084,7 @@ class _ABBtn extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 16. HOME CONTENT WRAPPER
+// 17. HOME CONTENT WRAPPER
 // ────────────────────────────────────────────────────────────
 class _HomeContentWrapper extends ConsumerStatefulWidget {
   const _HomeContentWrapper();
@@ -1933,7 +2115,7 @@ class _HomeContentWrapperState extends ConsumerState<_HomeContentWrapper> {
 }
 
 // ────────────────────────────────────────────────────────────
-// 17. HOME CONTENT - DYNAMIC DEVICES FROM ESP32
+// 18. HOME CONTENT - DYNAMIC DEVICES FROM ESP32
 // ────────────────────────────────────────────────────────────
 class _HomeContent extends ConsumerStatefulWidget {
   final AsyncValue<Map<String, dynamic>> dataAsync;
@@ -2404,7 +2586,7 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
 }
 
 // ────────────────────────────────────────────────────────────
-// 18. DYNAMIC DEVICE CARD
+// 19. DYNAMIC DEVICE CARD
 // ────────────────────────────────────────────────────────────
 class _DynamicDeviceCard extends StatelessWidget {
   final String name;
@@ -2561,7 +2743,7 @@ class _DynamicDeviceCard extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 19. ESP CONNECTION BAR
+// 20. ESP CONNECTION BAR
 // ────────────────────────────────────────────────────────────
 class _EspBar extends StatelessWidget {
   final bool online;
@@ -2670,7 +2852,7 @@ class _MiniChip extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 20. STATS ROW
+// 21. STATS ROW
 // ────────────────────────────────────────────────────────────
 class _StatsRow extends StatelessWidget {
   final double temp;
@@ -2758,7 +2940,7 @@ class _StatTile extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 21. FLAME BANNER
+// 22. FLAME BANNER
 // ────────────────────────────────────────────────────────────
 class _FlameBanner extends StatelessWidget {
   final bool flame;
@@ -2823,7 +3005,7 @@ class _FlameBanner extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 22. ROOMS HEADER + TABS
+// 23. ROOMS HEADER + TABS
 // ────────────────────────────────────────────────────────────
 class _RoomsHeader extends StatelessWidget {
   final String selectedRoom;
@@ -2917,7 +3099,7 @@ class _RoomsHeader extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 23. OPTION TILE
+// 24. OPTION TILE
 // ────────────────────────────────────────────────────────────
 class _OptionTile extends StatelessWidget {
   final IconData icon;
@@ -2958,7 +3140,7 @@ class _OptionTile extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 24. GLASS CARD
+// 25. GLASS CARD
 // ────────────────────────────────────────────────────────────
 class _GCard extends StatelessWidget {
   final Widget child;
@@ -3031,7 +3213,7 @@ class _GCard extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 25. PILL BUTTON
+// 26. PILL BUTTON
 // ────────────────────────────────────────────────────────────
 class _PillBtn extends StatelessWidget {
   final String label;
@@ -3063,7 +3245,7 @@ class _PillBtn extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 26. GLASS BOTTOM NAV
+// 27. GLASS BOTTOM NAV
 // ────────────────────────────────────────────────────────────
 class _GlassBottomNav extends StatefulWidget {
   final int selectedIndex;
@@ -3357,7 +3539,7 @@ class _GlassBottomNavState extends State<_GlassBottomNav>
 }
 
 // ────────────────────────────────────────────────────────────
-// 27. ENERGY SCREEN
+// 28. ENERGY SCREEN
 // ────────────────────────────────────────────────────────────
 class _EnergyScreen extends StatelessWidget {
   const _EnergyScreen();
@@ -3565,7 +3747,7 @@ class _EnergyScreen extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 28. ALERTS SCREEN
+// 29. ALERTS SCREEN
 // ────────────────────────────────────────────────────────────
 class _AlertsScreen extends StatelessWidget {
   const _AlertsScreen();
@@ -3641,7 +3823,7 @@ class _AlertsScreen extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 29. SETTINGS SCREEN
+// 30. SETTINGS SCREEN
 // ────────────────────────────────────────────────────────────
 class _SettingsScreen extends ConsumerWidget {
   const _SettingsScreen({super.key});
@@ -4321,7 +4503,7 @@ class _STile extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 30. SKELETON LOADER
+// 31. SKELETON LOADER
 // ────────────────────────────────────────────────────────────
 class _SkeletonLoader extends StatelessWidget {
   const _SkeletonLoader();
