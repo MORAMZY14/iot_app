@@ -117,22 +117,34 @@ class _CacheEntry {
 }
 
 // ────────────────────────────────────────────────────────────
-// 4. ESP32 DEVICE MANAGEMENT SERVICE
+// 4. ESP32 DEVICE MANAGEMENT SERVICE (UPDATED FOR GLOBAL)
 // ────────────────────────────────────────────────────────────
 class ESP32DeviceService {
   final String esp32Ip;
 
   ESP32DeviceService(this.esp32Ip);
 
+  // 🔥 UPDATED: Read devices from Firebase (works globally)
   Future<Map<String, dynamic>> getDevices() async {
     try {
+      final String databaseUrl = 'https://iot-smart-home-81abd-default-rtdb.europe-west1.firebasedatabase.app';
+      final String uid = FirebaseAuth.instance.currentUser!.uid;
+
       final response = await http.get(
-        Uri.parse('http://$esp32Ip/api/devices'),
+        Uri.parse('$databaseUrl/smartHome/$uid/devices.json'),
         headers: {'Cache-Control': 'no-cache'},
       ).timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200) {
-        return jsonDecode(response.body) as Map<String, dynamic>;
+        final Map<String, dynamic> data = jsonDecode(response.body).cast<String, dynamic>();
+        // Convert the Firebase JSON object into the expected list format
+        final List<Map<String, dynamic>> devicesList = [];
+        data.forEach((key, value) {
+          if (value is Map) {
+            devicesList.add(value.cast<String, dynamic>());
+          }
+        });
+        return {'devices': devicesList};
       }
       return {'devices': []};
     } catch (e) {
@@ -189,19 +201,20 @@ class ESP32DeviceService {
     }
   }
 
+  // 🔥 UPDATED: Control device via Firebase (works globally)
   Future<bool> controlDevice({
     required String id,
     required bool state,
   }) async {
     try {
-      final response = await http.post(
-        Uri.parse('http://$esp32Ip/api/devices/control'),
-        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-        body: {
-          'id': id,
-          'state': state.toString(),
-        },
-      ).timeout(const Duration(seconds: 3));
+      final String databaseUrl = 'https://iot-smart-home-81abd-default-rtdb.europe-west1.firebasedatabase.app';
+      final String uid = FirebaseAuth.instance.currentUser!.uid;
+
+      final response = await http.patch(
+        Uri.parse('$databaseUrl/smartHome/$uid/devices/$id.json'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'state': state}),
+      ).timeout(const Duration(seconds: 5));
 
       return response.statusCode == 200;
     } catch (e) {
@@ -225,13 +238,12 @@ class ESP32DeviceService {
     }
   }
 
+  // 🔥 UPDATED: When on 5G, return default GPIOs instead of crashing
   Future<List<int>> getAvailableGPIOs() async {
     try {
       final response = await http.get(
         Uri.parse('http://$esp32Ip/api/gpio/scan'),
       ).timeout(const Duration(seconds: 3));
-
-      print('GPIO scan response: ${response.statusCode} - ${response.body}');
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body) as Map<String, dynamic>;
@@ -240,7 +252,7 @@ class ESP32DeviceService {
       }
       return _getDefaultGPIOs();
     } catch (e) {
-      print('Error getting GPIOs: $e');
+      print('Error getting GPIOs (using defaults): $e');
       return _getDefaultGPIOs();
     }
   }
@@ -249,15 +261,29 @@ class ESP32DeviceService {
     return [4, 5, 13, 14, 16, 17, 18, 19, 21, 22, 23, 25, 26, 27, 32, 33];
   }
 
+  // 🔥 UPDATED: Read rooms from Firebase (works globally)
   Future<List<String>> getRooms() async {
     try {
+      final String databaseUrl = 'https://iot-smart-home-81abd-default-rtdb.europe-west1.firebasedatabase.app';
+      final String uid = FirebaseAuth.instance.currentUser!.uid;
+
       final response = await http.get(
-        Uri.parse('http://$esp32Ip/api/rooms'),
+        Uri.parse('$databaseUrl/smartHome/$uid/devices.json'),
+        headers: {'Cache-Control': 'no-cache'},
       ).timeout(const Duration(seconds: 3));
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body) as Map<String, dynamic>;
-        return (data['rooms'] as List? ?? []).map((e) => e as String).toList();
+        if (data != null) {
+          // Extract unique room names from devices
+          final Set<String> rooms = {};
+          data.forEach((key, value) {
+            if (value is Map && value.containsKey('room')) {
+              rooms.add(value['room'] as String);
+            }
+          });
+          return rooms.toList();
+        }
       }
       return ['Living Room', 'Bedroom', 'Kitchen', 'Bathroom'];
     } catch (e) {
