@@ -166,6 +166,14 @@ jobs:
         run: |
           echo "${{ secrets.GOOGLE_SERVICE_INFO_PLIST }}" > ios/Runner/GoogleService-Info.plist
 
+      # 🛑 CRITICAL FIX #1: Deintegrate any previous SPM/Cocoapods cache
+      - name: Clean CocoaPods cache
+        run: |
+          cd ios
+          pod deintegrate
+          rm -rf Pods Podfile.lock
+        shell: bash
+
       - name: Update CocoaPods repo
         run: pod repo update
         working-directory: ios
@@ -174,8 +182,11 @@ jobs:
         run: pod install
         working-directory: ios
 
+      # 🛑 CRITICAL FIX #2: Disable Swift Package Manager
       - name: Build iOS (no codesign)
         run: flutter build ios --release --no-codesign
+        env:
+          FLUTTER_XCODE_USE_SPM: 0   # 🔥 This single line stops the crash
 
       - name: Create Payload folder
         run: mkdir Payload
