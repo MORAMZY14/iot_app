@@ -59,7 +59,7 @@ class _SplashScreenState extends ConsumerState<SplashScreen> {
     return Column(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
-        // 🔥 ANIMATED LOGO
+        // 🔥 ANIMATED LOGO (No circle background)
         TweenAnimationBuilder<double>(
           tween: Tween<double>(begin: 0.0, end: 1.0),
           duration: const Duration(milliseconds: 1200),
@@ -70,19 +70,13 @@ class _SplashScreenState extends ConsumerState<SplashScreen> {
               child: child,
             );
           },
-          child: Container(
-            width: 200,
-            height: 200,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: Colors.white.withValues(alpha: 0.1),
-            ),
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Image.asset(
-                'assets/images/logo.png',
-                fit: BoxFit.contain,
-              ),
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Image.asset(
+              'assets/images/logo.png',
+              width: 200,
+              height: 200,
+              fit: BoxFit.contain,
             ),
           ),
         ),
@@ -133,7 +127,7 @@ class _SplashScreenState extends ConsumerState<SplashScreen> {
         ),
         const SizedBox(height: 20),
 
-        // 🔥 NEW: "Loading..." text
+        // 🔥 "Loading..." text
         TweenAnimationBuilder<double>(
           tween: Tween<double>(begin: 0.0, end: 1.0),
           duration: const Duration(milliseconds: 1000),
