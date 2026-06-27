@@ -334,7 +334,7 @@ final esp32IpProvider = FutureProvider<String>((ref) async {
     final response = await http.get(
       Uri.parse('$databaseUrl/esp_public/$code/status.json'),
       headers: {'Cache-Control': 'no-cache'},
-    ).timeout(const Duration(seconds: 3));
+    ).timeout(const Duration(seconds: 10));
 
     if (response.statusCode == 200) {
       final data = jsonDecode(response.body);
