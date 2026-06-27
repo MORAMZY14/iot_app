@@ -20,13 +20,12 @@ class _SplashScreenState extends ConsumerState<SplashScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      // 🔥 MATCH THE BACKGROUND COLOR TO YOUR LOGO
       backgroundColor: logoBackground,
       body: Center(
         child: ref.watch(authServiceProvider).when(
           data: (authService) {
-            // Wait a tiny bit for the animation to be visible
-            Future.delayed(const Duration(milliseconds: 500), () {
+            // 🔥 Wait a full 3 seconds so the user sees "Loading..."
+            Future.delayed(const Duration(seconds: 3), () {
               if (mounted) _navigate(authService);
             });
             return _buildAnimatedLogo();
@@ -72,15 +71,14 @@ class _SplashScreenState extends ConsumerState<SplashScreen> {
             );
           },
           child: Container(
-            width: 200, // Slightly larger because it's a square logo
+            width: 200,
             height: 200,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
-              color: Colors.white.withValues(alpha: 0.1), // Subtle glow
+              color: Colors.white.withValues(alpha: 0.1),
             ),
             child: Padding(
               padding: const EdgeInsets.all(16),
-              // ✅ SHOW YOUR LOGO HERE
               child: Image.asset(
                 'assets/images/logo.png',
                 fit: BoxFit.contain,
@@ -90,7 +88,7 @@ class _SplashScreenState extends ConsumerState<SplashScreen> {
         ),
         const SizedBox(height: 40),
 
-        // 🔥 ANIMATED APP NAME (White text to match the logo's white arrow)
+        // 🔥 ANIMATED APP NAME
         TweenAnimationBuilder<double>(
           tween: Tween<double>(begin: 0.0, end: 1.0),
           duration: const Duration(milliseconds: 1200),
@@ -106,14 +104,14 @@ class _SplashScreenState extends ConsumerState<SplashScreen> {
             style: TextStyle(
               fontSize: 32,
               fontWeight: FontWeight.w700,
-              color: Colors.white, // White to match your logo's white arrow
+              color: Colors.white,
               letterSpacing: 1.5,
             ),
           ),
         ),
         const SizedBox(height: 30),
 
-        // 🔥 PULSING LOADER (Pink to match your logo accent)
+        // 🔥 PULSING LOADER
         TweenAnimationBuilder<double>(
           tween: Tween<double>(begin: 0.5, end: 1.0),
           duration: const Duration(milliseconds: 1000),
@@ -128,8 +126,30 @@ class _SplashScreenState extends ConsumerState<SplashScreen> {
             width: 30,
             height: 30,
             child: CircularProgressIndicator(
-              color: Color(0xFFE91E63), // Bright pink to match your logo
+              color: Color(0xFFE91E63),
               strokeWidth: 3,
+            ),
+          ),
+        ),
+        const SizedBox(height: 20),
+
+        // 🔥 NEW: "Loading..." text
+        TweenAnimationBuilder<double>(
+          tween: Tween<double>(begin: 0.0, end: 1.0),
+          duration: const Duration(milliseconds: 1000),
+          curve: Curves.easeIn,
+          builder: (context, value, child) {
+            return Opacity(
+              opacity: value,
+              child: child,
+            );
+          },
+          child: const Text(
+            'Loading...',
+            style: TextStyle(
+              fontSize: 16,
+              color: Colors.white70,
+              letterSpacing: 1.0,
             ),
           ),
         ),
