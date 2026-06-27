@@ -1,19 +1,6 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <!--
-    If you are serving your web app in a path other than the root, change the
-    href value below to reflect the base path you are serving from.
-
-    The path provided below has to start and end with a slash "/" in order for
-    it to work correctly.
-
-    For more details:
-    * https://developer.mozilla.org/en-US/docs/Web/HTML/Element/base
-
-    This is a placeholder for base href that will be replaced by the value of
-    the `--base-href` argument provided to `flutter build`.
-  -->
   <base href="$FLUTTER_BASE_HREF">
 
   <meta charset="UTF-8">
@@ -29,10 +16,36 @@
   <!-- Favicon -->
   <link rel="icon" type="image/png" href="favicon.png"/>
 
-  <title>iot_app</title>
+  <title>Smart Home</title>
+
   <link rel="manifest" href="manifest.json">
+
+  <!-- Firebase SDK -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
+
+  <script>
+    // Your Firebase configuration
+    // Replace these values with your actual Firebase config from the Firebase Console
+    const firebaseConfig = {
+      apiKey: "AIzaSyAsgr28RWuPj4MzbO23LpayEYg1wYSJkqs",
+      authDomain: "iot-smart-home-81abd.firebaseapp.com",
+      databaseURL: "https://iot-smart-home-81abd-default-rtdb.europe-west1.firebasedatabase.app",
+      projectId: "iot-smart-home-81abd",
+      storageBucket: "iot-smart-home-81abd.firebasestorage.app",
+      messagingSenderId: "899142789545",
+      appId: "1:899142789545:web:1a64f8250e9f4f6de2fcb8"
+    };
+
+    // Initialize Firebase
+    firebase.initializeApp(firebaseConfig);
+
+    console.log('Firebase initialized successfully');
+  </script>
 </head>
 <body>
-  <script src="flutter_bootstrap.js" async></script>
+<script src="flutter_bootstrap.js" async></script>
 </body>
 </html>
