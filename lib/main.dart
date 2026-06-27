@@ -14,7 +14,7 @@ import 'auth_service.dart';
 import 'login_screen.dart';
 import 'splash_screen.dart';  // 🔥 NEW: Import your splash screen
 
-const String appVersion = '1.0.49';
+const String appVersion = '1.0.50';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
