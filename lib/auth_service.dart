@@ -1,13 +1,11 @@
 import 'dart:convert';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 class AuthService {
   final FirebaseAuth _auth = FirebaseAuth.instance;
-  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final String databaseUrl = 'https://iot-smart-home-81abd-default-rtdb.europe-west1.firebasedatabase.app';
 
   User? get currentUser => _auth.currentUser;
@@ -48,14 +46,25 @@ class AuthService {
         await user.updateDisplayName(displayName);
         await user.sendEmailVerification();
 
-        await _firestore.collection('users').doc(user.uid).set({
+        // 🔥 FIX: Write user data to Realtime Database, NOT Firestore
+        final userData = {
           'uid': user.uid,
           'email': email,
           'displayName': displayName,
           'esp32Code': esp32Code,
-          'createdAt': FieldValue.serverTimestamp(),
+          'createdAt': DateTime.now().millisecondsSinceEpoch,
           'emailVerified': false,
-        });
+        };
+
+        final userResponse = await http.put(
+          Uri.parse('$databaseUrl/users/${user.uid}.json'),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode(userData),
+        ).timeout(const Duration(seconds: 5));
+
+        if (userResponse.statusCode != 200) {
+          throw Exception('Failed to create user in Realtime Database');
+        }
 
         print('📝 Writing ownerUID to ESP public node...');
 
@@ -127,14 +136,17 @@ class AuthService {
     }
   }
 
+  // 🔥 FIX: Read user data from Realtime Database
   Future<Map<String, dynamic>?> getUserData(String uid) async {
     try {
-      DocumentSnapshot doc = await _firestore
-          .collection('users')
-          .doc(uid)
-          .get(const GetOptions(source: Source.server));
-      if (doc.exists) {
-        return doc.data() as Map<String, dynamic>;
+      final response = await http.get(
+        Uri.parse('$databaseUrl/users/$uid.json'),
+        headers: {'Cache-Control': 'no-cache'},
+      ).timeout(const Duration(seconds: 3));
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        return data as Map<String, dynamic>?;
       }
       return null;
     } catch (e) {
@@ -143,26 +155,35 @@ class AuthService {
     }
   }
 
+  // 🔥 FIX: Update ESP32 Code in Realtime Database
   Future<void> updateEsp32Code(String uid, String newCode) async {
     try {
-      await _firestore.collection('users').doc(uid).update({
-        'esp32Code': newCode,
-      });
+      final response = await http.patch(
+        Uri.parse('$databaseUrl/users/$uid.json'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'esp32Code': newCode}),
+      ).timeout(const Duration(seconds: 5));
+
+      if (response.statusCode != 200) {
+        throw Exception('HTTP ${response.statusCode}');
+      }
     } catch (e) {
       print('Error updating ESP32 Code: $e');
       rethrow;
     }
   }
 
+  // 🔥 FIX: Read ESP32 Code from Realtime Database
   Future<String?> getUserEsp32Code(String uid) async {
     try {
-      DocumentSnapshot doc = await _firestore
-          .collection('users')
-          .doc(uid)
-          .get(const GetOptions(source: Source.server));
-      if (doc.exists) {
-        Map<String, dynamic> data = doc.data() as Map<String, dynamic>;
-        return data['esp32Code'] as String?;
+      final response = await http.get(
+        Uri.parse('$databaseUrl/users/$uid/esp32Code.json'),
+        headers: {'Cache-Control': 'no-cache'},
+      ).timeout(const Duration(seconds: 3));
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        return data as String?;
       }
       return null;
     } catch (e) {
@@ -175,7 +196,10 @@ class AuthService {
     try {
       User? user = _auth.currentUser;
       if (user != null) {
-        await _firestore.collection('users').doc(user.uid).delete();
+        // 🔥 FIX: Delete user from Realtime Database
+        await http.delete(
+          Uri.parse('$databaseUrl/users/${user.uid}.json'),
+        ).timeout(const Duration(seconds: 3));
         await user.delete();
       }
     } catch (e) {

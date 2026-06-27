@@ -300,14 +300,16 @@ final userEsp32CodeProvider = FutureProvider<String?>((ref) async {
   final user = authService.currentUser;
 
   if (user != null) {
-    // 🔥 Force Firestore to read from the server, NOT the local cache
-    final doc = await FirebaseFirestore.instance
-        .collection('users')
-        .doc(user.uid)
-        .get(const GetOptions(source: Source.server));
+    // 🔥 FIX: Use Realtime Database instead of Firestore
+    final String databaseUrl = 'https://iot-smart-home-81abd-default-rtdb.europe-west1.firebasedatabase.app';
+    final response = await http.get(
+      Uri.parse('$databaseUrl/users/${user.uid}/esp32Code.json'),
+      headers: {'Cache-Control': 'no-cache'},
+    ).timeout(const Duration(seconds: 3));
 
-    if (doc.exists) {
-      return doc.data()?['esp32Code'] as String?;
+    if (response.statusCode == 200) {
+      final data = jsonDecode(response.body);
+      return data as String?;
     }
   }
   return null;
