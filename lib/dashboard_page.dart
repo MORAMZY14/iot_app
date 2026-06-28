@@ -153,6 +153,7 @@ class ESP32DeviceService {
     }
   }
 
+  // 🔥 UPDATED: Add device via Firebase (works globally)
   Future<bool> addDevice({
     required String name,
     required int type,
@@ -160,18 +161,28 @@ class ESP32DeviceService {
     required String room,
   }) async {
     try {
-      final response = await http.post(
-        Uri.parse('http://$esp32Ip/api/devices/add'),
-        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-        body: {
-          'name': name,
-          'type': type.toString(),
-          'gpio': gpio.toString(),
-          'room': room,
-        },
+      final String databaseUrl = 'https://iot-smart-home-81abd-default-rtdb.europe-west1.firebasedatabase.app';
+      final String uid = FirebaseAuth.instance.currentUser!.uid;
+
+      // Generate a unique device ID
+      final String id = 'dev_${DateTime.now().millisecondsSinceEpoch}';
+
+      final deviceData = {
+        'id': id,
+        'name': name,
+        'type': type,
+        'gpio': gpio,
+        'room': room,
+        'state': false,
+        'enabled': true,
+      };
+
+      final response = await http.put(
+        Uri.parse('$databaseUrl/smartHome/$uid/devices/$id.json'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode(deviceData),
       ).timeout(const Duration(seconds: 5));
 
-      print('Add device response: ${response.statusCode} - ${response.body}');
       return response.statusCode == 200;
     } catch (e) {
       print('Error adding device: $e');
@@ -179,21 +190,21 @@ class ESP32DeviceService {
     }
   }
 
+  // 🔥 UPDATED: Edit GPIO via Firebase (works globally)
   Future<bool> editDeviceGPIO({
     required String id,
     required int newGpio,
   }) async {
     try {
-      final response = await http.post(
-        Uri.parse('http://$esp32Ip/api/devices/edit-gpio'),
-        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-        body: {
-          'id': id,
-          'gpio': newGpio.toString(),
-        },
+      final String databaseUrl = 'https://iot-smart-home-81abd-default-rtdb.europe-west1.firebasedatabase.app';
+      final String uid = FirebaseAuth.instance.currentUser!.uid;
+
+      final response = await http.patch(
+        Uri.parse('$databaseUrl/smartHome/$uid/devices/$id.json'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'gpio': newGpio}),
       ).timeout(const Duration(seconds: 5));
 
-      print('Edit GPIO response: ${response.statusCode} - ${response.body}');
       return response.statusCode == 200;
     } catch (e) {
       print('Error editing GPIO: $e');
@@ -223,12 +234,14 @@ class ESP32DeviceService {
     }
   }
 
+  // 🔥 UPDATED: Remove device via Firebase (works globally)
   Future<bool> removeDevice(String id) async {
     try {
-      final response = await http.post(
-        Uri.parse('http://$esp32Ip/api/devices/remove'),
-        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-        body: {'id': id},
+      final String databaseUrl = 'https://iot-smart-home-81abd-default-rtdb.europe-west1.firebasedatabase.app';
+      final String uid = FirebaseAuth.instance.currentUser!.uid;
+
+      final response = await http.delete(
+        Uri.parse('$databaseUrl/smartHome/$uid/devices/$id.json'),
       ).timeout(const Duration(seconds: 3));
 
       return response.statusCode == 200;
