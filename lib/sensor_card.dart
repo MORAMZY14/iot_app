@@ -14,29 +14,26 @@ class SensorCard extends StatelessWidget {
     required this.color,
   });
 
-  // Pre‑compute the shadow once (avoids rebuilding in every frame)
-  static final BoxDecoration _cardDecoration = BoxDecoration(
-    color: Colors.white,
-    borderRadius: BorderRadius.circular(20),
-    boxShadow: [
-      BoxShadow(
-        color: Colors.grey.withOpacity(0.1),
-        spreadRadius: 2,
-        blurRadius: 5,
-        offset: const Offset(0, 2),
-      ),
-    ],
-  );
-
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    // Use theme color if the given color is not specified (fallback)
-    final effectiveColor = color ?? theme.primaryColor;
+    final effectiveColor = color;
+    final cardDecoration = BoxDecoration(
+      color: theme.cardColor,
+      borderRadius: BorderRadius.circular(20),
+      boxShadow: [
+        BoxShadow(
+          color: Colors.black.withValues(alpha: theme.brightness == Brightness.dark ? 0.18 : 0.08),
+          spreadRadius: 1,
+          blurRadius: 8,
+          offset: const Offset(0, 2),
+        ),
+      ],
+    );
 
     return Container(
       padding: const EdgeInsets.all(20),
-      decoration: _cardDecoration,
+      decoration: cardDecoration,
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [

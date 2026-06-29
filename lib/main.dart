@@ -4,17 +4,16 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:firebase_core/firebase_core.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 
 import 'firebase_options.dart';
 import 'dashboard_page.dart';
 import 'provisioning_page.dart';
 import 'wifi_config_page.dart';
-import 'auth_service.dart';
-import 'login_screen.dart';
 import 'splash_screen.dart';  // 🔥 NEW: Import your splash screen
+import 'login_screen.dart';
+import 'app_constants.dart';
 
-const String appVersion = '1.0.52';
+const String appVersion = AppConfig.appVersion;
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -86,6 +85,7 @@ class MyApp extends ConsumerWidget {
       home: const SplashScreen(),
 
       routes: {
+        '/login': (context) => const LoginScreen(),
         '/provision': (context) => const ProvisionPage(),
         '/wifiConfig': (context) => const WifiConfigPage(),
       },

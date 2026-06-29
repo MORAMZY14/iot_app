@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 import 'package:flutter/services.dart';
+import 'app_constants.dart';
 
 // ============================================================
 // 1. Providers for scanning and sending credentials
@@ -19,7 +20,7 @@ class ProvisionState {
   final List<WifiNetwork> networks;
   final String? errorMessage;
 
-  ProvisionState({
+  const ProvisionState({
     this.status = ProvisionStatus.initial,
     this.networks = const [],
     this.errorMessage,
@@ -29,11 +30,12 @@ class ProvisionState {
     ProvisionStatus? status,
     List<WifiNetwork>? networks,
     String? errorMessage,
+    bool clearErrorMessage = false,
   }) {
     return ProvisionState(
       status: status ?? this.status,
       networks: networks ?? this.networks,
-      errorMessage: errorMessage ?? this.errorMessage,
+      errorMessage: clearErrorMessage ? null : errorMessage ?? this.errorMessage,
     );
   }
 }
@@ -55,16 +57,16 @@ class WifiNetwork {
 }
 
 class ProvisionNotifier extends StateNotifier<ProvisionState> {
-  ProvisionNotifier() : super(ProvisionState());
+  ProvisionNotifier() : super(const ProvisionState());
 
   Future<void> scanNetworks() async {
     if (state.status == ProvisionStatus.loading) return;
-    state = state.copyWith(status: ProvisionStatus.loading, errorMessage: null);
+    state = state.copyWith(status: ProvisionStatus.loading, clearErrorMessage: true);
 
     try {
       final response = await http
-          .get(Uri.parse('http://192.168.4.1/scan'))
-          .timeout(const Duration(seconds: 10));
+          .get(Uri.parse('${AppConfig.esp32ApBaseUrl}/scan'))
+          .timeout(AppConfig.longTimeout);
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
@@ -91,15 +93,15 @@ class ProvisionNotifier extends StateNotifier<ProvisionState> {
 
   Future<void> sendCredentials(String ssid, String password, BuildContext context) async {
     if (state.status == ProvisionStatus.loading) return;
-    state = state.copyWith(status: ProvisionStatus.loading, errorMessage: null);
+    state = state.copyWith(status: ProvisionStatus.loading, clearErrorMessage: true);
 
     try {
       final response = await http
           .post(
-        Uri.parse('http://192.168.4.1/save'),
+        Uri.parse('${AppConfig.esp32ApBaseUrl}/save'),
         body: {'ssid': ssid, 'pass': password},
       )
-          .timeout(const Duration(seconds: 10));
+          .timeout(AppConfig.longTimeout);
 
       if (response.statusCode == 200) {
         state = state.copyWith(status: ProvisionStatus.success);
@@ -112,19 +114,23 @@ class ProvisionNotifier extends StateNotifier<ProvisionState> {
           status: ProvisionStatus.error,
           errorMessage: 'Save failed (HTTP ${response.statusCode})',
         );
-        _showSnack(context, state.errorMessage!, color: _DT.red);
+        if (context.mounted) {
+          _showSnack(context, state.errorMessage!, color: _DT.red);
+        }
       }
     } catch (e) {
       state = state.copyWith(
         status: ProvisionStatus.error,
         errorMessage: 'Error: $e',
       );
-      _showSnack(context, state.errorMessage!, color: _DT.red);
+      if (context.mounted) {
+        _showSnack(context, state.errorMessage!, color: _DT.red);
+      }
     }
   }
 
   void reset() {
-    state = ProvisionState();
+    state = const ProvisionState();
   }
 }
 
@@ -326,17 +332,23 @@ class ProvisionPage extends ConsumerStatefulWidget {
 
 class _ProvisionPageState extends ConsumerState<ProvisionPage> {
   final TextEditingController _passwordController = TextEditingController();
+  late final ProvisionNotifier _provisionNotifier;
 
   @override
   void initState() {
     super.initState();
-    Future.microtask(() => ref.read(provisionProvider.notifier).scanNetworks());
+    _provisionNotifier = ref.read(provisionProvider.notifier);
+    Future.microtask(() {
+      if (!mounted) return;
+      _provisionNotifier.scanNetworks();
+    });
   }
 
   @override
   void dispose() {
     _passwordController.dispose();
-    ref.read(provisionProvider.notifier).reset();
+    // Do not call ref.read() here. Riverpod refs cannot be used after
+    // the ConsumerState starts disposing/unmounting.
     super.dispose();
   }
 

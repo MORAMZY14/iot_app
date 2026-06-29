@@ -1,12 +1,13 @@
 import 'dart:convert';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'app_logger.dart';
+import 'app_constants.dart';
 
 class AuthService {
   final FirebaseAuth _auth = FirebaseAuth.instance;
-  final String databaseUrl = 'https://iot-smart-home-81abd-default-rtdb.europe-west1.firebasedatabase.app';
+  final String databaseUrl = AppConfig.databaseUrl;
 
   User? get currentUser => _auth.currentUser;
   Stream<User?> get userChanges => _auth.authStateChanges();
@@ -18,7 +19,7 @@ class AuthService {
     required String esp32Code,
   }) async {
     try {
-      print('🔍 Verifying ESP32 Code: $esp32Code');
+      logDebug('🔍 Verifying ESP32 Code: $esp32Code');
 
       final response = await http.get(
         Uri.parse('$databaseUrl/esp_public/$esp32Code/status.json'),
@@ -34,7 +35,7 @@ class AuthService {
         throw 'ESP32 is offline or not broadcasting. Please ensure your ESP32 is powered on.';
       }
 
-      print('✅ ESP32 Verified! IP: ${espData['ip']}');
+      logDebug('✅ ESP32 Verified! IP: ${espData['ip']}');
 
       UserCredential result = await _auth.createUserWithEmailAndPassword(
         email: email,
@@ -66,7 +67,7 @@ class AuthService {
           throw Exception('Failed to create user in Realtime Database');
         }
 
-        print('📝 Writing ownerUID to ESP public node...');
+        logDebug('📝 Writing ownerUID to ESP public node...');
 
         final claimResponse = await http.put(
           Uri.parse('$databaseUrl/esp_public/$esp32Code/ownerUID.json'),
@@ -75,19 +76,19 @@ class AuthService {
         ).timeout(const Duration(seconds: 5));
 
         if (claimResponse.statusCode == 200) {
-          print('✅ ESP claimed successfully!');
+          logDebug('✅ ESP claimed successfully!');
         } else {
-          print('⚠️ Failed to claim ESP: ${claimResponse.statusCode}');
+          logDebug('⚠️ Failed to claim ESP: ${claimResponse.statusCode}');
         }
 
         return user;
       }
       return null;
     } on FirebaseAuthException catch (e) {
-      print('🔥 Registration error: ${e.message}');
+      logDebug('🔥 Registration error: ${e.message}');
       rethrow;
     } catch (e) {
-      print('🔥 Registration error: $e');
+      logDebug('🔥 Registration error: $e');
       rethrow;
     }
   }
@@ -108,10 +109,10 @@ class AuthService {
       }
       return user;
     } on FirebaseAuthException catch (e) {
-      print('Sign in error: ${e.message}');
+      logDebug('Sign in error: ${e.message}');
       rethrow;
     } catch (e) {
-      print('Sign in error: $e');
+      logDebug('Sign in error: $e');
       rethrow;
     }
   }
@@ -124,7 +125,7 @@ class AuthService {
     try {
       await _auth.sendPasswordResetEmail(email: email);
     } on FirebaseAuthException catch (e) {
-      print('Password reset error: ${e.message}');
+      logDebug('Password reset error: ${e.message}');
       rethrow;
     }
   }
@@ -150,7 +151,7 @@ class AuthService {
       }
       return null;
     } catch (e) {
-      print('Error getting user data: $e');
+      logDebug('Error getting user data: $e');
       return null;
     }
   }
@@ -168,7 +169,7 @@ class AuthService {
         throw Exception('HTTP ${response.statusCode}');
       }
     } catch (e) {
-      print('Error updating ESP32 Code: $e');
+      logDebug('Error updating ESP32 Code: $e');
       rethrow;
     }
   }
@@ -187,7 +188,7 @@ class AuthService {
       }
       return null;
     } catch (e) {
-      print('Error getting ESP32 Code: $e');
+      logDebug('Error getting ESP32 Code: $e');
       return null;
     }
   }
@@ -203,7 +204,7 @@ class AuthService {
         await user.delete();
       }
     } catch (e) {
-      print('Error deleting account: $e');
+      logDebug('Error deleting account: $e');
       rethrow;
     }
   }

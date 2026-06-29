@@ -2,14 +2,16 @@ import 'dart:convert';
 import 'dart:async';
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 import 'package:shimmer/shimmer.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'ble_service.dart';
 import 'auth_service.dart';
+import 'app_logger.dart';
+import 'app_constants.dart';
 
 // ────────────────────────────────────────────────────────────
 // 0. THEME MANAGEMENT
@@ -18,6 +20,10 @@ final themeModeProvider = StateProvider<ThemeMode>((ref) => ThemeMode.system);
 
 // Nav index lives in a provider so theme changes don't reset it
 final selectedNavIndexProvider = StateProvider<int>((ref) => 0);
+
+// Bump this value after adding/editing/removing rooms or devices.
+// HomeContent is keyed from it, so the dashboard reloads immediately.
+final dashboardRefreshTickProvider = StateProvider<int>((ref) => 0);
 
 final lightTheme = ThemeData(
   useMaterial3: true,
@@ -117,17 +123,17 @@ class _CacheEntry {
 }
 
 // ────────────────────────────────────────────────────────────
-// 4. ESP32 DEVICE MANAGEMENT SERVICE (UPDATED FOR GLOBAL)
+// 4. ESP32 DEVICE MANAGEMENT SERVICE (FIXED)
 // ────────────────────────────────────────────────────────────
 class ESP32DeviceService {
   final String esp32Ip;
 
   ESP32DeviceService(this.esp32Ip);
 
-  // 🔥 UPDATED: Read devices from Firebase (works globally)
+  // Read devices from Firebase - FIXED null handling
   Future<Map<String, dynamic>> getDevices() async {
     try {
-      final String databaseUrl = 'https://iot-smart-home-81abd-default-rtdb.europe-west1.firebasedatabase.app';
+      final String databaseUrl = AppConfig.databaseUrl;
       final String uid = FirebaseAuth.instance.currentUser!.uid;
 
       final response = await http.get(
@@ -136,10 +142,19 @@ class ESP32DeviceService {
       ).timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200) {
-        final Map<String, dynamic> data = jsonDecode(response.body).cast<String, dynamic>();
-        // Convert the Firebase JSON object into the expected list format
+        final String responseBody = response.body;
+        if (responseBody.isEmpty || responseBody == 'null') {
+          return {'devices': []};
+        }
+
+        final dynamic data = jsonDecode(responseBody);
+        if (data == null) {
+          return {'devices': []};
+        }
+
+        final Map<String, dynamic> dataMap = data as Map<String, dynamic>;
         final List<Map<String, dynamic>> devicesList = [];
-        data.forEach((key, value) {
+        dataMap.forEach((key, value) {
           if (value is Map) {
             devicesList.add(value.cast<String, dynamic>());
           }
@@ -148,12 +163,12 @@ class ESP32DeviceService {
       }
       return {'devices': []};
     } catch (e) {
-      print('Error getting devices: $e');
+      logDebug('Error getting devices: $e');
       return {'devices': []};
     }
   }
 
-  // 🔥 UPDATED: Add device via Firebase (works globally)
+  // Add device via Firebase. GPIO uniqueness is GLOBAL across all rooms.
   Future<bool> addDevice({
     required String name,
     required int type,
@@ -161,10 +176,15 @@ class ESP32DeviceService {
     required String room,
   }) async {
     try {
-      final String databaseUrl = 'https://iot-smart-home-81abd-default-rtdb.europe-west1.firebasedatabase.app';
+      final usedGPIOs = await getUsedGPIOs();
+      if (usedGPIOs.contains(gpio)) {
+        logDebug('GPIO $gpio is already used by another device.');
+        return false;
+      }
+
+      final String databaseUrl = AppConfig.databaseUrl;
       final String uid = FirebaseAuth.instance.currentUser!.uid;
 
-      // Generate a unique device ID
       final String id = 'dev_${DateTime.now().millisecondsSinceEpoch}';
 
       final deviceData = {
@@ -185,18 +205,24 @@ class ESP32DeviceService {
 
       return response.statusCode == 200;
     } catch (e) {
-      print('Error adding device: $e');
+      logDebug('Error adding device: $e');
       return false;
     }
   }
 
-  // 🔥 UPDATED: Edit GPIO via Firebase (works globally)
+  // Edit GPIO via Firebase. The new GPIO must not be used by any other device.
   Future<bool> editDeviceGPIO({
     required String id,
     required int newGpio,
   }) async {
     try {
-      final String databaseUrl = 'https://iot-smart-home-81abd-default-rtdb.europe-west1.firebasedatabase.app';
+      final usedGPIOs = await getUsedGPIOs(excludingDeviceId: id);
+      if (usedGPIOs.contains(newGpio)) {
+        logDebug('GPIO $newGpio is already used by another device.');
+        return false;
+      }
+
+      final String databaseUrl = AppConfig.databaseUrl;
       final String uid = FirebaseAuth.instance.currentUser!.uid;
 
       final response = await http.patch(
@@ -207,18 +233,45 @@ class ESP32DeviceService {
 
       return response.statusCode == 200;
     } catch (e) {
-      print('Error editing GPIO: $e');
+      logDebug('Error editing GPIO: $e');
       return false;
     }
   }
 
-  // 🔥 UPDATED: Control device via Firebase (works globally)
+  // Control device quickly. If the phone can reach the ESP32 locally,
+  // use the ESP32 HTTP API first for near-instant GPIO switching. The ESP32
+  // will update Firebase after switching the GPIO. If local access fails,
+  // Firebase is used as the fallback path.
   Future<bool> controlDevice({
     required String id,
     required bool state,
   }) async {
     try {
-      final String databaseUrl = 'https://iot-smart-home-81abd-default-rtdb.europe-west1.firebasedatabase.app';
+      final localResponse = await http.post(
+        Uri.parse('http://$esp32Ip/api/devices/control'),
+        body: {
+          'id': id,
+          'state': state ? 'true' : 'false',
+        },
+      ).timeout(const Duration(milliseconds: 650));
+
+      if (localResponse.statusCode == 200) {
+        return true;
+      }
+    } catch (_) {
+      // Local ESP32 API is optional. This will fail when the phone is not on
+      // the same Wi-Fi network, so fall back to Firebase below.
+    }
+
+    return _controlDeviceViaFirebase(id: id, state: state);
+  }
+
+  Future<bool> _controlDeviceViaFirebase({
+    required String id,
+    required bool state,
+  }) async {
+    try {
+      final String databaseUrl = AppConfig.databaseUrl;
       final String uid = FirebaseAuth.instance.currentUser!.uid;
 
       final response = await http.patch(
@@ -229,15 +282,15 @@ class ESP32DeviceService {
 
       return response.statusCode == 200;
     } catch (e) {
-      print('Error controlling device: $e');
+      logDebug('Error controlling device: $e');
       return false;
     }
   }
 
-  // 🔥 UPDATED: Remove device via Firebase (works globally)
+  // Remove device via Firebase
   Future<bool> removeDevice(String id) async {
     try {
-      final String databaseUrl = 'https://iot-smart-home-81abd-default-rtdb.europe-west1.firebasedatabase.app';
+      final String databaseUrl = AppConfig.databaseUrl;
       final String uid = FirebaseAuth.instance.currentUser!.uid;
 
       final response = await http.delete(
@@ -246,12 +299,166 @@ class ESP32DeviceService {
 
       return response.statusCode == 200;
     } catch (e) {
-      print('Error removing device: $e');
+      logDebug('Error removing device: $e');
       return false;
     }
   }
 
-  // 🔥 UPDATED: When on 5G, return default GPIOs instead of crashing
+  // Save rooms to Firebase
+  Future<bool> saveRooms(List<String> rooms) async {
+    try {
+      final String databaseUrl = AppConfig.databaseUrl;
+      final String uid = FirebaseAuth.instance.currentUser!.uid;
+
+      final response = await http.put(
+        Uri.parse('$databaseUrl/smartHome/$uid/rooms.json'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode(rooms),
+      ).timeout(const Duration(seconds: 5));
+
+      return response.statusCode == 200;
+    } catch (e) {
+      logDebug('Error saving rooms: $e');
+      return false;
+    }
+  }
+
+
+
+  Future<bool> renameRoomInDevices({
+    required String oldRoom,
+    required String newRoom,
+  }) async {
+    try {
+      final String databaseUrl = AppConfig.databaseUrl;
+      final String uid = FirebaseAuth.instance.currentUser!.uid;
+
+      final devicesResult = await getDevices();
+      final devices = devicesResult['devices'] as List? ?? [];
+      bool ok = true;
+
+      for (final device in devices) {
+        if (device is Map && device['room'] == oldRoom && device['id'] != null) {
+          final id = device['id'].toString();
+          final response = await http.patch(
+            Uri.parse('$databaseUrl/smartHome/$uid/devices/$id.json'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({'room': newRoom}),
+          ).timeout(const Duration(seconds: 5));
+          ok = ok && response.statusCode == 200;
+        }
+      }
+
+      return ok;
+    } catch (e) {
+      logDebug('Error renaming room in devices: $e');
+      return false;
+    }
+  }
+  // Get rooms from Firebase. Important: do NOT invent default rooms.
+  // The dashboard should show no rooms until the user creates one.
+  Future<List<String>> getRooms() async {
+    List<String> normalizeRooms(dynamic data) {
+      final Set<String> rooms = {};
+
+      if (data is List) {
+        for (final item in data) {
+          final room = item?.toString().trim() ?? '';
+          if (room.isNotEmpty) rooms.add(room);
+        }
+      } else if (data is Map) {
+        for (final item in data.values) {
+          final room = item?.toString().trim() ?? '';
+          if (room.isNotEmpty) rooms.add(room);
+        }
+      }
+
+      final sorted = rooms.toList()..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+      return sorted;
+    }
+
+    try {
+      final String databaseUrl = AppConfig.databaseUrl;
+      final String uid = FirebaseAuth.instance.currentUser!.uid;
+
+      final response = await http.get(
+        Uri.parse('$databaseUrl/smartHome/$uid/rooms.json'),
+        headers: {'Cache-Control': 'no-cache'},
+      ).timeout(const Duration(seconds: 3));
+
+      if (response.statusCode == 200 && response.body.isNotEmpty && response.body != 'null') {
+        final rooms = normalizeRooms(jsonDecode(response.body));
+        if (rooms.isNotEmpty) return rooms;
+      }
+
+      // Migration fallback only: if old devices already have room names but no
+      // /rooms node exists yet, show those rooms. Do not create fake defaults.
+      final devicesResponse = await http.get(
+        Uri.parse('$databaseUrl/smartHome/$uid/devices.json'),
+        headers: {'Cache-Control': 'no-cache'},
+      ).timeout(const Duration(seconds: 3));
+
+      if (devicesResponse.statusCode == 200 && devicesResponse.body.isNotEmpty && devicesResponse.body != 'null') {
+        final dynamic data = jsonDecode(devicesResponse.body);
+        final Set<String> rooms = {};
+        if (data is Map) {
+          data.forEach((_, value) {
+            if (value is Map && value['room'] != null) {
+              final room = value['room'].toString().trim();
+              if (room.isNotEmpty) rooms.add(room);
+            }
+          });
+        }
+        final roomsList = rooms.toList()..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+        if (roomsList.isNotEmpty) {
+          await saveRooms(roomsList);
+          return roomsList;
+        }
+      }
+
+      return [];
+    } catch (e) {
+      logDebug('Error getting rooms: $e');
+      return [];
+    }
+  }
+
+  Future<Set<int>> getUsedGPIOs({String? excludingDeviceId}) async {
+    final result = await getDevices();
+    final devices = result['devices'] as List? ?? [];
+    final used = <int>{};
+
+    for (final device in devices) {
+      if (device is! Map) continue;
+
+      final id = device['id']?.toString();
+      if (excludingDeviceId != null && id == excludingDeviceId) continue;
+
+      final gpioValue = device['gpio'];
+      final gpio = gpioValue is int ? gpioValue : int.tryParse(gpioValue?.toString() ?? '');
+      if (gpio != null) used.add(gpio);
+    }
+
+    return used;
+  }
+
+  // GPIOs shown in menus. This combines the ESP scan with Firebase devices,
+  // then removes every pin already used anywhere, even in another room.
+  Future<List<int>> getSelectableGPIOs({String? excludingDeviceId, int? currentGpio}) async {
+    final scannedPins = await getAvailableGPIOs();
+    final usedPins = await getUsedGPIOs(excludingDeviceId: excludingDeviceId);
+
+    final pins = <int>{..._getDefaultGPIOs(), ...scannedPins};
+    if (currentGpio != null) pins.add(currentGpio);
+
+    final selectable = pins
+        .where((pin) => !usedPins.contains(pin) || pin == currentGpio)
+        .toList()
+      ..sort();
+
+    return selectable;
+  }
+
   Future<List<int>> getAvailableGPIOs() async {
     try {
       final response = await http.get(
@@ -265,43 +472,13 @@ class ESP32DeviceService {
       }
       return _getDefaultGPIOs();
     } catch (e) {
-      print('Error getting GPIOs (using defaults): $e');
+      logDebug('Error getting GPIOs (using defaults): $e');
       return _getDefaultGPIOs();
     }
   }
 
   List<int> _getDefaultGPIOs() {
     return [4, 5, 13, 14, 16, 17, 18, 19, 21, 22, 23, 25, 26, 27, 32, 33];
-  }
-
-  // 🔥 UPDATED: Read rooms from Firebase (works globally)
-  Future<List<String>> getRooms() async {
-    try {
-      final String databaseUrl = 'https://iot-smart-home-81abd-default-rtdb.europe-west1.firebasedatabase.app';
-      final String uid = FirebaseAuth.instance.currentUser!.uid;
-
-      final response = await http.get(
-        Uri.parse('$databaseUrl/smartHome/$uid/devices.json'),
-        headers: {'Cache-Control': 'no-cache'},
-      ).timeout(const Duration(seconds: 3));
-
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body) as Map<String, dynamic>;
-        if (data != null) {
-          // Extract unique room names from devices
-          final Set<String> rooms = {};
-          data.forEach((key, value) {
-            if (value is Map && value.containsKey('room')) {
-              rooms.add(value['room'] as String);
-            }
-          });
-          return rooms.toList();
-        }
-      }
-      return ['Living Room', 'Bedroom', 'Kitchen', 'Bathroom'];
-    } catch (e) {
-      return ['Living Room', 'Bedroom', 'Kitchen', 'Bathroom'];
-    }
   }
 
   Future<List<Map<String, dynamic>>> getDeviceTypes() async {
@@ -332,14 +509,14 @@ class ESP32DeviceService {
 }
 
 // ────────────────────────────────────────────────────────────
-// 5. ESP32 IP PROVIDER (UPDATED FOR UNIQUE CODE)
+// 5. ESP32 IP PROVIDER
 // ────────────────────────────────────────────────────────────
 final userEsp32CodeProvider = FutureProvider<String?>((ref) async {
   final authService = await ref.watch(authServiceProvider.future);
   final user = authService.currentUser;
 
   if (user != null) {
-    final String databaseUrl = 'https://iot-smart-home-81abd-default-rtdb.europe-west1.firebasedatabase.app';
+    final String databaseUrl = AppConfig.databaseUrl;
     final response = await http.get(
       Uri.parse('$databaseUrl/users/${user.uid}/esp32Code.json'),
       headers: {'Cache-Control': 'no-cache'},
@@ -362,9 +539,9 @@ final esp32IpProvider = FutureProvider<String>((ref) async {
     return '192.168.1.9';
   }
 
-  print('🔎 Looking up IP for ESP32 Code: $code');
+  logDebug('🔎 Looking up IP for ESP32 Code: $code');
 
-  final String databaseUrl = 'https://iot-smart-home-81abd-default-rtdb.europe-west1.firebasedatabase.app';
+  final String databaseUrl = AppConfig.databaseUrl;
 
   try {
     final response = await http.get(
@@ -379,7 +556,7 @@ final esp32IpProvider = FutureProvider<String>((ref) async {
       }
     }
   } catch (e) {
-    print('Error fetching IP from esp_public: $e');
+    logDebug('Error fetching IP from esp_public: $e');
   }
 
   try {
@@ -395,7 +572,7 @@ final esp32IpProvider = FutureProvider<String>((ref) async {
       }
     }
   } catch (e) {
-    print('Error fetching IP from user node: $e');
+    logDebug('Error fetching IP from user node: $e');
   }
 
   return '192.168.1.9';
@@ -407,10 +584,10 @@ final esp32DeviceServiceProvider = FutureProvider<ESP32DeviceService>((ref) asyn
 });
 
 // ────────────────────────────────────────────────────────────
-// 6. HTTP POLLING SERVICE WITH CACHING (UPDATED)
+// 6. HTTP POLLING SERVICE WITH CACHING
 // ────────────────────────────────────────────────────────────
 final databaseUrlProvider = Provider((ref) =>
-'https://iot-smart-home-81abd-default-rtdb.europe-west1.firebasedatabase.app');
+AppConfig.databaseUrl);
 
 final httpDataProvider = FutureProvider<Map<String, dynamic>>((ref) async {
   final url = ref.watch(databaseUrlProvider);
@@ -505,7 +682,7 @@ final httpDataProvider = FutureProvider<Map<String, dynamic>>((ref) async {
 });
 
 // ────────────────────────────────────────────────────────────
-// 7. BLE + HTTP MERGED DATA PROVIDER (FIXED)
+// 7. BLE + HTTP MERGED DATA PROVIDER
 // ────────────────────────────────────────────────────────────
 final bleServiceProvider = Provider<BleService>((ref) => BleService());
 
@@ -516,7 +693,6 @@ final smartHomeDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
   Timer? httpTimer;
   final cache = CacheService();
 
-  // 🔥 FIX: Convert AsyncValue to AuthService using .requireValue
   final authService = ref.watch(authServiceProvider).requireValue;
   final user = authService.currentUser;
 
@@ -592,20 +768,9 @@ final smartHomeDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
 
   httpTimer = Timer.periodic(const Duration(seconds: 5), (_) => fetchHttpData());
 
-  Future<void> connectWithRetry() async {
-    int attempts = 0;
-    while (attempts < 3) {
-      try {
-        await bleService.connect();
-        break;
-      } catch (_) {
-        attempts++;
-        if (attempts < 3) await Future.delayed(Duration(seconds: attempts));
-      }
-    }
-  }
-
-  connectWithRetry();
+  // BLE is optional. Do not auto-connect here, especially on Flutter Web,
+  // because Web Bluetooth opens a browser chooser and throws if the user cancels.
+  // Use the explicit BLE connect button instead.
 
   ref.onDispose(() {
     bleStatusSub.cancel();
@@ -798,11 +963,14 @@ class _DashboardPageState extends ConsumerState<DashboardPage>
   }
 
   Future<void> _manualRefresh() async {
-    final bleService = ref.read(bleServiceProvider);
-    await bleService.connect();
+    // Do not auto-open the browser Web Bluetooth chooser during normal refresh.
+    // BLE connection is now only started from the explicit BLE button.
+    if (!kIsWeb) {
+      final bleService = ref.read(bleServiceProvider);
+      await bleService.connect();
+    }
     ref.invalidate(httpDataProvider);
 
-    final authService = ref.read(authServiceProvider).requireValue;
     if (mounted) _showSnack(context, 'Refreshed ✓', color: _DT.green);
   }
 
@@ -1055,17 +1223,23 @@ class _EditGPIODialogState extends ConsumerState<_EditGPIODialog> {
   Future<void> _loadAvailableGPIOs() async {
     try {
       final service = await ref.read(esp32DeviceServiceProvider.future);
-      final gpios = await service.getAvailableGPIOs();
+      final gpios = await service.getSelectableGPIOs(
+        excludingDeviceId: widget.deviceId,
+        currentGpio: widget.currentGpio,
+      );
+      if (!mounted) return;
       setState(() {
         _availableGPIOs = gpios;
-        if (!_availableGPIOs.contains(widget.currentGpio)) {
-          _availableGPIOs.add(widget.currentGpio);
-          _availableGPIOs.sort();
-        }
+        _selectedGpio = gpios.contains(widget.currentGpio)
+            ? widget.currentGpio
+            : (gpios.isNotEmpty ? gpios.first : widget.currentGpio);
       });
     } catch (e) {
-      _availableGPIOs = [4, 5, 13, 14, 16, 17, 18, 19, 21, 22, 23, 25, 26, 27, 32, 33];
-      setState(() {});
+      if (!mounted) return;
+      setState(() {
+        _availableGPIOs = [widget.currentGpio];
+        _selectedGpio = widget.currentGpio;
+      });
     }
   }
 
@@ -1091,6 +1265,7 @@ class _EditGPIODialogState extends ConsumerState<_EditGPIODialog> {
 
       if (mounted) {
         if (success) {
+          ref.read(dashboardRefreshTickProvider.notifier).state++;
           Navigator.pop(context, true);
           await _refreshDevices();
           _showSnack(context, '✅ GPIO updated successfully!', color: _DT.green);
@@ -1114,7 +1289,7 @@ class _EditGPIODialogState extends ConsumerState<_EditGPIODialog> {
         setState(() {});
       }
     } catch (e) {
-      print('Error refreshing devices: $e');
+      logDebug('Error refreshing devices: $e');
     }
   }
 
@@ -1198,7 +1373,9 @@ class _EditGPIODialogState extends ConsumerState<_EditGPIODialog> {
                       ),
                     );
                   }).toList(),
-                  onChanged: (value) {
+                  onChanged: _isLoading || _availableGPIOs.isEmpty
+                      ? null
+                      : (value) {
                     if (value != null) {
                       setState(() => _selectedGpio = value);
                     }
@@ -1255,7 +1432,7 @@ class _EditGPIODialogState extends ConsumerState<_EditGPIODialog> {
 }
 
 // ────────────────────────────────────────────────────────────
-// 13. QUICK ACTION DIALOG (UPDATED WITH ROOM MANAGEMENT)
+// 13. QUICK ACTION DIALOG
 // ────────────────────────────────────────────────────────────
 class _QuickActionDialog extends ConsumerStatefulWidget {
   const _QuickActionDialog();
@@ -1267,10 +1444,10 @@ class _QuickActionDialog extends ConsumerStatefulWidget {
 class _QuickActionDialogState extends ConsumerState<_QuickActionDialog> {
   final _formKey = GlobalKey<FormState>();
   final _nameController = TextEditingController();
-  final _gpioController = TextEditingController();
+  int? _selectedGpio;
 
   int _selectedType = 0;
-  String _selectedRoom = 'Living Room';
+  String _selectedRoom = '';
   bool _isLoading = false;
 
   List<String> _rooms = [];
@@ -1284,466 +1461,482 @@ class _QuickActionDialogState extends ConsumerState<_QuickActionDialog> {
   }
 
   Future<void> _loadData() async {
-    setState(() => _isLoading = true);
+    if (mounted) setState(() => _isLoading = true);
+
+    final fallbackTypes = <Map<String, dynamic>>[
+      {'type': 0, 'name': 'Light', 'icon': 'lightbulb'},
+      {'type': 1, 'name': 'Fan', 'icon': 'fan'},
+      {'type': 2, 'name': 'Switch', 'icon': 'power'},
+      {'type': 3, 'name': 'Socket', 'icon': 'power_plug'},
+    ];
 
     try {
       final service = await ref.read(esp32DeviceServiceProvider.future);
 
-      List<int> gpios = [];
-      List<String> rooms = [];
-      List<Map<String, dynamic>> types = [];
+      List<int> gpios;
+      List<String> rooms;
+      List<Map<String, dynamic>> types;
 
       try {
-        gpios = await service.getAvailableGPIOs().timeout(const Duration(seconds: 3));
+        gpios = await service.getSelectableGPIOs().timeout(const Duration(seconds: 3));
       } catch (e) {
-        print('GPIO fetch failed: $e');
-        gpios = [4, 5, 13, 14, 16, 17, 18, 19, 21, 22, 23, 25, 26, 27, 32, 33];
+        logDebug('GPIO fetch failed: $e');
+        gpios = [];
       }
 
       try {
         rooms = await service.getRooms().timeout(const Duration(seconds: 3));
       } catch (e) {
-        print('Rooms fetch failed: $e');
-        rooms = ['Living Room', 'Bedroom', 'Kitchen', 'Bathroom'];
+        logDebug('Rooms fetch failed: $e');
+        rooms = [];
       }
 
       try {
         types = await service.getDeviceTypes().timeout(const Duration(seconds: 3));
+        if (types.isEmpty) types = fallbackTypes;
       } catch (e) {
-        print('Types fetch failed: $e');
-        types = [
-          {'type': 0, 'name': 'Light', 'icon': 'lightbulb'},
-          {'type': 1, 'name': 'Fan', 'icon': 'fan'},
-          {'type': 2, 'name': 'Switch', 'icon': 'power'},
-          {'type': 3, 'name': 'Socket', 'icon': 'power_plug'},
-        ];
+        logDebug('Types fetch failed: $e');
+        types = fallbackTypes;
       }
 
+      if (!mounted) return;
       setState(() {
         _availableGPIOs = gpios;
+        _selectedGpio = gpios.isNotEmpty ? gpios.first : null;
         _rooms = rooms;
+        _selectedRoom = rooms.isNotEmpty ? rooms.first : '';
         _deviceTypes = types;
         _isLoading = false;
       });
-
-      if (gpios.isEmpty && mounted) {
-        _showSnack(context, '⚠️ Using default GPIOs (ESP32 not responding)', color: Colors.orange);
-      }
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _isLoading = false;
-        _availableGPIOs = [4, 5, 13, 14, 16, 17, 18, 19, 21, 22, 23, 25, 26, 27, 32, 33];
-        _rooms = ['Living Room', 'Bedroom', 'Kitchen', 'Bathroom'];
-        _deviceTypes = [
-          {'type': 0, 'name': 'Light', 'icon': 'lightbulb'},
-          {'type': 1, 'name': 'Fan', 'icon': 'fan'},
-          {'type': 2, 'name': 'Switch', 'icon': 'power'},
-          {'type': 3, 'name': 'Socket', 'icon': 'power_plug'},
-        ];
+        _availableGPIOs = [];
+        _selectedGpio = null;
+        _rooms = [];
+        _selectedRoom = '';
+        _deviceTypes = fallbackTypes;
       });
-      if (mounted) {
-        _showSnack(context, '⚠️ ESP32 not responding, using defaults', color: Colors.orange);
-      }
+      _showSnack(context, '⚠️ Could not load GPIOs. Connect the ESP32 or refresh.', color: Colors.orange);
     }
   }
 
-  // 🔥 NEW: Show Room Management Dialog
-  void _showRoomManagementDialog() {
-    showDialog(
+  Future<void> _showRoomManagementDialog() async {
+    final updatedRooms = await showDialog<List<String>>(
       context: context,
       builder: (context) => _RoomManagementDialog(
         rooms: _rooms,
-        onRoomsUpdated: (updatedRooms) {
+        onRoomsUpdated: (updatedRooms) async {
+          if (!mounted) return;
           setState(() {
             _rooms = updatedRooms;
-            if (!_rooms.contains(_selectedRoom)) {
-              _selectedRoom = _rooms.isNotEmpty ? _rooms.first : '';
-            }
+            _selectedRoom = _rooms.contains(_selectedRoom)
+                ? _selectedRoom
+                : (_rooms.isNotEmpty ? _rooms.first : '');
           });
+          ref.read(dashboardRefreshTickProvider.notifier).state++;
         },
       ),
     );
+
+    if (updatedRooms != null && mounted) {
+      setState(() {
+        _rooms = updatedRooms;
+        _selectedRoom = _rooms.contains(_selectedRoom)
+            ? _selectedRoom
+            : (_rooms.isNotEmpty ? _rooms.first : '');
+      });
+    }
   }
 
   Future<void> _addDevice() async {
+    if (_rooms.isEmpty || _selectedRoom.isEmpty) {
+      _showSnack(context, 'Add a room first, then add devices inside it.', color: Colors.orange);
+      await _showRoomManagementDialog();
+      return;
+    }
+
+    if (_selectedGpio == null || !_availableGPIOs.contains(_selectedGpio)) {
+      _showSnack(context, 'No free GPIO is available. Edit or remove another device first.', color: Colors.orange);
+      return;
+    }
+
     if (!_formKey.currentState!.validate()) return;
 
     setState(() => _isLoading = true);
 
     try {
       final service = await ref.read(esp32DeviceServiceProvider.future);
+
+      // Re-check Firebase right before saving. This prevents duplicate GPIOs
+      // if another room/device was added before the dialog refreshed.
+      final latestFreeGPIOs = await service.getSelectableGPIOs();
+      if (!latestFreeGPIOs.contains(_selectedGpio)) {
+        if (!mounted) return;
+        setState(() {
+          _availableGPIOs = latestFreeGPIOs;
+          _selectedGpio = latestFreeGPIOs.isNotEmpty ? latestFreeGPIOs.first : null;
+          _isLoading = false;
+        });
+        _showSnack(context, 'GPIO already used by another device. Choose another pin.', color: Colors.orange);
+        return;
+      }
+
       final success = await service.addDevice(
         name: _nameController.text.trim(),
         type: _selectedType,
-        gpio: int.parse(_gpioController.text.trim()),
+        gpio: _selectedGpio!,
         room: _selectedRoom,
       );
 
+      if (!mounted) return;
       setState(() => _isLoading = false);
 
       if (success) {
-        if (mounted) {
-          Navigator.pop(context);
-          await _refreshDevices();
-          _showSnack(context, '✅ Device added successfully!', color: _DT.green);
-        }
+        ref.read(dashboardRefreshTickProvider.notifier).state++;
+        ref.invalidate(httpDataProvider);
+        Navigator.pop(context);
+        _showSnack(context, '✅ Device added successfully!', color: _DT.green);
       } else {
-        if (mounted) {
-          _showSnack(context, '❌ Failed to add device', color: _DT.red);
-        }
+        _showSnack(context, '❌ Failed to add device', color: _DT.red);
       }
     } catch (e) {
+      if (!mounted) return;
       setState(() => _isLoading = false);
-      if (mounted) {
-        _showSnack(context, '❌ Error: ${e.toString()}', color: _DT.red);
-      }
-    }
-  }
-
-  Future<void> _refreshDevices() async {
-    try {
-      final service = await ref.read(esp32DeviceServiceProvider.future);
-      final result = await service.getDevices();
-      if (mounted) {
-        final homeContentState = context.findAncestorStateOfType<_HomeContentState>();
-        if (homeContentState != null) {
-          homeContentState.updateDevices(result);
-        }
-      }
-    } catch (e) {
-      print('Error refreshing devices: $e');
+      _showSnack(context, '❌ Error: ${e.toString()}', color: _DT.red);
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      height: MediaQuery.of(context).size.height * 0.75,
-      decoration: const BoxDecoration(
-        color: Colors.transparent,
-      ),
-      child: _GCard(
-        padding: const EdgeInsets.all(24),
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(30)),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+    final bottomInset = MediaQuery.of(context).viewInsets.bottom;
+
+    return AnimatedPadding(
+      duration: const Duration(milliseconds: 220),
+      curve: Curves.easeOutCubic,
+      padding: EdgeInsets.only(bottom: bottomInset),
+      child: SafeArea(
+        top: false,
+        child: Container(
+          constraints: BoxConstraints(
+            maxHeight: MediaQuery.of(context).size.height * 0.88,
+          ),
+          decoration: const BoxDecoration(color: Colors.transparent),
+          child: _GCard(
+            padding: const EdgeInsets.all(24),
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(30)),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
               children: [
-                const Text(
-                  'Add New Device',
-                  style: TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
                 Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    // 🔥 NEW: Manage Rooms Button
-                    IconButton(
-                      icon: const Icon(Icons.settings_rounded),
-                      onPressed: _showRoomManagementDialog,
-                      tooltip: 'Manage Rooms',
+                    const Text(
+                      'Add New Device',
+                      style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
                     ),
-                    IconButton(
-                      onPressed: () => Navigator.pop(context),
-                      icon: Icon(
-                        Icons.close_rounded,
-                        color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5),
-                      ),
+                    Row(
+                      children: [
+                        IconButton(
+                          icon: const Icon(Icons.meeting_room_rounded),
+                          onPressed: _isLoading ? null : _showRoomManagementDialog,
+                          tooltip: 'Manage Rooms',
+                        ),
+                        IconButton(
+                          onPressed: () => Navigator.pop(context),
+                          icon: Icon(
+                            Icons.close_rounded,
+                            color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5),
+                          ),
+                        ),
+                      ],
                     ),
                   ],
                 ),
-              ],
-            ),
-            const SizedBox(height: 4),
-            Text(
-              'Connect a new device to your ESP32',
-              style: TextStyle(
-                fontSize: 14,
-                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5),
-              ),
-            ),
-            const SizedBox(height: 20),
-            Expanded(
-              child: _isLoading && _rooms.isEmpty
-                  ? const Center(
-                child: CircularProgressIndicator(color: _DT.purple),
-              )
-                  : SingleChildScrollView(
-                child: Form(
-                  key: _formKey,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Device Name',
-                        style: TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w600,
-                          color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
-                        ),
-                      ),
-                      const SizedBox(height: 6),
-                      TextFormField(
-                        controller: _nameController,
-                        decoration: InputDecoration(
-                          hintText: 'e.g. Living Room Lamp',
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(12),
-                            borderSide: BorderSide(
-                              color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.1),
-                            ),
-                          ),
-                          enabledBorder: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(12),
-                            borderSide: BorderSide(
-                              color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.1),
-                            ),
-                          ),
-                          focusedBorder: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(12),
-                            borderSide: const BorderSide(color: _DT.purple, width: 2),
-                          ),
-                          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-                        ),
-                        validator: (value) {
-                          if (value == null || value.trim().isEmpty) {
-                            return 'Please enter a device name';
-                          }
-                          return null;
-                        },
-                      ),
-                      const SizedBox(height: 16),
-                      Text(
-                        'Device Type',
-                        style: TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w600,
-                          color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
-                        ),
-                      ),
-                      const SizedBox(height: 6),
-                      SizedBox(
-                        height: 48,
-                        child: ListView.separated(
-                          scrollDirection: Axis.horizontal,
-                          itemCount: _deviceTypes.length,
-                          separatorBuilder: (_, __) => const SizedBox(width: 8),
-                          itemBuilder: (context, index) {
-                            final type = _deviceTypes[index];
-                            final isSelected = _selectedType == type['type'];
-                            return GestureDetector(
-                              onTap: () => setState(() => _selectedType = type['type'] as int),
-                              child: Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                                decoration: BoxDecoration(
-                                  borderRadius: BorderRadius.circular(20),
-                                  color: isSelected ? _DT.purple : Colors.transparent,
-                                  border: Border.all(
-                                    color: isSelected ? _DT.purple : Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.1),
-                                    width: 1.5,
+                const SizedBox(height: 4),
+                Text(
+                  _rooms.isEmpty
+                      ? 'Create your first room before adding devices.'
+                      : 'Connect a new device to your ESP32',
+                  style: TextStyle(
+                    fontSize: 14,
+                    color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5),
+                  ),
+                ),
+                const SizedBox(height: 20),
+                Flexible(
+                  child: _isLoading && _deviceTypes.isEmpty
+                      ? const Center(child: CircularProgressIndicator(color: _DT.purple))
+                      : SingleChildScrollView(
+                    keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+                    child: Form(
+                      key: _formKey,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          if (_rooms.isEmpty) ...[
+                            _GCard(
+                              padding: const EdgeInsets.all(16),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    children: [
+                                      const Icon(Icons.info_outline_rounded, color: _DT.purple),
+                                      const SizedBox(width: 10),
+                                      Expanded(
+                                        child: Text(
+                                          'No rooms yet',
+                                          style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                                            fontWeight: FontWeight.w700,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
                                   ),
-                                ),
-                                child: Row(
-                                  children: [
-                                    Icon(
-                                      _getIconForType(type['type'] as int),
-                                      size: 18,
-                                      color: isSelected ? Colors.white : _DT.purple,
+                                  const SizedBox(height: 8),
+                                  Text(
+                                    'Add a room first. After that, it will appear on the dashboard even before adding devices.',
+                                    style: TextStyle(
+                                      fontSize: 13,
+                                      color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6),
                                     ),
-                                    const SizedBox(width: 6),
-                                    Text(
-                                      type['name'] as String,
-                                      style: TextStyle(
-                                        fontSize: 13,
-                                        fontWeight: FontWeight.w500,
-                                        color: isSelected ? Colors.white : Theme.of(context).colorScheme.onSurface,
+                                  ),
+                                  const SizedBox(height: 14),
+                                  SizedBox(
+                                    width: double.infinity,
+                                    child: ElevatedButton.icon(
+                                      onPressed: _showRoomManagementDialog,
+                                      icon: const Icon(Icons.add_rounded),
+                                      label: const Text('Add Room'),
+                                      style: ElevatedButton.styleFrom(
+                                        backgroundColor: _DT.purple,
+                                        foregroundColor: Colors.white,
+                                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                                        padding: const EdgeInsets.symmetric(vertical: 14),
                                       ),
                                     ),
-                                  ],
-                                ),
+                                  ),
+                                ],
                               ),
-                            );
-                          },
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-
-                      // 🔥 FIX: GPIO + Room Row with keyboard handling
-                      SingleChildScrollView(
-                        child: Column(
-                          children: [
-                            Row(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        'GPIO Pin',
-                                        style: TextStyle(
-                                          fontSize: 14,
-                                          fontWeight: FontWeight.w600,
-                                          color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
-                                        ),
+                            ),
+                            const SizedBox(height: 18),
+                          ],
+                          Text(
+                            'Device Name',
+                            style: TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w600,
+                              color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          TextFormField(
+                            controller: _nameController,
+                            enabled: _rooms.isNotEmpty && !_isLoading,
+                            textInputAction: TextInputAction.next,
+                            decoration: InputDecoration(
+                              hintText: 'e.g. Living Room Lamp',
+                              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                            ),
+                            validator: (value) {
+                              if (value == null || value.trim().isEmpty) {
+                                return 'Please enter a device name';
+                              }
+                              return null;
+                            },
+                          ),
+                          const SizedBox(height: 16),
+                          Text(
+                            'Device Type',
+                            style: TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w600,
+                              color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          SizedBox(
+                            height: 48,
+                            child: ListView.separated(
+                              scrollDirection: Axis.horizontal,
+                              itemCount: _deviceTypes.length,
+                              separatorBuilder: (_, __) => const SizedBox(width: 8),
+                              itemBuilder: (context, index) {
+                                final type = _deviceTypes[index];
+                                final isSelected = _selectedType == type['type'];
+                                return GestureDetector(
+                                  onTap: _rooms.isEmpty || _isLoading
+                                      ? null
+                                      : () => setState(() => _selectedType = type['type'] as int),
+                                  child: AnimatedContainer(
+                                    duration: const Duration(milliseconds: 180),
+                                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                                    decoration: BoxDecoration(
+                                      borderRadius: BorderRadius.circular(20),
+                                      color: isSelected ? _DT.purple : Colors.transparent,
+                                      border: Border.all(
+                                        color: isSelected
+                                            ? _DT.purple
+                                            : Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.1),
+                                        width: 1.5,
                                       ),
-                                      const SizedBox(height: 6),
-                                      TextFormField(
-                                        controller: _gpioController,
-                                        keyboardType: TextInputType.number,
-                                        decoration: InputDecoration(
-                                          hintText: 'e.g. 14',
-                                          border: OutlineInputBorder(
-                                            borderRadius: BorderRadius.circular(12),
-                                            borderSide: BorderSide(
-                                              color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.1),
-                                            ),
-                                          ),
-                                          enabledBorder: OutlineInputBorder(
-                                            borderRadius: BorderRadius.circular(12),
-                                            borderSide: BorderSide(
-                                              color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.1),
-                                            ),
-                                          ),
-                                          focusedBorder: OutlineInputBorder(
-                                            borderRadius: BorderRadius.circular(12),
-                                            borderSide: const BorderSide(color: _DT.purple, width: 2),
-                                          ),
-                                          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                                    ),
+                                    child: Row(
+                                      children: [
+                                        Icon(
+                                          _getIconForType(type['type'] as int),
+                                          size: 18,
+                                          color: isSelected ? Colors.white : _DT.purple,
                                         ),
-                                        validator: (value) {
-                                          if (value == null || value.trim().isEmpty) {
-                                            return 'Required';
-                                          }
-                                          final pin = int.tryParse(value.trim());
-                                          if (pin == null) {
-                                            return 'Invalid number';
-                                          }
-                                          if (!_availableGPIOs.contains(pin)) {
-                                            return 'GPIO ${pin} not available';
-                                          }
-                                          return null;
-                                        },
-                                      ),
-                                    ],
+                                        const SizedBox(width: 6),
+                                        Text(
+                                          type['name'] as String,
+                                          style: TextStyle(
+                                            fontSize: 13,
+                                            fontWeight: FontWeight.w500,
+                                            color: isSelected
+                                                ? Colors.white
+                                                : Theme.of(context).colorScheme.onSurface,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
                                   ),
-                                ),
-                                const SizedBox(width: 12),
+                                );
+                              },
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+                          Text(
+                            'GPIO Pin',
+                            style: TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w600,
+                              color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          DropdownButtonFormField<int>(
+                            value: _availableGPIOs.contains(_selectedGpio) ? _selectedGpio : null,
+                            isExpanded: true,
+                            decoration: InputDecoration(
+                              hintText: _availableGPIOs.isEmpty
+                                  ? 'No free GPIOs available'
+                                  : 'Select GPIO',
+                              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                            ),
+                            items: _availableGPIOs.map((gpio) {
+                              return DropdownMenuItem<int>(
+                                value: gpio,
+                                child: Text('GPIO $gpio'),
+                              );
+                            }).toList(),
+                            onChanged: _rooms.isEmpty || _isLoading || _availableGPIOs.isEmpty
+                                ? null
+                                : (value) => setState(() => _selectedGpio = value),
+                            validator: (value) {
+                              if (value == null) return 'Choose a free GPIO';
+                              if (!_availableGPIOs.contains(value)) return 'GPIO $value is already used';
+                              return null;
+                            },
+                          ),
+                          const SizedBox(height: 16),
+                          Text(
+                            'Room',
+                            style: TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w600,
+                              color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 12),
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(
+                                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.1),
+                              ),
+                            ),
+                            child: DropdownButtonHideUnderline(
+                              child: DropdownButton<String>(
+                                value: _rooms.contains(_selectedRoom) ? _selectedRoom : null,
+                                isExpanded: true,
+                                hint: const Text('Select Room'),
+                                items: _rooms.map((room) {
+                                  return DropdownMenuItem(value: room, child: Text(room));
+                                }).toList(),
+                                onChanged: _rooms.isEmpty || _isLoading
+                                    ? null
+                                    : (value) {
+                                  if (value != null) setState(() => _selectedRoom = value);
+                                },
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+                          Container(
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(12),
+                              color: _DT.purple.withValues(alpha: 0.08),
+                              border: Border.all(color: _DT.purple.withValues(alpha: 0.15)),
+                            ),
+                            child: Row(
+                              children: [
+                                const Icon(Icons.info_outline_rounded, color: _DT.purple, size: 18),
+                                const SizedBox(width: 10),
                                 Expanded(
-                                  child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        'Room',
-                                        style: TextStyle(
-                                          fontSize: 14,
-                                          fontWeight: FontWeight.w600,
-                                          color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
-                                        ),
-                                      ),
-                                      const SizedBox(height: 6),
-                                      Container(
-                                        padding: const EdgeInsets.symmetric(horizontal: 12),
-                                        decoration: BoxDecoration(
-                                          borderRadius: BorderRadius.circular(12),
-                                          border: Border.all(
-                                            color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.1),
-                                          ),
-                                        ),
-                                        child: DropdownButtonHideUnderline(
-                                          child: DropdownButton<String>(
-                                            value: _rooms.contains(_selectedRoom) ? _selectedRoom : null,
-                                            isExpanded: true,
-                                            hint: const Text('Select Room'),
-                                            items: _rooms.map((room) {
-                                              return DropdownMenuItem(
-                                                value: room,
-                                                child: Text(room),
-                                              );
-                                            }).toList(),
-                                            onChanged: (value) {
-                                              if (value != null) {
-                                                setState(() => _selectedRoom = value);
-                                              }
-                                            },
-                                          ),
-                                        ),
-                                      ),
-                                    ],
+                                  child: Text(
+                                    _availableGPIOs.isEmpty
+                                        ? 'No free GPIOs available. Remove a device or change its GPIO first.'
+                                        : 'Free GPIOs: ${_availableGPIOs.join(", ")}',
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+                                    ),
                                   ),
                                 ),
                               ],
                             ),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(height: 24),
-                      Container(
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(12),
-                          color: _DT.purple.withValues(alpha: 0.08),
-                          border: Border.all(
-                            color: _DT.purple.withValues(alpha: 0.15),
                           ),
-                        ),
-                        child: Row(
-                          children: [
-                            Icon(Icons.info_outline_rounded, color: _DT.purple, size: 18),
-                            const SizedBox(width: 10),
-                            Expanded(
-                              child: Text(
-                                'Available GPIOs: ${_availableGPIOs.join(", ")}',
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
-                                ),
+                          const SizedBox(height: 24),
+                          SizedBox(
+                            width: double.infinity,
+                            height: 52,
+                            child: ElevatedButton(
+                              onPressed: _isLoading ? null : _addDevice,
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: _DT.purple,
+                                foregroundColor: Colors.white,
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                                elevation: 0,
+                              ),
+                              child: _isLoading
+                                  ? const SizedBox(
+                                width: 24,
+                                height: 24,
+                                child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                              )
+                                  : const Text(
+                                'Add Device',
+                                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
                               ),
                             ),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(height: 24),
-                      SizedBox(
-                        width: double.infinity,
-                        height: 52,
-                        child: ElevatedButton(
-                          onPressed: _isLoading ? null : _addDevice,
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: _DT.purple,
-                            foregroundColor: Colors.white,
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(16),
-                            ),
-                            elevation: 0,
                           ),
-                          child: _isLoading
-                              ? const SizedBox(
-                            width: 24,
-                            height: 24,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2,
-                              color: Colors.white,
-                            ),
-                          )
-                              : const Text(
-                            'Add Device',
-                            style: TextStyle(
-                              fontSize: 16,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ),
+                        ],
                       ),
-                    ],
+                    ),
                   ),
                 ),
-              ),
+              ],
             ),
-          ],
+          ),
         ),
       ),
     );
@@ -1751,26 +1944,29 @@ class _QuickActionDialogState extends ConsumerState<_QuickActionDialog> {
 
   IconData _getIconForType(int type) {
     switch (type) {
-      case 0: return Icons.lightbulb_rounded;
-      case 1: return Icons.air_rounded;
-      case 2: return Icons.power_settings_new_rounded;
-      case 3: return Icons.electrical_services_rounded;
-      default: return Icons.devices_rounded;
+      case 0:
+        return Icons.lightbulb_rounded;
+      case 1:
+        return Icons.air_rounded;
+      case 2:
+        return Icons.power_settings_new_rounded;
+      case 3:
+        return Icons.electrical_services_rounded;
+      default:
+        return Icons.devices_rounded;
     }
   }
 
   @override
   void dispose() {
     _nameController.dispose();
-    _gpioController.dispose();
     super.dispose();
   }
 }
-
 // ────────────────────────────────────────────────────────────
-// 14. ROOM MANAGEMENT DIALOG (NEW)
+// 14. ROOM MANAGEMENT DIALOG
 // ────────────────────────────────────────────────────────────
-class _RoomManagementDialog extends StatefulWidget {
+class _RoomManagementDialog extends ConsumerStatefulWidget {
   final List<String> rooms;
   final Function(List<String>) onRoomsUpdated;
 
@@ -1780,35 +1976,174 @@ class _RoomManagementDialog extends StatefulWidget {
   });
 
   @override
-  State<_RoomManagementDialog> createState() => _RoomManagementDialogState();
+  ConsumerState<_RoomManagementDialog> createState() => _RoomManagementDialogState();
 }
 
-class _RoomManagementDialogState extends State<_RoomManagementDialog> {
+class _RoomManagementDialogState extends ConsumerState<_RoomManagementDialog> {
   late List<String> _rooms;
   final TextEditingController _newRoomController = TextEditingController();
+  bool _isSaving = false;
 
   @override
   void initState() {
     super.initState();
-    _rooms = List.from(widget.rooms);
+    _rooms = List<String>.from(widget.rooms)
+      ..removeWhere((room) => room.trim().isEmpty)
+      ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
   }
 
-  void _addRoom() {
+  Future<bool> _persistRooms(List<String> rooms) async {
+    final service = await ref.read(esp32DeviceServiceProvider.future);
+    final success = await service.saveRooms(rooms);
+    if (success) {
+      widget.onRoomsUpdated(List<String>.from(rooms));
+      ref.read(dashboardRefreshTickProvider.notifier).state++;
+    }
+    return success;
+  }
+
+  Future<void> _addRoom() async {
     final name = _newRoomController.text.trim();
-    if (name.isNotEmpty && !_rooms.contains(name)) {
-      setState(() {
-        _rooms.add(name);
-        _newRoomController.clear();
-      });
-      widget.onRoomsUpdated(_rooms);
+    if (name.isEmpty) return;
+
+    final exists = _rooms.any((room) => room.toLowerCase() == name.toLowerCase());
+    if (exists) {
+      _showSnack(context, 'Room already exists', color: Colors.orange);
+      return;
+    }
+
+    final previous = List<String>.from(_rooms);
+    setState(() {
+      _rooms.add(name);
+      _rooms.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+      _newRoomController.clear();
+      _isSaving = true;
+    });
+
+    try {
+      final success = await _persistRooms(_rooms);
+      if (!mounted) return;
+      if (success) {
+        _showSnack(context, '✅ Room added: $name', color: _DT.green);
+      } else {
+        setState(() => _rooms = previous);
+        _showSnack(context, '❌ Failed to save room', color: _DT.red);
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _rooms = previous);
+      _showSnack(context, '❌ Error: ${e.toString()}', color: _DT.red);
+    } finally {
+      if (mounted) setState(() => _isSaving = false);
     }
   }
 
-  void _removeRoom(String room) {
+  Future<void> _editRoom(String oldRoom) async {
+    final controller = TextEditingController(text: oldRoom);
+    final newName = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Edit Room'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          textInputAction: TextInputAction.done,
+          decoration: const InputDecoration(labelText: 'Room name'),
+          onSubmitted: (value) => Navigator.pop(context, value.trim()),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, controller.text.trim()),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+
+    if (newName == null || newName.isEmpty || newName == oldRoom) return;
+    final exists = _rooms.any((room) => room != oldRoom && room.toLowerCase() == newName.toLowerCase());
+    if (exists) {
+      _showSnack(context, 'Room already exists', color: Colors.orange);
+      return;
+    }
+
+    final previous = List<String>.from(_rooms);
+    setState(() {
+      final index = _rooms.indexOf(oldRoom);
+      if (index != -1) _rooms[index] = newName;
+      _rooms.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+      _isSaving = true;
+    });
+
+    try {
+      final service = await ref.read(esp32DeviceServiceProvider.future);
+      final roomsSaved = await service.saveRooms(_rooms);
+      final devicesRenamed = await service.renameRoomInDevices(oldRoom: oldRoom, newRoom: newName);
+      if (!mounted) return;
+
+      if (roomsSaved && devicesRenamed) {
+        widget.onRoomsUpdated(List<String>.from(_rooms));
+        ref.read(dashboardRefreshTickProvider.notifier).state++;
+        _showSnack(context, '✅ Room renamed', color: _DT.green);
+      } else {
+        setState(() => _rooms = previous);
+        await service.saveRooms(previous);
+        _showSnack(context, '❌ Failed to rename room', color: _DT.red);
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _rooms = previous);
+      _showSnack(context, '❌ Error: ${e.toString()}', color: _DT.red);
+    } finally {
+      if (mounted) setState(() => _isSaving = false);
+    }
+  }
+
+  Future<void> _removeRoom(String room) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete Room'),
+        content: Text(
+          'Delete "$room" from the room list? Devices already assigned to this room will stay in Firebase, but the room tab will disappear until you add/rename it again.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(backgroundColor: _DT.red, foregroundColor: Colors.white),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm != true) return;
+
+    final previous = List<String>.from(_rooms);
     setState(() {
       _rooms.remove(room);
+      _isSaving = true;
     });
-    widget.onRoomsUpdated(_rooms);
+
+    try {
+      final success = await _persistRooms(_rooms);
+      if (!mounted) return;
+      if (success) {
+        _showSnack(context, '🗑️ Room removed: $room', color: _DT.amber);
+      } else {
+        setState(() => _rooms = previous);
+        _showSnack(context, '❌ Failed to remove room', color: _DT.red);
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _rooms = previous);
+      _showSnack(context, '❌ Error: ${e.toString()}', color: _DT.red);
+    } finally {
+      if (mounted) setState(() => _isSaving = false);
+    }
   }
 
   @override
@@ -1819,97 +2154,137 @@ class _RoomManagementDialogState extends State<_RoomManagementDialog> {
 
   @override
   Widget build(BuildContext context) {
-    return Dialog(
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-      backgroundColor: Colors.transparent,
-      child: _GCard(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Text(
-              'Manage Rooms',
-              style: TextStyle(
-                fontSize: 20,
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-            const SizedBox(height: 16),
-            Row(
+    final bottomInset = MediaQuery.of(context).viewInsets.bottom;
+
+    return AnimatedPadding(
+      duration: const Duration(milliseconds: 220),
+      curve: Curves.easeOutCubic,
+      padding: EdgeInsets.only(bottom: bottomInset),
+      child: Dialog(
+        insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        backgroundColor: Colors.transparent,
+        child: _GCard(
+          padding: const EdgeInsets.all(24),
+          child: SingleChildScrollView(
+            keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
               children: [
-                Expanded(
-                  child: TextFormField(
-                    controller: _newRoomController,
-                    decoration: InputDecoration(
-                      hintText: 'New room name',
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                    ),
-                    onFieldSubmitted: (_) => _addRoom(),
+                const Text(
+                  'Manage Rooms',
+                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  _rooms.isEmpty ? 'No rooms yet' : '${_rooms.length} rooms total',
+                  style: TextStyle(
+                    fontSize: 14,
+                    color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5),
                   ),
                 ),
-                const SizedBox(width: 12),
-                ElevatedButton(
-                  onPressed: _addRoom,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: _DT.purple,
-                    foregroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextFormField(
+                        controller: _newRoomController,
+                        decoration: InputDecoration(
+                          hintText: 'New room name',
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                        ),
+                        onFieldSubmitted: (_) => _addRoom(),
+                        enabled: !_isSaving,
+                      ),
                     ),
-                    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+                    const SizedBox(width: 12),
+                    ElevatedButton(
+                      onPressed: _isSaving ? null : _addRoom,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: _DT.purple,
+                        foregroundColor: Colors.white,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+                      ),
+                      child: _isSaving
+                          ? const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                      )
+                          : const Text('Add'),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxHeight: 260),
+                  child: _rooms.isEmpty
+                      ? Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 28),
+                    child: Column(
+                      children: [
+                        Icon(
+                          Icons.meeting_room_outlined,
+                          size: 42,
+                          color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.25),
+                        ),
+                        const SizedBox(height: 10),
+                        const Text('No rooms yet. Add your first room!'),
+                      ],
+                    ),
+                  )
+                      : ListView.separated(
+                    shrinkWrap: true,
+                    itemCount: _rooms.length,
+                    separatorBuilder: (_, __) => const SizedBox(height: 8),
+                    itemBuilder: (context, index) {
+                      final room = _rooms[index];
+                      return Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(8),
+                          color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.05),
+                        ),
+                        child: Row(
+                          children: [
+                            const Icon(Icons.room_rounded, color: _DT.purple, size: 16),
+                            const SizedBox(width: 8),
+                            Expanded(child: Text(room)),
+                            IconButton(
+                              tooltip: 'Edit room',
+                              icon: const Icon(Icons.edit_rounded, color: _DT.purple, size: 20),
+                              onPressed: _isSaving ? null : () => _editRoom(room),
+                            ),
+                            IconButton(
+                              tooltip: 'Delete room',
+                              icon: const Icon(Icons.delete_rounded, color: _DT.red, size: 20),
+                              onPressed: _isSaving ? null : () => _removeRoom(room),
+                            ),
+                          ],
+                        ),
+                      );
+                    },
                   ),
-                  child: const Text('Add'),
+                ),
+                const SizedBox(height: 20),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: _isSaving ? null : () => Navigator.pop(context, List<String>.from(_rooms)),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: _DT.purple,
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                    ),
+                    child: const Text('Done'),
+                  ),
                 ),
               ],
             ),
-            const SizedBox(height: 16),
-            SizedBox(
-              height: 200,
-              child: ListView.separated(
-                itemCount: _rooms.length,
-                separatorBuilder: (_, __) => const SizedBox(height: 8),
-                itemBuilder: (context, index) {
-                  final room = _rooms[index];
-                  return Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(8),
-                      color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.05),
-                    ),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Text(room),
-                        IconButton(
-                          icon: const Icon(Icons.delete_rounded, color: _DT.red),
-                          onPressed: () => _removeRoom(room),
-                        ),
-                      ],
-                    ),
-                  );
-                },
-              ),
-            ),
-            const SizedBox(height: 20),
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton(
-                onPressed: () => Navigator.pop(context),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: _DT.purple,
-                  foregroundColor: Colors.white,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  padding: const EdgeInsets.symmetric(vertical: 14),
-                ),
-                child: const Text('Done'),
-              ),
-            ),
-          ],
+          ),
         ),
       ),
     );
@@ -2135,8 +2510,10 @@ class _HomeContentWrapper extends ConsumerStatefulWidget {
 
 class _HomeContentWrapperState extends ConsumerState<_HomeContentWrapper> {
   Future<void> _refresh() async {
-    final ble = ref.read(bleServiceProvider);
-    await ble.connect();
+    if (!kIsWeb) {
+      final ble = ref.read(bleServiceProvider);
+      await ble.connect();
+    }
     ref.invalidate(httpDataProvider);
   }
 
@@ -2144,7 +2521,9 @@ class _HomeContentWrapperState extends ConsumerState<_HomeContentWrapper> {
   Widget build(BuildContext context) {
     final dataAsync = ref.watch(smartHomeDataProvider);
     final bleService = ref.watch(bleServiceProvider);
+    final refreshTick = ref.watch(dashboardRefreshTickProvider);
     return _HomeContent(
+      key: ValueKey(refreshTick),
       dataAsync: dataAsync,
       onRefresh: _refresh,
       bleStatus: bleService.currentStatus,
@@ -2163,6 +2542,7 @@ class _HomeContent extends ConsumerStatefulWidget {
   final VoidCallback onConnectBLE;
 
   const _HomeContent({
+    super.key,
     required this.dataAsync,
     required this.onRefresh,
     required this.bleStatus,
@@ -2174,21 +2554,25 @@ class _HomeContent extends ConsumerStatefulWidget {
 }
 
 class _HomeContentState extends ConsumerState<_HomeContent> {
-  String _selectedRoom = 'Living Room';
-  Map<String, dynamic> _esp32Devices = {};
+  String _selectedRoom = '';
+  List<String> _rooms = [];
+  Map<String, dynamic> _esp32Devices = {'devices': []};
   bool _isLoadingDevices = false;
   bool _initialLoadDone = false;
   Timer? _refreshTimer;
+  final Map<String, bool> _pendingDeviceStates = {};
+  final Map<String, DateTime> _pendingDeviceStateTimes = {};
+  final Set<String> _togglingDeviceIds = {};
+
+  static const Duration _pendingStateHold = Duration(seconds: 4);
 
   @override
   void initState() {
     super.initState();
-    _loadESP32Devices();
+    _loadDashboardState();
 
-    _refreshTimer = Timer.periodic(const Duration(seconds: 5), (_) {
-      if (mounted) {
-        _loadESP32DevicesSilently();
-      }
+    _refreshTimer = Timer.periodic(const Duration(seconds: 8), (_) {
+      if (mounted) _loadDashboardStateSilently();
     });
   }
 
@@ -2204,44 +2588,151 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
     });
   }
 
-  Future<void> _loadESP32Devices() async {
-    if (_isLoadingDevices) return;
+  List<String> _getVisibleRooms(List<dynamic> devicesList) {
+    final Set<String> roomSet = {..._rooms};
 
+    // Migration fallback only. If the user already has devices from the old
+    // database but /rooms is empty, show their device rooms. No fake defaults.
+    if (roomSet.isEmpty) {
+      for (final device in devicesList) {
+        if (device is Map && device['room'] != null) {
+          final room = device['room'].toString().trim();
+          if (room.isNotEmpty) roomSet.add(room);
+        }
+      }
+    }
+
+    return roomSet.toList()..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+  }
+
+  String _effectiveSelectedRoom(List<String> rooms) {
+    if (rooms.isEmpty) return '';
+    if (rooms.contains(_selectedRoom)) return _selectedRoom;
+    return rooms.first;
+  }
+
+  void _syncSelectedRoom(List<String> rooms) {
+    final effective = _effectiveSelectedRoom(rooms);
+    if (_selectedRoom != effective) {
+      _selectedRoom = effective;
+    }
+  }
+
+  List<Map<String, dynamic>> _applyPendingDeviceStates(List<dynamic> rawDevices) {
+    final now = DateTime.now();
+    final expired = <String>[];
+
+    final devices = rawDevices
+        .whereType<Map>()
+        .map((device) {
+      final updated = Map<String, dynamic>.from(device);
+      final id = updated['id']?.toString() ?? '';
+      if (id.isEmpty) return updated;
+
+      final pendingState = _pendingDeviceStates[id];
+      final pendingAt = _pendingDeviceStateTimes[id];
+      if (pendingState == null || pendingAt == null) return updated;
+
+      final fetchedState = updated['state'] as bool?;
+      if (fetchedState == pendingState) {
+        expired.add(id);
+        return updated;
+      }
+
+      if (now.difference(pendingAt) <= _pendingStateHold) {
+        updated['state'] = pendingState;
+      } else {
+        expired.add(id);
+      }
+      return updated;
+    })
+        .toList();
+
+    for (final id in expired) {
+      _pendingDeviceStates.remove(id);
+      _pendingDeviceStateTimes.remove(id);
+      _togglingDeviceIds.remove(id);
+    }
+
+    return devices;
+  }
+
+  bool _deviceListsEqual(List<dynamic> a, List<dynamic> b) {
+    return jsonEncode(a) == jsonEncode(b);
+  }
+
+  Future<void> _loadDashboardState() async {
+    if (_isLoadingDevices) return;
     setState(() => _isLoadingDevices = true);
+
     try {
       final service = await ref.read(esp32DeviceServiceProvider.future);
       final result = await service.getDevices();
+      final rooms = await service.getRooms();
+      final devicesList = _applyPendingDeviceStates(result['devices'] as List? ?? []);
+      final visibleRooms = {...rooms};
+      if (visibleRooms.isEmpty) {
+        for (final device in devicesList) {
+          if (device is Map && device['room'] != null) {
+            final room = device['room'].toString().trim();
+            if (room.isNotEmpty) visibleRooms.add(room);
+          }
+        }
+      }
+      final sortedRooms = visibleRooms.toList()
+        ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+
+      if (!mounted) return;
       setState(() {
-        _esp32Devices = result;
+        _esp32Devices = {'devices': devicesList};
+        _rooms = sortedRooms;
+        _syncSelectedRoom(_rooms);
         _isLoadingDevices = false;
         _initialLoadDone = true;
       });
     } catch (e) {
-      print('Error loading ESP32 devices: $e');
+      logDebug('Error loading ESP32 dashboard state: $e');
+      if (!mounted) return;
       setState(() {
         _esp32Devices = {'devices': []};
+        _rooms = [];
+        _selectedRoom = '';
         _isLoadingDevices = false;
         _initialLoadDone = true;
       });
     }
   }
 
-  Future<void> _loadESP32DevicesSilently() async {
+  Future<void> _loadDashboardStateSilently() async {
     try {
+      if (_togglingDeviceIds.isNotEmpty) {
+        return;
+      }
+
       final service = await ref.read(esp32DeviceServiceProvider.future);
       final result = await service.getDevices();
-      if (mounted) {
-        setState(() {
-          _esp32Devices = result;
-        });
-      }
-    } catch (e) {
-      // Silent fail for auto-refresh
+      final rooms = await service.getRooms();
+      final mergedDevices = _applyPendingDeviceStates(result['devices'] as List? ?? []);
+      if (!mounted) return;
+
+      final currentDevices = _esp32Devices['devices'] as List? ?? [];
+      final nextRooms = rooms.toList()..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+      final roomsChanged = jsonEncode(_rooms) != jsonEncode(nextRooms);
+      final devicesChanged = !_deviceListsEqual(currentDevices, mergedDevices);
+      if (!roomsChanged && !devicesChanged) return;
+
+      setState(() {
+        _esp32Devices = {'devices': mergedDevices};
+        _rooms = nextRooms;
+        _syncSelectedRoom(_getVisibleRooms(mergedDevices));
+      });
+    } catch (_) {
+      // Silent fail for auto-refresh.
     }
   }
 
   Future<void> _refreshDevices() async {
-    await _loadESP32Devices();
+    await _loadDashboardState();
     await widget.onRefresh();
   }
 
@@ -2262,19 +2753,12 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
                 shape: BoxShape.circle,
                 color: _DT.purple.withValues(alpha: 0.15),
               ),
-              child: const Icon(
-                Icons.devices_rounded,
-                color: _DT.purple,
-                size: 30,
-              ),
+              child: const Icon(Icons.devices_rounded, color: _DT.purple, size: 30),
             ),
             const SizedBox(height: 16),
             Text(
               deviceName,
-              style: const TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.w700,
-              ),
+              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
             ),
             const SizedBox(height: 8),
             Text(
@@ -2299,9 +2783,7 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
                     currentGpio: currentGpio,
                   ),
                 ).then((refreshed) {
-                  if (refreshed == true) {
-                    _loadESP32Devices();
-                  }
+                  if (refreshed == true) _loadDashboardState();
                 });
               },
             ),
@@ -2341,19 +2823,12 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
                   shape: BoxShape.circle,
                   color: _DT.red.withValues(alpha: 0.15),
                 ),
-                child: const Icon(
-                  Icons.warning_rounded,
-                  color: _DT.red,
-                  size: 30,
-                ),
+                child: const Icon(Icons.warning_rounded, color: _DT.red, size: 30),
               ),
               const SizedBox(height: 16),
               const Text(
                 'Remove Device',
-                style: TextStyle(
-                  fontSize: 20,
-                  fontWeight: FontWeight.w700,
-                ),
+                style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
               ),
               const SizedBox(height: 8),
               Text(
@@ -2367,12 +2842,7 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
               const SizedBox(height: 20),
               Row(
                 children: [
-                  Expanded(
-                    child: TextButton(
-                      onPressed: () => Navigator.pop(context),
-                      child: const Text('Cancel'),
-                    ),
-                  ),
+                  Expanded(child: TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel'))),
                   const SizedBox(width: 12),
                   Expanded(
                     child: ElevatedButton(
@@ -2382,7 +2852,7 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
                           final service = await ref.read(esp32DeviceServiceProvider.future);
                           final success = await service.removeDevice(deviceId);
                           if (success) {
-                            await _loadESP32Devices();
+                            await _loadDashboardState();
                             _showSnack(context, '✅ Device removed', color: _DT.green);
                           } else {
                             _showSnack(context, '❌ Failed to remove device', color: _DT.red);
@@ -2394,9 +2864,7 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
                       style: ElevatedButton.styleFrom(
                         backgroundColor: _DT.red,
                         foregroundColor: Colors.white,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                         padding: const EdgeInsets.symmetric(vertical: 14),
                       ),
                       child: const Text('Remove'),
@@ -2412,47 +2880,71 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
   }
 
   Future<void> _controlDevice(String id, bool state) async {
+    if (_togglingDeviceIds.contains(id)) return;
+
+    final devices = List<dynamic>.from(_esp32Devices['devices'] as List? ?? []);
+    final index = devices.indexWhere((d) => d is Map && d['id'] == id);
+    final previousState = index != -1 && devices[index] is Map
+        ? ((devices[index] as Map)['state'] as bool? ?? false)
+        : !state;
+
+    _pendingDeviceStates[id] = state;
+    _pendingDeviceStateTimes[id] = DateTime.now();
+    _togglingDeviceIds.add(id);
+
+    if (index != -1 && devices[index] is Map) {
+      final updatedDevice = Map<String, dynamic>.from(devices[index] as Map);
+      updatedDevice['state'] = state;
+      devices[index] = updatedDevice;
+      setState(() => _esp32Devices = {'devices': devices});
+    }
+
     try {
       final service = await ref.read(esp32DeviceServiceProvider.future);
-
-      setState(() {
-        final devices = _esp32Devices['devices'] as List? ?? [];
-        final index = devices.indexWhere((d) => d['id'] == id);
-        if (index != -1) {
-          devices[index]['state'] = state;
-          _esp32Devices['devices'] = devices;
-        }
-      });
-
       final success = await service.controlDevice(id: id, state: state);
 
-      if (success) {
-        // No notification - just update silently
-      } else {
-        setState(() {
-          final devices = _esp32Devices['devices'] as List? ?? [];
-          final index = devices.indexWhere((d) => d['id'] == id);
-          if (index != -1) {
-            devices[index]['state'] = !state;
-            _esp32Devices['devices'] = devices;
-          }
-        });
-        if (mounted) {
-          _showSnack(context, '❌ Failed to control device', color: _DT.red);
+      if (!mounted) return;
+
+      if (!success) {
+        _pendingDeviceStates.remove(id);
+        _pendingDeviceStateTimes.remove(id);
+        _togglingDeviceIds.remove(id);
+
+        final revertedDevices = List<dynamic>.from(_esp32Devices['devices'] as List? ?? []);
+        final revertIndex = revertedDevices.indexWhere((d) => d is Map && d['id'] == id);
+        if (revertIndex != -1 && revertedDevices[revertIndex] is Map) {
+          final revertedDevice = Map<String, dynamic>.from(revertedDevices[revertIndex] as Map);
+          revertedDevice['state'] = previousState;
+          revertedDevices[revertIndex] = revertedDevice;
+          setState(() => _esp32Devices = {'devices': revertedDevices});
         }
+        _showSnack(context, '❌ Failed to control device', color: _DT.red);
+        return;
       }
-    } catch (e) {
-      setState(() {
-        final devices = _esp32Devices['devices'] as List? ?? [];
-        final index = devices.indexWhere((d) => d['id'] == id);
-        if (index != -1) {
-          devices[index]['state'] = !state;
-          _esp32Devices['devices'] = devices;
+
+      Future.delayed(const Duration(milliseconds: 1800), () {
+        if (!mounted) return;
+        if (_pendingDeviceStates[id] == state) {
+          _pendingDeviceStates.remove(id);
+          _pendingDeviceStateTimes.remove(id);
+          _togglingDeviceIds.remove(id);
         }
       });
-      if (mounted) {
-        _showSnack(context, '❌ Error: ${e.toString()}', color: _DT.red);
+    } catch (e) {
+      if (!mounted) return;
+      _pendingDeviceStates.remove(id);
+      _pendingDeviceStateTimes.remove(id);
+      _togglingDeviceIds.remove(id);
+
+      final revertedDevices = List<dynamic>.from(_esp32Devices['devices'] as List? ?? []);
+      final revertIndex = revertedDevices.indexWhere((d) => d is Map && d['id'] == id);
+      if (revertIndex != -1 && revertedDevices[revertIndex] is Map) {
+        final revertedDevice = Map<String, dynamic>.from(revertedDevices[revertIndex] as Map);
+        revertedDevice['state'] = previousState;
+        revertedDevices[revertIndex] = revertedDevice;
+        setState(() => _esp32Devices = {'devices': revertedDevices});
       }
+      _showSnack(context, '❌ Error: ${e.toString()}', color: _DT.red);
     }
   }
 
@@ -2471,7 +2963,6 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
       color: _DT.purple,
       child: widget.dataAsync.when(
         data: (data) {
-          final lights = (data['lights'] as Map?) ?? {};
           final sensors = (data['sensors'] as Map?) ?? {};
           final temp = (sensors['temperature'] ?? 0.0).toDouble();
           final hum = (sensors['humidity'] ?? 0.0).toDouble();
@@ -2485,10 +2976,11 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
           final todayKw = (energy['today'] ?? 3.4).toDouble();
 
           final devicesList = _esp32Devices['devices'] as List? ?? [];
-
-          final roomDevices = devicesList.where((d) =>
-          d['room'] == _selectedRoom || _selectedRoom == 'All Rooms'
-          ).toList();
+          final rooms = _getVisibleRooms(devicesList);
+          final selectedRoom = _effectiveSelectedRoom(rooms);
+          final roomDevices = selectedRoom.isEmpty
+              ? <dynamic>[]
+              : devicesList.where((d) => d is Map && d['room'] == selectedRoom).toList();
 
           return SingleChildScrollView(
             physics: const AlwaysScrollableScrollPhysics(),
@@ -2508,11 +3000,11 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
                 _FlameBanner(flame: flame),
                 const SizedBox(height: 18),
                 _RoomsHeader(
-                  selectedRoom: _selectedRoom,
+                  selectedRoom: selectedRoom,
                   onRoomSelected: (r) => setState(() => _selectedRoom = r),
+                  rooms: rooms,
                 ),
                 const SizedBox(height: 14),
-
                 if (_isLoadingDevices)
                   const Center(
                     child: Padding(
@@ -2526,13 +3018,13 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
                     child: Column(
                       children: [
                         Icon(
-                          Icons.devices_rounded,
+                          rooms.isEmpty ? Icons.meeting_room_outlined : Icons.devices_rounded,
                           size: 48,
                           color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.3),
                         ),
                         const SizedBox(height: 12),
                         Text(
-                          'No devices in this room',
+                          rooms.isEmpty ? 'No rooms yet' : 'No devices in this room',
                           style: TextStyle(
                             fontSize: 16,
                             fontWeight: FontWeight.w600,
@@ -2541,11 +3033,14 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
                         ),
                         const SizedBox(height: 8),
                         Text(
-                          'Tap the + button to add a device',
+                          rooms.isEmpty
+                              ? 'Tap +, then Add Room, to create your first room.'
+                              : 'Tap the + button to add a device',
                           style: TextStyle(
                             fontSize: 14,
                             color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.3),
                           ),
+                          textAlign: TextAlign.center,
                         ),
                       ],
                     ),
@@ -2555,26 +3050,22 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
                     spacing: 12,
                     runSpacing: 12,
                     children: roomDevices.map((device) {
-                      final name = device['name'] as String? ?? 'Unknown';
-                      final type = device['type'] as int? ?? 0;
-                      final state = device['state'] as bool? ?? false;
-                      final gpio = device['gpio'] as int? ?? 0;
-                      final room = device['room'] as String? ?? '';
+                      final map = device as Map;
+                      final name = map['name'] as String? ?? 'Unknown';
+                      final type = map['type'] as int? ?? 0;
+                      final state = map['state'] as bool? ?? false;
+                      final gpio = map['gpio'] as int? ?? 0;
+                      final room = map['room'] as String? ?? '';
+                      final id = map['id'] as String? ?? '';
 
                       final screenWidth = MediaQuery.of(context).size.width - (padding * 2);
-                      final cardWidth = isDesktop
-                          ? (screenWidth - 36) / 4
-                          : (screenWidth - 12) / 2;
+                      final cardWidth = isDesktop ? (screenWidth - 36) / 4 : (screenWidth - 12) / 2;
 
                       return SizedBox(
                         width: cardWidth,
                         child: GestureDetector(
-                          onTap: () => _controlDevice(device['id'] as String, !state),
-                          onLongPress: () => _showDeviceOptions(
-                            device['id'] as String,
-                            name,
-                            gpio,
-                          ),
+                          onTap: id.isEmpty ? null : () => _controlDevice(id, !state),
+                          onLongPress: id.isEmpty ? null : () => _showDeviceOptions(id, name, gpio),
                           child: _DynamicDeviceCard(
                             name: name,
                             type: type,
@@ -2596,23 +3087,21 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
             padding: EdgeInsets.all(padding),
             child: _GCard(
               child: Column(mainAxisSize: MainAxisSize.min, children: [
-                const Icon(Icons.error_outline_rounded,
-                    size: 48, color: _DT.red),
+                const Icon(Icons.error_outline_rounded, size: 48, color: _DT.red),
                 const SizedBox(height: 16),
-                Text('Something went wrong',
-                    style: Theme.of(context)
-                        .textTheme
-                        .titleMedium
-                        ?.copyWith(fontWeight: FontWeight.w600)),
+                Text(
+                  'Something went wrong',
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
+                ),
                 const SizedBox(height: 8),
-                Text(err.toString(),
-                    style: TextStyle(
-                        fontSize: 13,
-                        color: Theme.of(context)
-                            .colorScheme
-                            .onSurface
-                            .withValues(alpha: 0.5)),
-                    textAlign: TextAlign.center),
+                Text(
+                  err.toString(),
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5),
+                  ),
+                  textAlign: TextAlign.center,
+                ),
                 const SizedBox(height: 20),
                 _PillBtn(label: 'Try Again', onTap: _refreshDevices),
               ]),
@@ -3044,96 +3533,161 @@ class _FlameBanner extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 23. ROOMS HEADER + TABS
+// 23. ROOMS HEADER + TABS (UPDATED WITH DYNAMIC ROOMS)
 // ────────────────────────────────────────────────────────────
 class _RoomsHeader extends StatelessWidget {
   final String selectedRoom;
   final ValueChanged<String> onRoomSelected;
+  final List<String> rooms;
 
   const _RoomsHeader({
     required this.selectedRoom,
     required this.onRoomSelected,
+    required this.rooms,
   });
 
-  static const _rooms = [
-    ('🛋️', 'Living Room'),
-    ('🛏️', 'Bedroom'),
-    ('🍳', 'Kitchen'),
-    ('🚿', 'Bathroom'),
-  ];
+  String _getRoomEmoji(String roomName) {
+    if (roomName.contains('Living')) return '🛋️';
+    if (roomName.contains('Bed')) return '🛏️';
+    if (roomName.contains('Kitchen')) return '🍳';
+    if (roomName.contains('Bath')) return '🚿';
+    if (roomName.contains('Office')) return '💼';
+    if (roomName.contains('Dining')) return '🍽️';
+    if (roomName.contains('Garage')) return '🚗';
+    if (roomName.contains('Garden')) return '🌿';
+    if (roomName.contains('Study')) return '📚';
+    if (roomName.contains('Guest')) return '🚪';
+    return '🏠';
+  }
 
   @override
   Widget build(BuildContext context) {
-    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    if (rooms.isEmpty) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('Rooms',
-              style: TextStyle(
-                  fontSize: 17,
-                  fontWeight: FontWeight.w700,
-                  color: Theme.of(context).colorScheme.onSurface)),
-          const Text('4 Rooms',
-              style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w500,
-                  color: _DT.purple)),
-        ],
-      ),
-      const SizedBox(height: 10),
-      SizedBox(
-        height: 40,
-        child: ListView.separated(
-          scrollDirection: Axis.horizontal,
-          itemCount: _rooms.length,
-          separatorBuilder: (_, __) => const SizedBox(width: 8),
-          itemBuilder: (context, i) {
-            final (emoji, name) = _rooms[i];
-            final selected = name == selectedRoom;
-            return GestureDetector(
-              onTap: () {
-                HapticFeedback.selectionClick();
-                onRoomSelected(name);
-              },
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 200),
-                padding:
-                const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(20),
-                  color: selected
-                      ? Colors.white
-                      : (Theme.of(context).brightness == Brightness.dark
-                      ? Colors.white.withValues(alpha: 0.07)
-                      : Colors.black.withValues(alpha: 0.05)),
-                  border: Border.all(
-                    color:
-                    selected ? Colors.white : Colors.transparent,
-                    width: selected ? 1.5 : 0,
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text('Rooms',
+                  style: TextStyle(
+                      fontSize: 17,
+                      fontWeight: FontWeight.w700,
+                      color: Theme.of(context).colorScheme.onSurface)),
+              Text('0 Rooms',
+                  style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
+                      color: _DT.purple)),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Container(
+            padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(12),
+              color: isDark
+                  ? Colors.white.withValues(alpha: 0.05)
+                  : Colors.black.withValues(alpha: 0.04),
+            ),
+            child: Row(
+              children: [
+                Icon(Icons.info_outline, size: 16, color: _DT.purple),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'No rooms yet. Tap the + button to add a room.',
+                    style: TextStyle(
+                      fontSize: 13,
+                      color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6),
+                    ),
                   ),
                 ),
-                child: Row(mainAxisSize: MainAxisSize.min, children: [
-                  Text(emoji, style: const TextStyle(fontSize: 14)),
-                  const SizedBox(width: 6),
-                  Text(name,
-                      style: TextStyle(
-                          fontSize: 13,
-                          fontWeight: selected
-                              ? FontWeight.w700
-                              : FontWeight.w500,
-                          color: selected
-                              ? Colors.black
-                              : Theme.of(context)
-                              .colorScheme
-                              .onSurface
-                              .withValues(alpha: 0.6))),
-                ]),
-              ),
-            );
-          },
+              ],
+            ),
+          ),
+        ],
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text('Rooms',
+                style: TextStyle(
+                    fontSize: 17,
+                    fontWeight: FontWeight.w700,
+                    color: Theme.of(context).colorScheme.onSurface)),
+            Text('${rooms.length} Rooms',
+                style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w500,
+                    color: _DT.purple)),
+          ],
         ),
-      ),
-    ]);
+        const SizedBox(height: 10),
+        SizedBox(
+          height: 40,
+          child: ListView.separated(
+            scrollDirection: Axis.horizontal,
+            itemCount: rooms.length,
+            separatorBuilder: (_, __) => const SizedBox(width: 8),
+            itemBuilder: (context, i) {
+              final name = rooms[i];
+              final selected = name == selectedRoom;
+              final emoji = _getRoomEmoji(name);
+
+              return GestureDetector(
+                onTap: () {
+                  HapticFeedback.selectionClick();
+                  onRoomSelected(name);
+                },
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 200),
+                  padding:
+                  const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(20),
+                    color: selected
+                        ? (isDark ? _DT.purple : _DT.purple)
+                        : (isDark
+                        ? Colors.white.withValues(alpha: 0.07)
+                        : Colors.black.withValues(alpha: 0.05)),
+                    border: Border.all(
+                      color: selected
+                          ? _DT.purple
+                          : Colors.transparent,
+                      width: selected ? 1.5 : 0,
+                    ),
+                  ),
+                  child: Row(mainAxisSize: MainAxisSize.min, children: [
+                    Text(emoji, style: const TextStyle(fontSize: 14)),
+                    const SizedBox(width: 6),
+                    Text(name,
+                        style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: selected
+                                ? FontWeight.w700
+                                : FontWeight.w500,
+                            color: selected
+                                ? Colors.white
+                                : Theme.of(context)
+                                .colorScheme
+                                .onSurface
+                                .withValues(alpha: 0.6))),
+                  ]),
+                ),
+              );
+            },
+          ),
+        ),
+      ],
+    );
   }
 }
 
@@ -3878,19 +4432,22 @@ class _SettingsScreen extends ConsumerWidget {
     void onConnectBLE() => ref.read(bleServiceProvider).connect();
 
     Future<void> onRefresh() async {
-      final ble = ref.read(bleServiceProvider);
-      await ble.connect();
+      if (!kIsWeb) {
+        final ble = ref.read(bleServiceProvider);
+        await ble.connect();
+      }
       ref.invalidate(httpDataProvider);
     }
 
     void showEditCodeDialog() {
+      final rootContext = context;
       final TextEditingController codeController = TextEditingController(
           text: esp32CodeAsync.value ?? ''
       );
 
       showDialog(
-        context: context,
-        builder: (context) => Dialog(
+        context: rootContext,
+        builder: (dialogContext) => Dialog(
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
           backgroundColor: Colors.transparent,
           child: _GCard(
@@ -3924,7 +4481,7 @@ class _SettingsScreen extends ConsumerWidget {
                   'Enter the unique code of your ESP32',
                   style: TextStyle(
                     fontSize: 14,
-                    color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5),
+                    color: Theme.of(dialogContext).colorScheme.onSurface.withValues(alpha: 0.5),
                   ),
                 ),
                 const SizedBox(height: 20),
@@ -3935,7 +4492,7 @@ class _SettingsScreen extends ConsumerWidget {
                     border: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(12),
                       borderSide: BorderSide(
-                        color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.1),
+                        color: Theme.of(dialogContext).colorScheme.onSurface.withValues(alpha: 0.1),
                       ),
                     ),
                     focusedBorder: OutlineInputBorder(
@@ -3950,7 +4507,7 @@ class _SettingsScreen extends ConsumerWidget {
                   children: [
                     Expanded(
                       child: TextButton(
-                        onPressed: () => Navigator.pop(context),
+                        onPressed: () => Navigator.pop(dialogContext),
                         child: const Text('Cancel'),
                       ),
                     ),
@@ -3963,10 +4520,10 @@ class _SettingsScreen extends ConsumerWidget {
                             try {
                               await authService.updateEsp32Code(user.uid, newCode);
                               ref.invalidate(userEsp32CodeProvider);
-                              Navigator.pop(context);
-                              _showSnack(context, '✅ ESP32 Code updated to $newCode', color: _DT.green);
+                              Navigator.pop(dialogContext);
+                              if (rootContext.mounted) _showSnack(rootContext, '✅ ESP32 Code updated to $newCode', color: _DT.green);
                             } catch (e) {
-                              _showSnack(context, '❌ Failed to update Code: ${e.toString()}', color: _DT.red);
+                              if (rootContext.mounted) _showSnack(rootContext, '❌ Failed to update Code: ${e.toString()}', color: _DT.red);
                             }
                           }
                         },
@@ -4183,9 +4740,10 @@ class _SettingsScreen extends ConsumerWidget {
     }
 
     void showSignOutDialog() {
+      final rootContext = context;
       showDialog(
-        context: context,
-        builder: (context) => Dialog(
+        context: rootContext,
+        builder: (dialogContext) => Dialog(
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
           backgroundColor: Colors.transparent,
           child: _GCard(
@@ -4228,7 +4786,7 @@ class _SettingsScreen extends ConsumerWidget {
                   children: [
                     Expanded(
                       child: TextButton(
-                        onPressed: () => Navigator.pop(context),
+                        onPressed: () => Navigator.pop(dialogContext),
                         child: const Text('Cancel'),
                       ),
                     ),
@@ -4236,10 +4794,21 @@ class _SettingsScreen extends ConsumerWidget {
                     Expanded(
                       child: ElevatedButton(
                         onPressed: () async {
-                          Navigator.pop(context);
-                          await authService.signOut();
-                          if (context.mounted) {
-                            // The app will automatically redirect to login
+                          Navigator.pop(dialogContext);
+                          try {
+                            await authService.signOut();
+                            ref.read(selectedNavIndexProvider.notifier).state = 0;
+                            ref.invalidate(userDataProvider);
+                            ref.invalidate(userEsp32CodeProvider);
+                            ref.invalidate(httpDataProvider);
+                            if (rootContext.mounted) {
+                              Navigator.of(rootContext, rootNavigator: true)
+                                  .pushNamedAndRemoveUntil('/login', (route) => false);
+                            }
+                          } catch (e) {
+                            if (rootContext.mounted) {
+                              _showSnack(rootContext, 'Failed to sign out: $e', color: _DT.red);
+                            }
                           }
                         },
                         style: ElevatedButton.styleFrom(
@@ -4403,6 +4972,7 @@ class _SettingsScreen extends ConsumerWidget {
                 icon: Icons.logout_rounded,
                 title: 'Sign Out',
                 subtitle: 'Sign out of your account',
+                onTap: showSignOutDialog,
                 trailing: GestureDetector(
                   onTap: showSignOutDialog,
                   child: Container(
@@ -4440,8 +5010,8 @@ class _SettingsScreen extends ConsumerWidget {
               const _SDivider(),
               _STile(
                 icon: Icons.wifi_rounded,
-                title: 'Wi-Fi Config',
-                subtitle: 'Change network settings',
+                title: 'ESP32 Wi‑Fi Manager',
+                subtitle: 'View current network, scan nearby Wi‑Fi, and reconnect ESP32',
                 trailing: Icon(Icons.chevron_right_rounded,
                     size: 20,
                     color: Theme.of(context)

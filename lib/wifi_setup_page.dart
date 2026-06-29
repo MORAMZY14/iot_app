@@ -31,12 +31,13 @@ class WifiSetupState {
     bool? isScanning,
     bool? isConnecting,
     String? error,
+    bool clearError = false,
   }) {
     return WifiSetupState(
       networks: networks ?? this.networks,
       isScanning: isScanning ?? this.isScanning,
       isConnecting: isConnecting ?? this.isConnecting,
-      error: error ?? this.error,
+      error: clearError ? null : error ?? this.error,
     );
   }
 }
@@ -59,7 +60,7 @@ class WifiSetupNotifier extends StateNotifier<WifiSetupState> {
 
   Future<void> scanNetworks() async {
     if (state.isScanning) return;
-    state = state.copyWith(isScanning: true, error: null);
+    state = state.copyWith(isScanning: true, clearError: true);
 
     final hasPermission = await _requestPermissions();
     if (!hasPermission) {
@@ -90,7 +91,7 @@ class WifiSetupNotifier extends StateNotifier<WifiSetupState> {
     }
     if (state.isConnecting) return;
 
-    state = state.copyWith(isConnecting: true, error: null);
+    state = state.copyWith(isConnecting: true, clearError: true);
     try {
       final success = await WiFiForIoTPlugin.connect(
         ssid,
@@ -259,7 +260,7 @@ class _Blob extends StatelessWidget {
   );
 }
 
-void _showSnack(BuildContext context, String msg, Color red, {Color color = Colors.white}) {
+void _showSnack(BuildContext context, String msg, Color color) {
   ScaffoldMessenger.of(context).showSnackBar(SnackBar(
     content: Text(msg, style: const TextStyle(color: Colors.white)),
     backgroundColor: color.withValues(alpha: 0.9),
@@ -402,6 +403,8 @@ class _WifiSetupPageState extends ConsumerState<WifiSetupPage> {
     return RefreshIndicator(
       onRefresh: () => notifier.scanNetworks(),
       child: ListView.builder(
+        shrinkWrap: true,
+        physics: const NeverScrollableScrollPhysics(),
         itemCount: state.networks.length,
         itemBuilder: (context, index) {
           final wifi = state.networks[index];
