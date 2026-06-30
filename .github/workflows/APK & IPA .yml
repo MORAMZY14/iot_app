@@ -11,11 +11,12 @@ jobs:
   # 1. Update version & tag
   # ---------------------------
   update-version:
-    name: 🔢 Auto‑increment version
+    name: 🔢 Set version to V2.0.0
     runs-on: ubuntu-latest
     outputs:
       new_version: ${{ steps.get_version.outputs.new_version }}
       new_tag: ${{ steps.get_version.outputs.new_tag }}
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
@@ -29,17 +30,17 @@ jobs:
           echo "current_version=$VERSION" >> $GITHUB_OUTPUT
           echo "Current version: $VERSION"
 
-      - name: Bump patch version
+      - name: Set next version to V2.0.0
         id: bump
         run: |
-          VERSION="${{ steps.read_version.outputs.current_version }}"
-          IFS='.' read -r major minor patch <<< "$VERSION"
-          new_patch=$((patch + 1))
-          NEW_VERSION="$major.$minor.$new_patch"
-          NEW_TAG="v$NEW_VERSION"
+          NEW_VERSION="V2.0.0"
+          NEW_TAG="V2.0.0"
+
           echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
           echo "new_tag=$NEW_TAG" >> $GITHUB_OUTPUT
-          echo "New version: $NEW_VERSION, tag: $NEW_TAG"
+
+          echo "New version: $NEW_VERSION"
+          echo "New tag: $NEW_TAG"
 
       - name: Update lib/main.dart with new version
         run: |
@@ -49,14 +50,26 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+
           git add lib/main.dart
-          git commit -m "chore: bump version to ${{ steps.bump.outputs.new_version }}"
-          git push
+
+          if git diff --cached --quiet; then
+            echo "No version change to commit."
+          else
+            git commit -m "chore: bump version to ${{ steps.bump.outputs.new_version }}"
+            git push
+          fi
 
       - name: Create tag
         run: |
-          git tag ${{ steps.bump.outputs.new_tag }}
-          git push origin ${{ steps.bump.outputs.new_tag }}
+          if git rev-parse "${{ steps.bump.outputs.new_tag }}" >/dev/null 2>&1; then
+            echo "Tag ${{ steps.bump.outputs.new_tag }} already exists locally."
+          elif git ls-remote --tags origin "${{ steps.bump.outputs.new_tag }}" | grep "${{ steps.bump.outputs.new_tag }}"; then
+            echo "Tag ${{ steps.bump.outputs.new_tag }} already exists on remote."
+          else
+            git tag ${{ steps.bump.outputs.new_tag }}
+            git push origin ${{ steps.bump.outputs.new_tag }}
+          fi
 
       - name: Set outputs
         id: get_version
@@ -71,6 +84,7 @@ jobs:
     name: 🤖 Android APK
     runs-on: ubuntu-latest
     needs: update-version
+
     steps:
       - name: Checkout at new tag
         uses: actions/checkout@v3
@@ -104,6 +118,7 @@ jobs:
     name: 🍎 iOS IPA
     runs-on: macos-latest
     needs: update-version
+
     steps:
       - name: Checkout at new tag
         uses: actions/checkout@v3
@@ -123,10 +138,10 @@ jobs:
       - name: Set FLUTTER_ROOT
         run: echo "FLUTTER_ROOT=$(dirname $(dirname $(which flutter)))" >> $GITHUB_ENV
 
-      # ✅ Fix: completely overwrite the Podfile — no patching, no regeneration
       - name: Force overwrite Podfile
         run: |
           FLUTTER_PATH=$(dirname $(dirname $(which flutter)))
+
           cat > ios/Podfile << EOF
           ENV['COCOAPODS_DISABLE_STATS'] = 'true'
 
@@ -159,6 +174,7 @@ jobs:
             end
           end
           EOF
+
           echo "✅ Podfile written:"
           cat ios/Podfile
 
@@ -166,11 +182,10 @@ jobs:
         run: |
           echo "${{ secrets.GOOGLE_SERVICE_INFO_PLIST }}" > ios/Runner/GoogleService-Info.plist
 
-      # 🛑 CRITICAL FIX #1: Deintegrate any previous SPM/Cocoapods cache
       - name: Clean CocoaPods cache
         run: |
           cd ios
-          pod deintegrate
+          pod deintegrate || true
           rm -rf Pods Podfile.lock
         shell: bash
 
@@ -182,11 +197,10 @@ jobs:
         run: pod install
         working-directory: ios
 
-      # 🛑 CRITICAL FIX #2: Disable Swift Package Manager
-      - name: Build iOS (no codesign)
+      - name: Build iOS no codesign
         run: flutter build ios --release --no-codesign
         env:
-          FLUTTER_XCODE_USE_SPM: 0   # 🔥 This single line stops the crash
+          FLUTTER_XCODE_USE_SPM: 0
 
       - name: Create Payload folder
         run: mkdir Payload
