@@ -684,8 +684,6 @@ final httpDataProvider = FutureProvider<Map<String, dynamic>>((ref) async {
 // ────────────────────────────────────────────────────────────
 // 7. BLE + HTTP MERGED DATA PROVIDER
 // ────────────────────────────────────────────────────────────
-final bleServiceProvider = Provider<BleService>((ref) => BleService());
-
 final smartHomeDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
   final bleService = ref.watch(bleServiceProvider);
   final controller = StreamController<Map<String, dynamic>>();
@@ -776,7 +774,7 @@ final smartHomeDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
     bleStatusSub.cancel();
     httpTimer?.cancel();
     controller.close();
-    bleService.dispose();
+    // The global BLE provider owns/disposes the BLE service.
   });
 
   return controller.stream;
@@ -1376,10 +1374,10 @@ class _EditGPIODialogState extends ConsumerState<_EditGPIODialog> {
                   onChanged: _isLoading || _availableGPIOs.isEmpty
                       ? null
                       : (value) {
-                    if (value != null) {
-                      setState(() => _selectedGpio = value);
-                    }
-                  },
+                          if (value != null) {
+                            setState(() => _selectedGpio = value);
+                          }
+                        },
                 ),
               ),
             ),
@@ -1670,269 +1668,269 @@ class _QuickActionDialogState extends ConsumerState<_QuickActionDialog> {
                   child: _isLoading && _deviceTypes.isEmpty
                       ? const Center(child: CircularProgressIndicator(color: _DT.purple))
                       : SingleChildScrollView(
-                    keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-                    child: Form(
-                      key: _formKey,
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          if (_rooms.isEmpty) ...[
-                            _GCard(
-                              padding: const EdgeInsets.all(16),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Row(
-                                    children: [
-                                      const Icon(Icons.info_outline_rounded, color: _DT.purple),
-                                      const SizedBox(width: 10),
-                                      Expanded(
-                                        child: Text(
-                                          'No rooms yet',
-                                          style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                                            fontWeight: FontWeight.w700,
-                                          ),
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                  const SizedBox(height: 8),
-                                  Text(
-                                    'Add a room first. After that, it will appear on the dashboard even before adding devices.',
-                                    style: TextStyle(
-                                      fontSize: 13,
-                                      color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6),
-                                    ),
-                                  ),
-                                  const SizedBox(height: 14),
-                                  SizedBox(
-                                    width: double.infinity,
-                                    child: ElevatedButton.icon(
-                                      onPressed: _showRoomManagementDialog,
-                                      icon: const Icon(Icons.add_rounded),
-                                      label: const Text('Add Room'),
-                                      style: ElevatedButton.styleFrom(
-                                        backgroundColor: _DT.purple,
-                                        foregroundColor: Colors.white,
-                                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                                        padding: const EdgeInsets.symmetric(vertical: 14),
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                            const SizedBox(height: 18),
-                          ],
-                          Text(
-                            'Device Name',
-                            style: TextStyle(
-                              fontSize: 14,
-                              fontWeight: FontWeight.w600,
-                              color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
-                            ),
-                          ),
-                          const SizedBox(height: 6),
-                          TextFormField(
-                            controller: _nameController,
-                            enabled: _rooms.isNotEmpty && !_isLoading,
-                            textInputAction: TextInputAction.next,
-                            decoration: InputDecoration(
-                              hintText: 'e.g. Living Room Lamp',
-                              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-                            ),
-                            validator: (value) {
-                              if (value == null || value.trim().isEmpty) {
-                                return 'Please enter a device name';
-                              }
-                              return null;
-                            },
-                          ),
-                          const SizedBox(height: 16),
-                          Text(
-                            'Device Type',
-                            style: TextStyle(
-                              fontSize: 14,
-                              fontWeight: FontWeight.w600,
-                              color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
-                            ),
-                          ),
-                          const SizedBox(height: 6),
-                          SizedBox(
-                            height: 48,
-                            child: ListView.separated(
-                              scrollDirection: Axis.horizontal,
-                              itemCount: _deviceTypes.length,
-                              separatorBuilder: (_, __) => const SizedBox(width: 8),
-                              itemBuilder: (context, index) {
-                                final type = _deviceTypes[index];
-                                final isSelected = _selectedType == type['type'];
-                                return GestureDetector(
-                                  onTap: _rooms.isEmpty || _isLoading
-                                      ? null
-                                      : () => setState(() => _selectedType = type['type'] as int),
-                                  child: AnimatedContainer(
-                                    duration: const Duration(milliseconds: 180),
-                                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                                    decoration: BoxDecoration(
-                                      borderRadius: BorderRadius.circular(20),
-                                      color: isSelected ? _DT.purple : Colors.transparent,
-                                      border: Border.all(
-                                        color: isSelected
-                                            ? _DT.purple
-                                            : Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.1),
-                                        width: 1.5,
-                                      ),
-                                    ),
-                                    child: Row(
+                          keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+                          child: Form(
+                            key: _formKey,
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                if (_rooms.isEmpty) ...[
+                                  _GCard(
+                                    padding: const EdgeInsets.all(16),
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
                                       children: [
-                                        Icon(
-                                          _getIconForType(type['type'] as int),
-                                          size: 18,
-                                          color: isSelected ? Colors.white : _DT.purple,
+                                        Row(
+                                          children: [
+                                            const Icon(Icons.info_outline_rounded, color: _DT.purple),
+                                            const SizedBox(width: 10),
+                                            Expanded(
+                                              child: Text(
+                                                'No rooms yet',
+                                                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                                                      fontWeight: FontWeight.w700,
+                                                    ),
+                                              ),
+                                            ),
+                                          ],
                                         ),
-                                        const SizedBox(width: 6),
+                                        const SizedBox(height: 8),
                                         Text(
-                                          type['name'] as String,
+                                          'Add a room first. After that, it will appear on the dashboard even before adding devices.',
                                           style: TextStyle(
                                             fontSize: 13,
-                                            fontWeight: FontWeight.w500,
-                                            color: isSelected
-                                                ? Colors.white
-                                                : Theme.of(context).colorScheme.onSurface,
+                                            color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6),
+                                          ),
+                                        ),
+                                        const SizedBox(height: 14),
+                                        SizedBox(
+                                          width: double.infinity,
+                                          child: ElevatedButton.icon(
+                                            onPressed: _showRoomManagementDialog,
+                                            icon: const Icon(Icons.add_rounded),
+                                            label: const Text('Add Room'),
+                                            style: ElevatedButton.styleFrom(
+                                              backgroundColor: _DT.purple,
+                                              foregroundColor: Colors.white,
+                                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                                              padding: const EdgeInsets.symmetric(vertical: 14),
+                                            ),
                                           ),
                                         ),
                                       ],
                                     ),
                                   ),
-                                );
-                              },
-                            ),
-                          ),
-                          const SizedBox(height: 16),
-                          Text(
-                            'GPIO Pin',
-                            style: TextStyle(
-                              fontSize: 14,
-                              fontWeight: FontWeight.w600,
-                              color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
-                            ),
-                          ),
-                          const SizedBox(height: 6),
-                          DropdownButtonFormField<int>(
-                            value: _availableGPIOs.contains(_selectedGpio) ? _selectedGpio : null,
-                            isExpanded: true,
-                            decoration: InputDecoration(
-                              hintText: _availableGPIOs.isEmpty
-                                  ? 'No free GPIOs available'
-                                  : 'Select GPIO',
-                              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-                            ),
-                            items: _availableGPIOs.map((gpio) {
-                              return DropdownMenuItem<int>(
-                                value: gpio,
-                                child: Text('GPIO $gpio'),
-                              );
-                            }).toList(),
-                            onChanged: _rooms.isEmpty || _isLoading || _availableGPIOs.isEmpty
-                                ? null
-                                : (value) => setState(() => _selectedGpio = value),
-                            validator: (value) {
-                              if (value == null) return 'Choose a free GPIO';
-                              if (!_availableGPIOs.contains(value)) return 'GPIO $value is already used';
-                              return null;
-                            },
-                          ),
-                          const SizedBox(height: 16),
-                          Text(
-                            'Room',
-                            style: TextStyle(
-                              fontSize: 14,
-                              fontWeight: FontWeight.w600,
-                              color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
-                            ),
-                          ),
-                          const SizedBox(height: 6),
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 12),
-                            decoration: BoxDecoration(
-                              borderRadius: BorderRadius.circular(12),
-                              border: Border.all(
-                                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.1),
-                              ),
-                            ),
-                            child: DropdownButtonHideUnderline(
-                              child: DropdownButton<String>(
-                                value: _rooms.contains(_selectedRoom) ? _selectedRoom : null,
-                                isExpanded: true,
-                                hint: const Text('Select Room'),
-                                items: _rooms.map((room) {
-                                  return DropdownMenuItem(value: room, child: Text(room));
-                                }).toList(),
-                                onChanged: _rooms.isEmpty || _isLoading
-                                    ? null
-                                    : (value) {
-                                  if (value != null) setState(() => _selectedRoom = value);
-                                },
-                              ),
-                            ),
-                          ),
-                          const SizedBox(height: 16),
-                          Container(
-                            padding: const EdgeInsets.all(12),
-                            decoration: BoxDecoration(
-                              borderRadius: BorderRadius.circular(12),
-                              color: _DT.purple.withValues(alpha: 0.08),
-                              border: Border.all(color: _DT.purple.withValues(alpha: 0.15)),
-                            ),
-                            child: Row(
-                              children: [
-                                const Icon(Icons.info_outline_rounded, color: _DT.purple, size: 18),
-                                const SizedBox(width: 10),
-                                Expanded(
-                                  child: Text(
-                                    _availableGPIOs.isEmpty
-                                        ? 'No free GPIOs available. Remove a device or change its GPIO first.'
-                                        : 'Free GPIOs: ${_availableGPIOs.join(", ")}',
-                                    style: TextStyle(
-                                      fontSize: 12,
-                                      color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+                                  const SizedBox(height: 18),
+                                ],
+                                Text(
+                                  'Device Name',
+                                  style: TextStyle(
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w600,
+                                    color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+                                  ),
+                                ),
+                                const SizedBox(height: 6),
+                                TextFormField(
+                                  controller: _nameController,
+                                  enabled: _rooms.isNotEmpty && !_isLoading,
+                                  textInputAction: TextInputAction.next,
+                                  decoration: InputDecoration(
+                                    hintText: 'e.g. Living Room Lamp',
+                                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                                    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                                  ),
+                                  validator: (value) {
+                                    if (value == null || value.trim().isEmpty) {
+                                      return 'Please enter a device name';
+                                    }
+                                    return null;
+                                  },
+                                ),
+                                const SizedBox(height: 16),
+                                Text(
+                                  'Device Type',
+                                  style: TextStyle(
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w600,
+                                    color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+                                  ),
+                                ),
+                                const SizedBox(height: 6),
+                                SizedBox(
+                                  height: 48,
+                                  child: ListView.separated(
+                                    scrollDirection: Axis.horizontal,
+                                    itemCount: _deviceTypes.length,
+                                    separatorBuilder: (_, __) => const SizedBox(width: 8),
+                                    itemBuilder: (context, index) {
+                                      final type = _deviceTypes[index];
+                                      final isSelected = _selectedType == type['type'];
+                                      return GestureDetector(
+                                        onTap: _rooms.isEmpty || _isLoading
+                                            ? null
+                                            : () => setState(() => _selectedType = type['type'] as int),
+                                        child: AnimatedContainer(
+                                          duration: const Duration(milliseconds: 180),
+                                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                                          decoration: BoxDecoration(
+                                            borderRadius: BorderRadius.circular(20),
+                                            color: isSelected ? _DT.purple : Colors.transparent,
+                                            border: Border.all(
+                                              color: isSelected
+                                                  ? _DT.purple
+                                                  : Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.1),
+                                              width: 1.5,
+                                            ),
+                                          ),
+                                          child: Row(
+                                            children: [
+                                              Icon(
+                                                _getIconForType(type['type'] as int),
+                                                size: 18,
+                                                color: isSelected ? Colors.white : _DT.purple,
+                                              ),
+                                              const SizedBox(width: 6),
+                                              Text(
+                                                type['name'] as String,
+                                                style: TextStyle(
+                                                  fontSize: 13,
+                                                  fontWeight: FontWeight.w500,
+                                                  color: isSelected
+                                                      ? Colors.white
+                                                      : Theme.of(context).colorScheme.onSurface,
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      );
+                                    },
+                                  ),
+                                ),
+                                const SizedBox(height: 16),
+                                Text(
+                                  'GPIO Pin',
+                                  style: TextStyle(
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w600,
+                                    color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+                                  ),
+                                ),
+                                const SizedBox(height: 6),
+                                DropdownButtonFormField<int>(
+                                  value: _availableGPIOs.contains(_selectedGpio) ? _selectedGpio : null,
+                                  isExpanded: true,
+                                  decoration: InputDecoration(
+                                    hintText: _availableGPIOs.isEmpty
+                                        ? 'No free GPIOs available'
+                                        : 'Select GPIO',
+                                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                                    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                                  ),
+                                  items: _availableGPIOs.map((gpio) {
+                                    return DropdownMenuItem<int>(
+                                      value: gpio,
+                                      child: Text('GPIO $gpio'),
+                                    );
+                                  }).toList(),
+                                  onChanged: _rooms.isEmpty || _isLoading || _availableGPIOs.isEmpty
+                                      ? null
+                                      : (value) => setState(() => _selectedGpio = value),
+                                  validator: (value) {
+                                    if (value == null) return 'Choose a free GPIO';
+                                    if (!_availableGPIOs.contains(value)) return 'GPIO $value is already used';
+                                    return null;
+                                  },
+                                ),
+                                const SizedBox(height: 16),
+                                Text(
+                                  'Room',
+                                  style: TextStyle(
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w600,
+                                    color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+                                  ),
+                                ),
+                                const SizedBox(height: 6),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                                  decoration: BoxDecoration(
+                                    borderRadius: BorderRadius.circular(12),
+                                    border: Border.all(
+                                      color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.1),
                                     ),
+                                  ),
+                                  child: DropdownButtonHideUnderline(
+                                    child: DropdownButton<String>(
+                                      value: _rooms.contains(_selectedRoom) ? _selectedRoom : null,
+                                      isExpanded: true,
+                                      hint: const Text('Select Room'),
+                                      items: _rooms.map((room) {
+                                        return DropdownMenuItem(value: room, child: Text(room));
+                                      }).toList(),
+                                      onChanged: _rooms.isEmpty || _isLoading
+                                          ? null
+                                          : (value) {
+                                              if (value != null) setState(() => _selectedRoom = value);
+                                            },
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(height: 16),
+                                Container(
+                                  padding: const EdgeInsets.all(12),
+                                  decoration: BoxDecoration(
+                                    borderRadius: BorderRadius.circular(12),
+                                    color: _DT.purple.withValues(alpha: 0.08),
+                                    border: Border.all(color: _DT.purple.withValues(alpha: 0.15)),
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      const Icon(Icons.info_outline_rounded, color: _DT.purple, size: 18),
+                                      const SizedBox(width: 10),
+                                      Expanded(
+                                        child: Text(
+                                          _availableGPIOs.isEmpty
+                                              ? 'No free GPIOs available. Remove a device or change its GPIO first.'
+                                              : 'Free GPIOs: ${_availableGPIOs.join(", ")}',
+                                          style: TextStyle(
+                                            fontSize: 12,
+                                            color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                const SizedBox(height: 24),
+                                SizedBox(
+                                  width: double.infinity,
+                                  height: 52,
+                                  child: ElevatedButton(
+                                    onPressed: _isLoading ? null : _addDevice,
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: _DT.purple,
+                                      foregroundColor: Colors.white,
+                                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                                      elevation: 0,
+                                    ),
+                                    child: _isLoading
+                                        ? const SizedBox(
+                                            width: 24,
+                                            height: 24,
+                                            child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                                          )
+                                        : const Text(
+                                            'Add Device',
+                                            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                                          ),
                                   ),
                                 ),
                               ],
                             ),
                           ),
-                          const SizedBox(height: 24),
-                          SizedBox(
-                            width: double.infinity,
-                            height: 52,
-                            child: ElevatedButton(
-                              onPressed: _isLoading ? null : _addDevice,
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: _DT.purple,
-                                foregroundColor: Colors.white,
-                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                                elevation: 0,
-                              ),
-                              child: _isLoading
-                                  ? const SizedBox(
-                                width: 24,
-                                height: 24,
-                                child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                              )
-                                  : const Text(
-                                'Add Device',
-                                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
+                        ),
                 ),
               ],
             ),
@@ -2209,10 +2207,10 @@ class _RoomManagementDialogState extends ConsumerState<_RoomManagementDialog> {
                       ),
                       child: _isSaving
                           ? const SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                      )
+                              width: 20,
+                              height: 20,
+                              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                            )
                           : const Text('Add'),
                     ),
                   ],
@@ -2222,51 +2220,51 @@ class _RoomManagementDialogState extends ConsumerState<_RoomManagementDialog> {
                   constraints: const BoxConstraints(maxHeight: 260),
                   child: _rooms.isEmpty
                       ? Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 28),
-                    child: Column(
-                      children: [
-                        Icon(
-                          Icons.meeting_room_outlined,
-                          size: 42,
-                          color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.25),
-                        ),
-                        const SizedBox(height: 10),
-                        const Text('No rooms yet. Add your first room!'),
-                      ],
-                    ),
-                  )
+                          padding: const EdgeInsets.symmetric(vertical: 28),
+                          child: Column(
+                            children: [
+                              Icon(
+                                Icons.meeting_room_outlined,
+                                size: 42,
+                                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.25),
+                              ),
+                              const SizedBox(height: 10),
+                              const Text('No rooms yet. Add your first room!'),
+                            ],
+                          ),
+                        )
                       : ListView.separated(
-                    shrinkWrap: true,
-                    itemCount: _rooms.length,
-                    separatorBuilder: (_, __) => const SizedBox(height: 8),
-                    itemBuilder: (context, index) {
-                      final room = _rooms[index];
-                      return Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                        decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(8),
-                          color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.05),
+                          shrinkWrap: true,
+                          itemCount: _rooms.length,
+                          separatorBuilder: (_, __) => const SizedBox(height: 8),
+                          itemBuilder: (context, index) {
+                            final room = _rooms[index];
+                            return Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                              decoration: BoxDecoration(
+                                borderRadius: BorderRadius.circular(8),
+                                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.05),
+                              ),
+                              child: Row(
+                                children: [
+                                  const Icon(Icons.room_rounded, color: _DT.purple, size: 16),
+                                  const SizedBox(width: 8),
+                                  Expanded(child: Text(room)),
+                                  IconButton(
+                                    tooltip: 'Edit room',
+                                    icon: const Icon(Icons.edit_rounded, color: _DT.purple, size: 20),
+                                    onPressed: _isSaving ? null : () => _editRoom(room),
+                                  ),
+                                  IconButton(
+                                    tooltip: 'Delete room',
+                                    icon: const Icon(Icons.delete_rounded, color: _DT.red, size: 20),
+                                    onPressed: _isSaving ? null : () => _removeRoom(room),
+                                  ),
+                                ],
+                              ),
+                            );
+                          },
                         ),
-                        child: Row(
-                          children: [
-                            const Icon(Icons.room_rounded, color: _DT.purple, size: 16),
-                            const SizedBox(width: 8),
-                            Expanded(child: Text(room)),
-                            IconButton(
-                              tooltip: 'Edit room',
-                              icon: const Icon(Icons.edit_rounded, color: _DT.purple, size: 20),
-                              onPressed: _isSaving ? null : () => _editRoom(room),
-                            ),
-                            IconButton(
-                              tooltip: 'Delete room',
-                              icon: const Icon(Icons.delete_rounded, color: _DT.red, size: 20),
-                              onPressed: _isSaving ? null : () => _removeRoom(room),
-                            ),
-                          ],
-                        ),
-                      );
-                    },
-                  ),
                 ),
                 const SizedBox(height: 20),
                 SizedBox(
@@ -2625,27 +2623,27 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
     final devices = rawDevices
         .whereType<Map>()
         .map((device) {
-      final updated = Map<String, dynamic>.from(device);
-      final id = updated['id']?.toString() ?? '';
-      if (id.isEmpty) return updated;
+          final updated = Map<String, dynamic>.from(device);
+          final id = updated['id']?.toString() ?? '';
+          if (id.isEmpty) return updated;
 
-      final pendingState = _pendingDeviceStates[id];
-      final pendingAt = _pendingDeviceStateTimes[id];
-      if (pendingState == null || pendingAt == null) return updated;
+          final pendingState = _pendingDeviceStates[id];
+          final pendingAt = _pendingDeviceStateTimes[id];
+          if (pendingState == null || pendingAt == null) return updated;
 
-      final fetchedState = updated['state'] as bool?;
-      if (fetchedState == pendingState) {
-        expired.add(id);
-        return updated;
-      }
+          final fetchedState = updated['state'] as bool?;
+          if (fetchedState == pendingState) {
+            expired.add(id);
+            return updated;
+          }
 
-      if (now.difference(pendingAt) <= _pendingStateHold) {
-        updated['state'] = pendingState;
-      } else {
-        expired.add(id);
-      }
-      return updated;
-    })
+          if (now.difference(pendingAt) <= _pendingStateHold) {
+            updated['state'] = pendingState;
+          } else {
+            expired.add(id);
+          }
+          return updated;
+        })
         .toList();
 
     for (final id in expired) {
@@ -2900,8 +2898,21 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
     }
 
     try {
-      final service = await ref.read(esp32DeviceServiceProvider.future);
-      final success = await service.controlDevice(id: id, state: state);
+      bool success = false;
+      final ble = ref.read(bleServiceProvider);
+      if (ble.isConnected) {
+        try {
+          await ble.setDeviceState(id, state);
+          success = true;
+        } catch (e) {
+          logDebug('BLE direct control failed, falling back: $e');
+        }
+      }
+
+      if (!success) {
+        final service = await ref.read(esp32DeviceServiceProvider.future);
+        success = await service.controlDevice(id: id, state: state);
+      }
 
       if (!mounted) return;
 

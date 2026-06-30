@@ -7,10 +7,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 
 import 'app_constants.dart';
+import 'ble_service.dart';
+import 'app_logger.dart';
 
 final wifiConfigProvider =
-StateNotifierProvider<EspWifiConfigNotifier, EspWifiConfigState>((ref) {
-  return EspWifiConfigNotifier();
+    StateNotifierProvider<EspWifiConfigNotifier, EspWifiConfigState>((ref) {
+  return EspWifiConfigNotifier(ref);
 });
 
 class EspWifiStatus {
@@ -29,12 +31,12 @@ class EspWifiStatus {
   });
 
   factory EspWifiStatus.empty() => const EspWifiStatus(
-    ssid: '',
-    ip: '',
-    rssi: 0,
-    online: false,
-    lastSeen: 0,
-  );
+        ssid: '',
+        ip: '',
+        rssi: 0,
+        online: false,
+        lastSeen: 0,
+      );
 
   factory EspWifiStatus.fromJson(Map<String, dynamic> json) {
     return EspWifiStatus(
@@ -96,8 +98,8 @@ class EspWifiConfigState {
   });
 
   factory EspWifiConfigState.initial() => EspWifiConfigState(
-    status: EspWifiStatus.empty(),
-  );
+        status: EspWifiStatus.empty(),
+      );
 
   EspWifiConfigState copyWith({
     EspWifiStatus? status,
@@ -123,7 +125,62 @@ class EspWifiConfigState {
 }
 
 class EspWifiConfigNotifier extends StateNotifier<EspWifiConfigState> {
-  EspWifiConfigNotifier() : super(EspWifiConfigState.initial());
+  final Ref ref;
+  EspWifiConfigNotifier(this.ref) : super(EspWifiConfigState.initial());
+
+  static const Duration _commandPollDelay = Duration(seconds: 1);
+  static const Duration _scanCommandTimeout = Duration(seconds: 45);
+  static const Duration _connectCommandTimeout = Duration(seconds: 18);
+
+  Future<String> _requireUid() async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null || uid.isEmpty) {
+      throw Exception('User is not signed in');
+    }
+    return uid;
+  }
+
+  Uri _userPath(String uid, String child) {
+    return Uri.parse('${AppConfig.databaseUrl}/smartHome/$uid/$child.json');
+  }
+
+  Future<Map<String, dynamic>?> _getFirebaseMap(String uid, String child) async {
+    final response = await http
+        .get(
+          _userPath(uid, child),
+          headers: {'Cache-Control': 'no-cache'},
+        )
+        .timeout(AppConfig.mediumTimeout);
+
+    if (response.statusCode != 200) {
+      throw Exception('Firebase HTTP ${response.statusCode}: ${response.body}');
+    }
+
+    final body = response.body.trim();
+    if (body.isEmpty || body == 'null') return null;
+
+    final decoded = jsonDecode(body);
+    if (decoded is Map) return decoded.cast<String, dynamic>();
+    return null;
+  }
+
+  Future<void> _putFirebaseMap(
+    String uid,
+    String child,
+    Map<String, dynamic> value,
+  ) async {
+    final response = await http
+        .put(
+          _userPath(uid, child),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode(value),
+        )
+        .timeout(AppConfig.longTimeout);
+
+    if (response.statusCode != 200) {
+      throw Exception('Firebase HTTP ${response.statusCode}: ${response.body}');
+    }
+  }
 
   Future<void> loadStatus({bool silent = false}) async {
     if (!silent) {
@@ -131,24 +188,10 @@ class EspWifiConfigNotifier extends StateNotifier<EspWifiConfigState> {
     }
 
     try {
-      final uid = FirebaseAuth.instance.currentUser?.uid;
-      if (uid == null) {
-        throw Exception('User is not signed in');
-      }
+      final uid = await _requireUid();
+      final decoded = await _getFirebaseMap(uid, 'status');
 
-      final response = await http
-          .get(
-        Uri.parse('${AppConfig.databaseUrl}/smartHome/$uid/status.json'),
-        headers: {'Cache-Control': 'no-cache'},
-      )
-          .timeout(AppConfig.mediumTimeout);
-
-      if (response.statusCode != 200) {
-        throw Exception('Firebase HTTP ${response.statusCode}');
-      }
-
-      final body = response.body.trim();
-      if (body.isEmpty || body == 'null') {
+      if (decoded == null) {
         state = state.copyWith(
           isLoadingStatus: false,
           clearEspIp: true,
@@ -157,12 +200,7 @@ class EspWifiConfigNotifier extends StateNotifier<EspWifiConfigState> {
         return;
       }
 
-      final decoded = jsonDecode(body);
-      if (decoded is! Map) {
-        throw Exception('Invalid ESP status data');
-      }
-
-      final status = EspWifiStatus.fromJson(decoded.cast<String, dynamic>());
+      final status = EspWifiStatus.fromJson(decoded);
       state = state.copyWith(
         status: status,
         espIp: status.ip.isNotEmpty ? status.ip : null,
@@ -177,10 +215,57 @@ class EspWifiConfigNotifier extends StateNotifier<EspWifiConfigState> {
     }
   }
 
-  Future<String?> _ensureEspIp() async {
-    if (state.espIp != null && state.espIp!.isNotEmpty) return state.espIp;
-    await loadStatus(silent: true);
-    return state.espIp;
+  String _newRequestId(String prefix) {
+    return '${prefix}_${DateTime.now().millisecondsSinceEpoch}';
+  }
+
+  EspWifiStatus _statusFromConnectedMap(Map<String, dynamic>? connected) {
+    if (connected == null) return state.status;
+    return EspWifiStatus(
+      ssid: (connected['ssid'] ?? state.status.ssid).toString(),
+      ip: (connected['ip'] ?? state.status.ip).toString(),
+      rssi: _asInt(connected['rssi']),
+      online: true,
+      lastSeen: state.status.lastSeen,
+    );
+  }
+
+  List<EspWifiNetwork> _parseNetworks(dynamic rawNetworks) {
+    final parsed = <EspWifiNetwork>[];
+    if (rawNetworks is List) {
+      for (final item in rawNetworks) {
+        if (item is Map) {
+          final network = EspWifiNetwork.fromJson(item.cast<String, dynamic>());
+          if (network.ssid.trim().isNotEmpty &&
+              !parsed.any((n) => n.ssid == network.ssid)) {
+            parsed.add(network);
+          }
+        }
+      }
+    }
+    parsed.sort((a, b) => b.rssi.compareTo(a.rssi));
+    return parsed;
+  }
+
+  Future<bool> _scanViaBleIfConnected(BuildContext context) async {
+    final ble = ref.read(bleServiceProvider);
+    if (!ble.isConnected) return false;
+    try {
+      final rawNetworks = await ble.scanWifi();
+      final parsed = _parseNetworks(rawNetworks);
+      state = state.copyWith(
+        networks: parsed,
+        isScanning: false,
+        clearError: true,
+      );
+      if (context.mounted) {
+        _showSnack(context, 'BLE Wi-Fi scan complete', _DT.green);
+      }
+      return true;
+    } catch (e) {
+      logDebug('BLE Wi-Fi scan failed: $e');
+      return false;
+    }
   }
 
   Future<void> scanFromEsp(BuildContext context) async {
@@ -188,71 +273,59 @@ class EspWifiConfigNotifier extends StateNotifier<EspWifiConfigState> {
     state = state.copyWith(isScanning: true, clearError: true);
 
     try {
-      final ip = await _ensureEspIp();
-      if (ip == null || ip.isEmpty) {
-        throw Exception('ESP32 IP is unknown. Wait for it to come online first.');
-      }
+      if (await _scanViaBleIfConnected(context)) return;
 
-      final response = await http
-          .get(
-        Uri.parse('http://$ip/api/wifi/scan'),
-        headers: {'Cache-Control': 'no-cache'},
-      )
-          .timeout(const Duration(seconds: 25));
+      final uid = await _requireUid();
+      final requestId = _newRequestId('wifi_scan');
 
-      if (response.statusCode != 200) {
-        throw Exception('ESP HTTP ${response.statusCode}: ${response.body}');
-      }
+      await _putFirebaseMap(uid, 'wifiCommand', {
+        'action': 'scan_wifi',
+        'requestId': requestId,
+        'status': 'pending',
+        'createdAt': DateTime.now().millisecondsSinceEpoch,
+      });
 
-      final decoded = jsonDecode(response.body);
-      if (decoded is! Map) {
-        throw Exception('Invalid ESP scan response');
-      }
+      final deadline = DateTime.now().add(_scanCommandTimeout);
+      Map<String, dynamic>? latest;
 
-      final map = decoded.cast<String, dynamic>();
-      final connected = map['connected'];
-      EspWifiStatus status = state.status;
-      if (connected is Map) {
-        final connectedMap = connected.cast<String, dynamic>();
-        status = EspWifiStatus(
-          ssid: (connectedMap['ssid'] ?? status.ssid).toString(),
-          ip: (connectedMap['ip'] ?? ip).toString(),
-          rssi: _asInt(connectedMap['rssi']),
-          online: true,
-          lastSeen: status.lastSeen,
-        );
-      }
+      while (DateTime.now().isBefore(deadline)) {
+        await Future.delayed(_commandPollDelay);
+        latest = await _getFirebaseMap(uid, 'wifiScan');
+        if (latest == null || latest['requestId'] != requestId) continue;
 
-      final rawNetworks = map['networks'];
-      final parsed = <EspWifiNetwork>[];
-      if (rawNetworks is List) {
-        for (final item in rawNetworks) {
-          if (item is Map) {
-            final network = EspWifiNetwork.fromJson(item.cast<String, dynamic>());
-            if (network.ssid.trim().isNotEmpty &&
-                !parsed.any((n) => n.ssid == network.ssid)) {
-              parsed.add(network);
-            }
+        final statusText = (latest['status'] ?? '').toString();
+        if (statusText == 'done') {
+          final connected = latest['connected'] is Map
+              ? (latest['connected'] as Map).cast<String, dynamic>()
+              : null;
+          final parsed = _parseNetworks(latest['networks']);
+
+          state = state.copyWith(
+            status: _statusFromConnectedMap(connected),
+            networks: parsed,
+            espIp: (connected?['ip'] ?? state.espIp)?.toString(),
+            isScanning: false,
+            clearError: true,
+          );
+
+          if (context.mounted) {
+            _showSnack(context, 'ESP32 scan complete from Firebase', _DT.green);
           }
+          return;
+        }
+
+        if (statusText == 'error') {
+          throw Exception(latest['message'] ?? latest['error'] ?? 'ESP32 scan failed');
         }
       }
-      parsed.sort((a, b) => b.rssi.compareTo(a.rssi));
 
-      state = state.copyWith(
-        status: status,
-        networks: parsed,
-        isScanning: false,
-        clearError: true,
+      throw Exception(
+        'ESP32 did not answer the Firebase scan command. Make sure it is powered, connected to Wi-Fi, registered to this account, and running the latest firmware.',
       );
-
-      if (context.mounted) {
-        _showSnack(context, 'ESP32 scan complete', _DT.green);
-      }
     } catch (e) {
       state = state.copyWith(
         isScanning: false,
-        error:
-        'ESP32 scan failed: $e\nMake sure your phone and ESP32 are on the same Wi-Fi network.',
+        error: _friendlyScanError(e),
       );
       if (context.mounted) {
         _showSnack(context, 'ESP32 scan failed', _DT.red);
@@ -265,7 +338,8 @@ class EspWifiConfigNotifier extends StateNotifier<EspWifiConfigState> {
     required String ssid,
     required String password,
   }) async {
-    if (ssid.trim().isEmpty) {
+    final cleanSsid = ssid.trim();
+    if (cleanSsid.isEmpty) {
       _showSnack(context, 'Choose or type a Wi-Fi name first', _DT.red);
       return;
     }
@@ -274,34 +348,59 @@ class EspWifiConfigNotifier extends StateNotifier<EspWifiConfigState> {
     state = state.copyWith(isConnecting: true, clearError: true);
 
     try {
-      final ip = await _ensureEspIp();
-      if (ip == null || ip.isEmpty) {
-        throw Exception('ESP32 IP is unknown.');
+      final ble = ref.read(bleServiceProvider);
+      if (ble.isConnected) {
+        await ble.connectWifi(cleanSsid, password);
+        state = state.copyWith(isConnecting: false, clearError: true);
+        if (context.mounted) {
+          _showSnack(context, 'Wi-Fi credentials sent directly by BLE. ESP32 will restart.', _DT.green);
+        }
+        return;
       }
 
-      final response = await http
-          .post(
-        Uri.parse('http://$ip/api/wifi/connect'),
-        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-        body: {
-          'ssid': ssid.trim(),
-          'pass': password,
-        },
-      )
-          .timeout(AppConfig.longTimeout);
+      final uid = await _requireUid();
+      final requestId = _newRequestId('wifi_connect');
 
-      if (response.statusCode != 200) {
-        throw Exception('ESP HTTP ${response.statusCode}: ${response.body}');
+      await _putFirebaseMap(uid, 'wifiCommand', {
+        'action': 'connect_wifi',
+        'requestId': requestId,
+        'status': 'pending',
+        'ssid': cleanSsid,
+        'pass': password,
+        'createdAt': DateTime.now().millisecondsSinceEpoch,
+      });
+
+      final deadline = DateTime.now().add(_connectCommandTimeout);
+      while (DateTime.now().isBefore(deadline)) {
+        await Future.delayed(_commandPollDelay);
+        final result = await _getFirebaseMap(uid, 'wifiCommandResult');
+        if (result == null || result['requestId'] != requestId) continue;
+
+        final statusText = (result['status'] ?? '').toString();
+        if (statusText == 'accepted' || statusText == 'restarting' || statusText == 'done') {
+          state = state.copyWith(isConnecting: false, clearError: true);
+          if (context.mounted) {
+            _showSnack(context, 'ESP32 accepted Wi-Fi change. It will reconnect to $cleanSsid', _DT.green);
+          }
+          return;
+        }
+
+        if (statusText == 'error') {
+          throw Exception(result['message'] ?? result['error'] ?? 'ESP32 rejected Wi-Fi command');
+        }
       }
 
-      state = state.copyWith(isConnecting: false, clearError: true);
+      state = state.copyWith(
+        isConnecting: false,
+        error: 'Wi-Fi command was sent, but the ESP32 did not confirm it. If it reconnects, status will update after the next heartbeat.',
+      );
       if (context.mounted) {
-        _showSnack(context, 'Saved. ESP32 will reconnect to ${ssid.trim()}', _DT.green);
+        _showSnack(context, 'Command sent, waiting for ESP32 reconnect', _DT.amber);
       }
     } catch (e) {
       state = state.copyWith(
         isConnecting: false,
-        error: 'Could not send Wi-Fi credentials: $e',
+        error: 'Could not send Wi-Fi credentials through Firebase: $e',
       );
       if (context.mounted) {
         _showSnack(context, 'Wi-Fi change failed', _DT.red);
@@ -314,23 +413,50 @@ class EspWifiConfigNotifier extends StateNotifier<EspWifiConfigState> {
     state = state.copyWith(isConnecting: true, clearError: true);
 
     try {
-      final ip = await _ensureEspIp();
-      if (ip == null || ip.isEmpty) {
-        throw Exception('ESP32 IP is unknown.');
+      final ble = ref.read(bleServiceProvider);
+      if (ble.isConnected) {
+        await ble.forgetWifi();
+        state = state.copyWith(isConnecting: false, clearError: true);
+        if (context.mounted) {
+          _showSnack(context, 'Forget command sent directly by BLE. ESP32 will restart.', _DT.amber);
+        }
+        return;
       }
 
-      final response = await http
-          .post(Uri.parse('http://$ip/api/wifi/forget'))
-          .timeout(AppConfig.longTimeout);
+      final uid = await _requireUid();
+      final requestId = _newRequestId('wifi_forget');
 
-      if (response.statusCode != 200) {
-        throw Exception('ESP HTTP ${response.statusCode}: ${response.body}');
+      await _putFirebaseMap(uid, 'wifiCommand', {
+        'action': 'forget_wifi',
+        'requestId': requestId,
+        'status': 'pending',
+        'createdAt': DateTime.now().millisecondsSinceEpoch,
+      });
+
+      final deadline = DateTime.now().add(_connectCommandTimeout);
+      while (DateTime.now().isBefore(deadline)) {
+        await Future.delayed(_commandPollDelay);
+        final result = await _getFirebaseMap(uid, 'wifiCommandResult');
+        if (result == null || result['requestId'] != requestId) continue;
+
+        final statusText = (result['status'] ?? '').toString();
+        if (statusText == 'accepted' || statusText == 'restarting' || statusText == 'done') {
+          state = state.copyWith(isConnecting: false, clearError: true);
+          if (context.mounted) {
+            _showSnack(context, 'ESP32 will restart into setup mode', _DT.amber);
+          }
+          return;
+        }
+
+        if (statusText == 'error') {
+          throw Exception(result['message'] ?? result['error'] ?? 'ESP32 rejected forget command');
+        }
       }
 
-      state = state.copyWith(isConnecting: false, clearError: true);
-      if (context.mounted) {
-        _showSnack(context, 'ESP32 will restart into setup mode', _DT.amber);
-      }
+      state = state.copyWith(
+        isConnecting: false,
+        error: 'Forget command was sent, but the ESP32 did not confirm it.',
+      );
     } catch (e) {
       state = state.copyWith(
         isConnecting: false,
@@ -353,23 +479,15 @@ String _friendlyScanError(Object e) {
   final raw = e.toString();
   final lower = raw.toLowerCase();
 
-  if (lower.contains('failed to fetch') ||
-      lower.contains('xmlhttprequest') ||
-      lower.contains('clientexception')) {
-    return 'ESP32 scan failed because the app could not reach the ESP local API.\n\n'
-        'Do these checks:\n'
-        '1) Upload the latest ESP32 firmware from this chat.\n'
-        '2) Make sure your phone/PC and ESP32 are on the same Wi-Fi network.\n'
-        '3) On Flutter Web, CORS is required; the latest ESP32 firmware adds it.\n'
-        '4) Try opening http://<ESP-IP>/api/wifi/status from the same browser/device.';
+  if (lower.contains('timeout') || lower.contains('did not answer')) {
+    return 'ESP32 did not answer the Firebase Wi-Fi command. Make sure the ESP32 is powered on, connected to the internet, claimed by this account, and running the latest firmware from this chat.';
   }
 
-  if (lower.contains('timeout')) {
-    return 'ESP32 scan timed out. The ESP may be busy or unreachable. Make sure it is powered, online, and on the same network.';
+  if (lower.contains('permission') || lower.contains('401') || lower.contains('403')) {
+    return 'Firebase rejected the Wi-Fi command. Check your Realtime Database rules for smartHome/<uid>/wifiCommand and wifiScan.';
   }
 
-  return 'ESP32 scan failed: $raw\n'
-      'Make sure your phone/PC and ESP32 are on the same Wi-Fi network.';
+  return 'ESP32 Wi-Fi command failed: $raw';
 }
 
 class _DT {
@@ -429,22 +547,23 @@ class _WifiConfigPageState extends ConsumerState<WifiConfigPage> {
 
   Future<void> _connect() async {
     await ref.read(wifiConfigProvider.notifier).connectToNetwork(
-      context: context,
-      ssid: _ssidController.text,
-      password: _passwordController.text,
-    );
+          context: context,
+          ssid: _ssidController.text,
+          password: _passwordController.text,
+        );
   }
 
   @override
   Widget build(BuildContext context) {
     final state = ref.watch(wifiConfigProvider);
     final notifier = ref.read(wifiConfigProvider.notifier);
+    final bleStatus = ref.watch(bleServiceProvider).currentStatus;
 
     return Scaffold(
       backgroundColor: Colors.transparent,
       extendBodyBehindAppBar: true,
       appBar: _GlassAppBar(
-        title: 'ESP32 Wi-Fi',
+        title: 'ESP32 Wi-Fi Manager',
         onRefresh: state.isScanning ? null : () => notifier.scanFromEsp(context),
       ),
       body: _WallpaperBackground(
@@ -486,7 +605,7 @@ class _WifiConfigPageState extends ConsumerState<WifiConfigPage> {
                 const SizedBox(height: 12),
                 _HintCard(
                   text:
-                  'This scan runs from the ESP32 itself, so it shows the networks available near the board, not only near your phone.',
+                      'This scan runs remotely through Firebase. Your phone does not need to be on the same Wi-Fi as the ESP32; the ESP32 scans using its own antenna and uploads the results.',
                 ),
               ],
             ),
@@ -518,7 +637,7 @@ class _GlassAppBar extends StatelessWidget implements PreferredSizeWidget {
           scrolledUnderElevation: 0,
           actions: [
             IconButton(
-              tooltip: 'Scan from ESP32',
+              tooltip: 'Ask ESP32 to scan via Firebase',
               onPressed: onRefresh,
               icon: const Icon(Icons.radar_rounded),
             ),
@@ -591,15 +710,15 @@ class _Blob extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Container(
-    width: size,
-    height: size,
-    decoration: BoxDecoration(
-      shape: BoxShape.circle,
-      gradient: RadialGradient(
-        colors: [color.withValues(alpha: 0.48), color.withValues(alpha: 0)],
-      ),
-    ),
-  );
+        width: size,
+        height: size,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          gradient: RadialGradient(
+            colors: [color.withValues(alpha: 0.48), color.withValues(alpha: 0)],
+          ),
+        ),
+      );
 }
 
 class _GCard extends StatelessWidget {
@@ -803,7 +922,7 @@ class _ConnectCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const _SectionTitle(icon: Icons.edit_rounded, title: 'Change ESP32 network'),
+          const _SectionTitle(icon: Icons.edit_rounded, title: 'Change ESP32 network remotely'),
           const SizedBox(height: 14),
           TextField(
             controller: ssidController,
@@ -834,7 +953,7 @@ class _ConnectCard extends StatelessWidget {
                   icon: isConnecting
                       ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
                       : const Icon(Icons.power_settings_new_rounded),
-                  label: Text(isConnecting ? 'Sending...' : 'Connect ESP32'),
+                  label: Text(isConnecting ? 'Sending...' : 'Send to ESP32'),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: _DT.purple,
                     foregroundColor: Colors.white,
@@ -852,7 +971,7 @@ class _ConnectCard extends StatelessWidget {
             child: OutlinedButton.icon(
               onPressed: isConnecting ? null : onForget,
               icon: const Icon(Icons.delete_forever_rounded, color: _DT.red),
-              label: const Text('Forget saved Wi-Fi and restart setup mode'),
+              label: const Text('Forget saved Wi-Fi remotely and restart setup mode'),
               style: OutlinedButton.styleFrom(
                 foregroundColor: _DT.red,
                 side: BorderSide(color: _DT.red.withValues(alpha: 0.45)),
@@ -916,7 +1035,7 @@ class _NearbyNetworksCard extends StatelessWidget {
             children: [
               const Expanded(child: _SectionTitle(icon: Icons.radar_rounded, title: 'Nearby networks')),
               _MiniButton(
-                label: isScanning ? 'Scanning' : 'Scan',
+                label: isScanning ? 'Scanning' : 'Remote Scan',
                 icon: Icons.refresh_rounded,
                 onTap: isScanning ? null : onScan,
               ),
@@ -931,19 +1050,19 @@ class _NearbyNetworksCard extends StatelessWidget {
           else if (error != null)
             _InlineError(message: error!, onRetry: onScan)
           else if (networks.isEmpty)
-              _EmptyNetworks(onScan: onScan)
-            else
-              ...networks.map((network) {
-                final isCurrent = network.current || network.ssid == currentSsid;
-                return Padding(
-                  padding: const EdgeInsets.only(bottom: 10),
-                  child: _NetworkTile(
-                    network: network,
-                    isCurrent: isCurrent,
-                    onTap: () => onSelect(network),
-                  ),
-                );
-              }),
+            _EmptyNetworks(onScan: onScan)
+          else
+            ...networks.map((network) {
+              final isCurrent = network.current || network.ssid == currentSsid;
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 10),
+                child: _NetworkTile(
+                  network: network,
+                  isCurrent: isCurrent,
+                  onTap: () => onSelect(network),
+                ),
+              );
+            }),
         ],
       ),
     );
@@ -1141,12 +1260,12 @@ class _EmptyNetworks extends StatelessWidget {
           const Text('No networks loaded yet', style: TextStyle(fontWeight: FontWeight.w800)),
           const SizedBox(height: 4),
           Text(
-            'Tap scan to ask the ESP32 to search nearby Wi-Fi networks.',
+            'Tap remote scan to ask the ESP32 through Firebase to search nearby Wi-Fi networks.',
             textAlign: TextAlign.center,
             style: TextStyle(color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.55)),
           ),
           const SizedBox(height: 12),
-          _MiniButton(label: 'Scan from ESP32', icon: Icons.radar_rounded, onTap: onScan),
+          _MiniButton(label: 'Remote scan', icon: Icons.radar_rounded, onTap: onScan),
         ],
       ),
     );
