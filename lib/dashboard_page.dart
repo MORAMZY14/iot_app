@@ -2,7 +2,6 @@ import 'dart:convert';
 import 'dart:async';
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
@@ -127,8 +126,9 @@ class _CacheEntry {
 // ────────────────────────────────────────────────────────────
 class ESP32DeviceService {
   final String esp32Ip;
+  final BleService bleService;
 
-  ESP32DeviceService(this.esp32Ip);
+  ESP32DeviceService(this.esp32Ip, this.bleService);
 
   // Read devices from Firebase - FIXED null handling
   Future<Map<String, dynamic>> getDevices() async {
@@ -246,6 +246,18 @@ class ESP32DeviceService {
     required String id,
     required bool state,
   }) async {
+    // Backup path: if BLE is already connected, use it first.
+    // This keeps control working even when internet/router/Firebase is unavailable.
+    if (bleService.isConnected) {
+      try {
+        final ok = await bleService.controlDevice(id: id, state: state)
+            .timeout(const Duration(milliseconds: 900));
+        if (ok) return true;
+      } catch (e) {
+        logDebug('BLE backup control failed, trying local Wi-Fi/Firebase: $e');
+      }
+    }
+
     try {
       final localResponse = await http.post(
         Uri.parse('http://$esp32Ip/api/devices/control'),
@@ -580,7 +592,8 @@ final esp32IpProvider = FutureProvider<String>((ref) async {
 
 final esp32DeviceServiceProvider = FutureProvider<ESP32DeviceService>((ref) async {
   final ip = await ref.watch(esp32IpProvider.future);
-  return ESP32DeviceService(ip);
+  final bleService = ref.read(bleServiceProvider);
+  return ESP32DeviceService(ip, bleService);
 });
 
 // ────────────────────────────────────────────────────────────
@@ -660,7 +673,9 @@ final httpDataProvider = FutureProvider<Map<String, dynamic>>((ref) async {
           final status = processedData['status'] as Map? ?? {};
           int lastSeen = status['lastSeen'] as int? ?? 0;
           final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
-          status['online'] = (now - lastSeen) < 10 && lastSeen > 0;
+          // ESP heartbeat is every 30 seconds, so a 10-second online window
+          // makes the UI falsely show Offline between heartbeats.
+          status['online'] = (now - lastSeen) < 90 && lastSeen > 0;
           processedData['status'] = status;
 
           cache.set(cacheKey, processedData);
@@ -684,6 +699,8 @@ final httpDataProvider = FutureProvider<Map<String, dynamic>>((ref) async {
 // ────────────────────────────────────────────────────────────
 // 7. BLE + HTTP MERGED DATA PROVIDER
 // ────────────────────────────────────────────────────────────
+final bleServiceProvider = Provider<BleService>((ref) => BleService());
+
 final smartHomeDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
   final bleService = ref.watch(bleServiceProvider);
   final controller = StreamController<Map<String, dynamic>>();
@@ -766,15 +783,26 @@ final smartHomeDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
 
   httpTimer = Timer.periodic(const Duration(seconds: 5), (_) => fetchHttpData());
 
-  // BLE is optional. Do not auto-connect here, especially on Flutter Web,
-  // because Web Bluetooth opens a browser chooser and throws if the user cancels.
-  // Use the explicit BLE connect button instead.
+  Future<void> connectWithRetry() async {
+    int attempts = 0;
+    while (attempts < 3) {
+      try {
+        await bleService.connect();
+        break;
+      } catch (_) {
+        attempts++;
+        if (attempts < 3) await Future.delayed(Duration(seconds: attempts));
+      }
+    }
+  }
+
+  connectWithRetry();
 
   ref.onDispose(() {
     bleStatusSub.cancel();
     httpTimer?.cancel();
     controller.close();
-    // The global BLE provider owns/disposes the BLE service.
+    bleService.dispose();
   });
 
   return controller.stream;
@@ -961,14 +989,11 @@ class _DashboardPageState extends ConsumerState<DashboardPage>
   }
 
   Future<void> _manualRefresh() async {
-    // Do not auto-open the browser Web Bluetooth chooser during normal refresh.
-    // BLE connection is now only started from the explicit BLE button.
-    if (!kIsWeb) {
-      final bleService = ref.read(bleServiceProvider);
-      await bleService.connect();
-    }
+    final bleService = ref.read(bleServiceProvider);
+    await bleService.connect();
     ref.invalidate(httpDataProvider);
 
+    final authService = ref.read(authServiceProvider).requireValue;
     if (mounted) _showSnack(context, 'Refreshed ✓', color: _DT.green);
   }
 
@@ -1374,10 +1399,10 @@ class _EditGPIODialogState extends ConsumerState<_EditGPIODialog> {
                   onChanged: _isLoading || _availableGPIOs.isEmpty
                       ? null
                       : (value) {
-                          if (value != null) {
-                            setState(() => _selectedGpio = value);
-                          }
-                        },
+                    if (value != null) {
+                      setState(() => _selectedGpio = value);
+                    }
+                  },
                 ),
               ),
             ),
@@ -1668,269 +1693,269 @@ class _QuickActionDialogState extends ConsumerState<_QuickActionDialog> {
                   child: _isLoading && _deviceTypes.isEmpty
                       ? const Center(child: CircularProgressIndicator(color: _DT.purple))
                       : SingleChildScrollView(
-                          keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-                          child: Form(
-                            key: _formKey,
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                if (_rooms.isEmpty) ...[
-                                  _GCard(
-                                    padding: const EdgeInsets.all(16),
-                                    child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      children: [
-                                        Row(
-                                          children: [
-                                            const Icon(Icons.info_outline_rounded, color: _DT.purple),
-                                            const SizedBox(width: 10),
-                                            Expanded(
-                                              child: Text(
-                                                'No rooms yet',
-                                                style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                                                      fontWeight: FontWeight.w700,
-                                                    ),
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                        const SizedBox(height: 8),
-                                        Text(
-                                          'Add a room first. After that, it will appear on the dashboard even before adding devices.',
-                                          style: TextStyle(
-                                            fontSize: 13,
-                                            color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6),
-                                          ),
-                                        ),
-                                        const SizedBox(height: 14),
-                                        SizedBox(
-                                          width: double.infinity,
-                                          child: ElevatedButton.icon(
-                                            onPressed: _showRoomManagementDialog,
-                                            icon: const Icon(Icons.add_rounded),
-                                            label: const Text('Add Room'),
-                                            style: ElevatedButton.styleFrom(
-                                              backgroundColor: _DT.purple,
-                                              foregroundColor: Colors.white,
-                                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                                              padding: const EdgeInsets.symmetric(vertical: 14),
-                                            ),
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                  const SizedBox(height: 18),
-                                ],
-                                Text(
-                                  'Device Name',
-                                  style: TextStyle(
-                                    fontSize: 14,
-                                    fontWeight: FontWeight.w600,
-                                    color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
-                                  ),
-                                ),
-                                const SizedBox(height: 6),
-                                TextFormField(
-                                  controller: _nameController,
-                                  enabled: _rooms.isNotEmpty && !_isLoading,
-                                  textInputAction: TextInputAction.next,
-                                  decoration: InputDecoration(
-                                    hintText: 'e.g. Living Room Lamp',
-                                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                                    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-                                  ),
-                                  validator: (value) {
-                                    if (value == null || value.trim().isEmpty) {
-                                      return 'Please enter a device name';
-                                    }
-                                    return null;
-                                  },
-                                ),
-                                const SizedBox(height: 16),
-                                Text(
-                                  'Device Type',
-                                  style: TextStyle(
-                                    fontSize: 14,
-                                    fontWeight: FontWeight.w600,
-                                    color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
-                                  ),
-                                ),
-                                const SizedBox(height: 6),
-                                SizedBox(
-                                  height: 48,
-                                  child: ListView.separated(
-                                    scrollDirection: Axis.horizontal,
-                                    itemCount: _deviceTypes.length,
-                                    separatorBuilder: (_, __) => const SizedBox(width: 8),
-                                    itemBuilder: (context, index) {
-                                      final type = _deviceTypes[index];
-                                      final isSelected = _selectedType == type['type'];
-                                      return GestureDetector(
-                                        onTap: _rooms.isEmpty || _isLoading
-                                            ? null
-                                            : () => setState(() => _selectedType = type['type'] as int),
-                                        child: AnimatedContainer(
-                                          duration: const Duration(milliseconds: 180),
-                                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                                          decoration: BoxDecoration(
-                                            borderRadius: BorderRadius.circular(20),
-                                            color: isSelected ? _DT.purple : Colors.transparent,
-                                            border: Border.all(
-                                              color: isSelected
-                                                  ? _DT.purple
-                                                  : Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.1),
-                                              width: 1.5,
-                                            ),
-                                          ),
-                                          child: Row(
-                                            children: [
-                                              Icon(
-                                                _getIconForType(type['type'] as int),
-                                                size: 18,
-                                                color: isSelected ? Colors.white : _DT.purple,
-                                              ),
-                                              const SizedBox(width: 6),
-                                              Text(
-                                                type['name'] as String,
-                                                style: TextStyle(
-                                                  fontSize: 13,
-                                                  fontWeight: FontWeight.w500,
-                                                  color: isSelected
-                                                      ? Colors.white
-                                                      : Theme.of(context).colorScheme.onSurface,
-                                                ),
-                                              ),
-                                            ],
-                                          ),
-                                        ),
-                                      );
-                                    },
-                                  ),
-                                ),
-                                const SizedBox(height: 16),
-                                Text(
-                                  'GPIO Pin',
-                                  style: TextStyle(
-                                    fontSize: 14,
-                                    fontWeight: FontWeight.w600,
-                                    color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
-                                  ),
-                                ),
-                                const SizedBox(height: 6),
-                                DropdownButtonFormField<int>(
-                                  value: _availableGPIOs.contains(_selectedGpio) ? _selectedGpio : null,
-                                  isExpanded: true,
-                                  decoration: InputDecoration(
-                                    hintText: _availableGPIOs.isEmpty
-                                        ? 'No free GPIOs available'
-                                        : 'Select GPIO',
-                                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                                    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-                                  ),
-                                  items: _availableGPIOs.map((gpio) {
-                                    return DropdownMenuItem<int>(
-                                      value: gpio,
-                                      child: Text('GPIO $gpio'),
-                                    );
-                                  }).toList(),
-                                  onChanged: _rooms.isEmpty || _isLoading || _availableGPIOs.isEmpty
-                                      ? null
-                                      : (value) => setState(() => _selectedGpio = value),
-                                  validator: (value) {
-                                    if (value == null) return 'Choose a free GPIO';
-                                    if (!_availableGPIOs.contains(value)) return 'GPIO $value is already used';
-                                    return null;
-                                  },
-                                ),
-                                const SizedBox(height: 16),
-                                Text(
-                                  'Room',
-                                  style: TextStyle(
-                                    fontSize: 14,
-                                    fontWeight: FontWeight.w600,
-                                    color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
-                                  ),
-                                ),
-                                const SizedBox(height: 6),
-                                Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 12),
-                                  decoration: BoxDecoration(
-                                    borderRadius: BorderRadius.circular(12),
-                                    border: Border.all(
-                                      color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.1),
-                                    ),
-                                  ),
-                                  child: DropdownButtonHideUnderline(
-                                    child: DropdownButton<String>(
-                                      value: _rooms.contains(_selectedRoom) ? _selectedRoom : null,
-                                      isExpanded: true,
-                                      hint: const Text('Select Room'),
-                                      items: _rooms.map((room) {
-                                        return DropdownMenuItem(value: room, child: Text(room));
-                                      }).toList(),
-                                      onChanged: _rooms.isEmpty || _isLoading
-                                          ? null
-                                          : (value) {
-                                              if (value != null) setState(() => _selectedRoom = value);
-                                            },
-                                    ),
-                                  ),
-                                ),
-                                const SizedBox(height: 16),
-                                Container(
-                                  padding: const EdgeInsets.all(12),
-                                  decoration: BoxDecoration(
-                                    borderRadius: BorderRadius.circular(12),
-                                    color: _DT.purple.withValues(alpha: 0.08),
-                                    border: Border.all(color: _DT.purple.withValues(alpha: 0.15)),
-                                  ),
-                                  child: Row(
+                    keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+                    child: Form(
+                      key: _formKey,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          if (_rooms.isEmpty) ...[
+                            _GCard(
+                              padding: const EdgeInsets.all(16),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
                                     children: [
-                                      const Icon(Icons.info_outline_rounded, color: _DT.purple, size: 18),
+                                      const Icon(Icons.info_outline_rounded, color: _DT.purple),
                                       const SizedBox(width: 10),
                                       Expanded(
                                         child: Text(
-                                          _availableGPIOs.isEmpty
-                                              ? 'No free GPIOs available. Remove a device or change its GPIO first.'
-                                              : 'Free GPIOs: ${_availableGPIOs.join(", ")}',
-                                          style: TextStyle(
-                                            fontSize: 12,
-                                            color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+                                          'No rooms yet',
+                                          style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                                            fontWeight: FontWeight.w700,
                                           ),
                                         ),
                                       ),
                                     ],
                                   ),
-                                ),
-                                const SizedBox(height: 24),
-                                SizedBox(
-                                  width: double.infinity,
-                                  height: 52,
-                                  child: ElevatedButton(
-                                    onPressed: _isLoading ? null : _addDevice,
-                                    style: ElevatedButton.styleFrom(
-                                      backgroundColor: _DT.purple,
-                                      foregroundColor: Colors.white,
-                                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                                      elevation: 0,
+                                  const SizedBox(height: 8),
+                                  Text(
+                                    'Add a room first. After that, it will appear on the dashboard even before adding devices.',
+                                    style: TextStyle(
+                                      fontSize: 13,
+                                      color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6),
                                     ),
-                                    child: _isLoading
-                                        ? const SizedBox(
-                                            width: 24,
-                                            height: 24,
-                                            child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                                          )
-                                        : const Text(
-                                            'Add Device',
-                                            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                                  ),
+                                  const SizedBox(height: 14),
+                                  SizedBox(
+                                    width: double.infinity,
+                                    child: ElevatedButton.icon(
+                                      onPressed: _showRoomManagementDialog,
+                                      icon: const Icon(Icons.add_rounded),
+                                      label: const Text('Add Room'),
+                                      style: ElevatedButton.styleFrom(
+                                        backgroundColor: _DT.purple,
+                                        foregroundColor: Colors.white,
+                                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                                        padding: const EdgeInsets.symmetric(vertical: 14),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            const SizedBox(height: 18),
+                          ],
+                          Text(
+                            'Device Name',
+                            style: TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w600,
+                              color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          TextFormField(
+                            controller: _nameController,
+                            enabled: _rooms.isNotEmpty && !_isLoading,
+                            textInputAction: TextInputAction.next,
+                            decoration: InputDecoration(
+                              hintText: 'e.g. Living Room Lamp',
+                              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                            ),
+                            validator: (value) {
+                              if (value == null || value.trim().isEmpty) {
+                                return 'Please enter a device name';
+                              }
+                              return null;
+                            },
+                          ),
+                          const SizedBox(height: 16),
+                          Text(
+                            'Device Type',
+                            style: TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w600,
+                              color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          SizedBox(
+                            height: 48,
+                            child: ListView.separated(
+                              scrollDirection: Axis.horizontal,
+                              itemCount: _deviceTypes.length,
+                              separatorBuilder: (_, __) => const SizedBox(width: 8),
+                              itemBuilder: (context, index) {
+                                final type = _deviceTypes[index];
+                                final isSelected = _selectedType == type['type'];
+                                return GestureDetector(
+                                  onTap: _rooms.isEmpty || _isLoading
+                                      ? null
+                                      : () => setState(() => _selectedType = type['type'] as int),
+                                  child: AnimatedContainer(
+                                    duration: const Duration(milliseconds: 180),
+                                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                                    decoration: BoxDecoration(
+                                      borderRadius: BorderRadius.circular(20),
+                                      color: isSelected ? _DT.purple : Colors.transparent,
+                                      border: Border.all(
+                                        color: isSelected
+                                            ? _DT.purple
+                                            : Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.1),
+                                        width: 1.5,
+                                      ),
+                                    ),
+                                    child: Row(
+                                      children: [
+                                        Icon(
+                                          _getIconForType(type['type'] as int),
+                                          size: 18,
+                                          color: isSelected ? Colors.white : _DT.purple,
+                                        ),
+                                        const SizedBox(width: 6),
+                                        Text(
+                                          type['name'] as String,
+                                          style: TextStyle(
+                                            fontSize: 13,
+                                            fontWeight: FontWeight.w500,
+                                            color: isSelected
+                                                ? Colors.white
+                                                : Theme.of(context).colorScheme.onSurface,
                                           ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+                          Text(
+                            'GPIO Pin',
+                            style: TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w600,
+                              color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          DropdownButtonFormField<int>(
+                            value: _availableGPIOs.contains(_selectedGpio) ? _selectedGpio : null,
+                            isExpanded: true,
+                            decoration: InputDecoration(
+                              hintText: _availableGPIOs.isEmpty
+                                  ? 'No free GPIOs available'
+                                  : 'Select GPIO',
+                              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                            ),
+                            items: _availableGPIOs.map((gpio) {
+                              return DropdownMenuItem<int>(
+                                value: gpio,
+                                child: Text('GPIO $gpio'),
+                              );
+                            }).toList(),
+                            onChanged: _rooms.isEmpty || _isLoading || _availableGPIOs.isEmpty
+                                ? null
+                                : (value) => setState(() => _selectedGpio = value),
+                            validator: (value) {
+                              if (value == null) return 'Choose a free GPIO';
+                              if (!_availableGPIOs.contains(value)) return 'GPIO $value is already used';
+                              return null;
+                            },
+                          ),
+                          const SizedBox(height: 16),
+                          Text(
+                            'Room',
+                            style: TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w600,
+                              color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 12),
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(
+                                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.1),
+                              ),
+                            ),
+                            child: DropdownButtonHideUnderline(
+                              child: DropdownButton<String>(
+                                value: _rooms.contains(_selectedRoom) ? _selectedRoom : null,
+                                isExpanded: true,
+                                hint: const Text('Select Room'),
+                                items: _rooms.map((room) {
+                                  return DropdownMenuItem(value: room, child: Text(room));
+                                }).toList(),
+                                onChanged: _rooms.isEmpty || _isLoading
+                                    ? null
+                                    : (value) {
+                                  if (value != null) setState(() => _selectedRoom = value);
+                                },
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+                          Container(
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(12),
+                              color: _DT.purple.withValues(alpha: 0.08),
+                              border: Border.all(color: _DT.purple.withValues(alpha: 0.15)),
+                            ),
+                            child: Row(
+                              children: [
+                                const Icon(Icons.info_outline_rounded, color: _DT.purple, size: 18),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: Text(
+                                    _availableGPIOs.isEmpty
+                                        ? 'No free GPIOs available. Remove a device or change its GPIO first.'
+                                        : 'Free GPIOs: ${_availableGPIOs.join(", ")}',
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+                                    ),
                                   ),
                                 ),
                               ],
                             ),
                           ),
-                        ),
+                          const SizedBox(height: 24),
+                          SizedBox(
+                            width: double.infinity,
+                            height: 52,
+                            child: ElevatedButton(
+                              onPressed: _isLoading ? null : _addDevice,
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: _DT.purple,
+                                foregroundColor: Colors.white,
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                                elevation: 0,
+                              ),
+                              child: _isLoading
+                                  ? const SizedBox(
+                                width: 24,
+                                height: 24,
+                                child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                              )
+                                  : const Text(
+                                'Add Device',
+                                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
                 ),
               ],
             ),
@@ -2207,10 +2232,10 @@ class _RoomManagementDialogState extends ConsumerState<_RoomManagementDialog> {
                       ),
                       child: _isSaving
                           ? const SizedBox(
-                              width: 20,
-                              height: 20,
-                              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                            )
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                      )
                           : const Text('Add'),
                     ),
                   ],
@@ -2220,51 +2245,51 @@ class _RoomManagementDialogState extends ConsumerState<_RoomManagementDialog> {
                   constraints: const BoxConstraints(maxHeight: 260),
                   child: _rooms.isEmpty
                       ? Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 28),
-                          child: Column(
-                            children: [
-                              Icon(
-                                Icons.meeting_room_outlined,
-                                size: 42,
-                                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.25),
-                              ),
-                              const SizedBox(height: 10),
-                              const Text('No rooms yet. Add your first room!'),
-                            ],
-                          ),
-                        )
-                      : ListView.separated(
-                          shrinkWrap: true,
-                          itemCount: _rooms.length,
-                          separatorBuilder: (_, __) => const SizedBox(height: 8),
-                          itemBuilder: (context, index) {
-                            final room = _rooms[index];
-                            return Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                              decoration: BoxDecoration(
-                                borderRadius: BorderRadius.circular(8),
-                                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.05),
-                              ),
-                              child: Row(
-                                children: [
-                                  const Icon(Icons.room_rounded, color: _DT.purple, size: 16),
-                                  const SizedBox(width: 8),
-                                  Expanded(child: Text(room)),
-                                  IconButton(
-                                    tooltip: 'Edit room',
-                                    icon: const Icon(Icons.edit_rounded, color: _DT.purple, size: 20),
-                                    onPressed: _isSaving ? null : () => _editRoom(room),
-                                  ),
-                                  IconButton(
-                                    tooltip: 'Delete room',
-                                    icon: const Icon(Icons.delete_rounded, color: _DT.red, size: 20),
-                                    onPressed: _isSaving ? null : () => _removeRoom(room),
-                                  ),
-                                ],
-                              ),
-                            );
-                          },
+                    padding: const EdgeInsets.symmetric(vertical: 28),
+                    child: Column(
+                      children: [
+                        Icon(
+                          Icons.meeting_room_outlined,
+                          size: 42,
+                          color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.25),
                         ),
+                        const SizedBox(height: 10),
+                        const Text('No rooms yet. Add your first room!'),
+                      ],
+                    ),
+                  )
+                      : ListView.separated(
+                    shrinkWrap: true,
+                    itemCount: _rooms.length,
+                    separatorBuilder: (_, __) => const SizedBox(height: 8),
+                    itemBuilder: (context, index) {
+                      final room = _rooms[index];
+                      return Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(8),
+                          color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.05),
+                        ),
+                        child: Row(
+                          children: [
+                            const Icon(Icons.room_rounded, color: _DT.purple, size: 16),
+                            const SizedBox(width: 8),
+                            Expanded(child: Text(room)),
+                            IconButton(
+                              tooltip: 'Edit room',
+                              icon: const Icon(Icons.edit_rounded, color: _DT.purple, size: 20),
+                              onPressed: _isSaving ? null : () => _editRoom(room),
+                            ),
+                            IconButton(
+                              tooltip: 'Delete room',
+                              icon: const Icon(Icons.delete_rounded, color: _DT.red, size: 20),
+                              onPressed: _isSaving ? null : () => _removeRoom(room),
+                            ),
+                          ],
+                        ),
+                      );
+                    },
+                  ),
                 ),
                 const SizedBox(height: 20),
                 SizedBox(
@@ -2508,10 +2533,8 @@ class _HomeContentWrapper extends ConsumerStatefulWidget {
 
 class _HomeContentWrapperState extends ConsumerState<_HomeContentWrapper> {
   Future<void> _refresh() async {
-    if (!kIsWeb) {
-      final ble = ref.read(bleServiceProvider);
-      await ble.connect();
-    }
+    final ble = ref.read(bleServiceProvider);
+    await ble.connect();
     ref.invalidate(httpDataProvider);
   }
 
@@ -2623,27 +2646,27 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
     final devices = rawDevices
         .whereType<Map>()
         .map((device) {
-          final updated = Map<String, dynamic>.from(device);
-          final id = updated['id']?.toString() ?? '';
-          if (id.isEmpty) return updated;
+      final updated = Map<String, dynamic>.from(device);
+      final id = updated['id']?.toString() ?? '';
+      if (id.isEmpty) return updated;
 
-          final pendingState = _pendingDeviceStates[id];
-          final pendingAt = _pendingDeviceStateTimes[id];
-          if (pendingState == null || pendingAt == null) return updated;
+      final pendingState = _pendingDeviceStates[id];
+      final pendingAt = _pendingDeviceStateTimes[id];
+      if (pendingState == null || pendingAt == null) return updated;
 
-          final fetchedState = updated['state'] as bool?;
-          if (fetchedState == pendingState) {
-            expired.add(id);
-            return updated;
-          }
+      final fetchedState = updated['state'] as bool?;
+      if (fetchedState == pendingState) {
+        expired.add(id);
+        return updated;
+      }
 
-          if (now.difference(pendingAt) <= _pendingStateHold) {
-            updated['state'] = pendingState;
-          } else {
-            expired.add(id);
-          }
-          return updated;
-        })
+      if (now.difference(pendingAt) <= _pendingStateHold) {
+        updated['state'] = pendingState;
+      } else {
+        expired.add(id);
+      }
+      return updated;
+    })
         .toList();
 
     for (final id in expired) {
@@ -2898,21 +2921,8 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
     }
 
     try {
-      bool success = false;
-      final ble = ref.read(bleServiceProvider);
-      if (ble.isConnected) {
-        try {
-          await ble.setDeviceState(id, state);
-          success = true;
-        } catch (e) {
-          logDebug('BLE direct control failed, falling back: $e');
-        }
-      }
-
-      if (!success) {
-        final service = await ref.read(esp32DeviceServiceProvider.future);
-        success = await service.controlDevice(id: id, state: state);
-      }
+      final service = await ref.read(esp32DeviceServiceProvider.future);
+      final success = await service.controlDevice(id: id, state: state);
 
       if (!mounted) return;
 
@@ -3004,7 +3014,14 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                _EspBar(online: online, ip: ip, ping: ping, rssi: rssi),
+                _EspBar(
+                  online: online,
+                  ip: ip,
+                  ping: ping,
+                  rssi: rssi,
+                  bleStatus: widget.bleStatus,
+                  onConnectBLE: widget.onConnectBLE,
+                ),
                 const SizedBox(height: 14),
                 _StatsRow(temp: temp, hum: hum, todayKw: todayKw),
                 const SizedBox(height: 18),
@@ -3289,72 +3306,214 @@ class _EspBar extends StatelessWidget {
   final String ip;
   final int ping;
   final int rssi;
+  final BleStatus bleStatus;
+  final VoidCallback onConnectBLE;
 
   const _EspBar({
     required this.online,
     required this.ip,
     required this.ping,
     required this.rssi,
+    required this.bleStatus,
+    required this.onConnectBLE,
   });
+
+  bool get _bleConnected =>
+      bleStatus == BleStatus.connected || bleStatus == BleStatus.dataUpdated;
+
+  bool get _bleBusy =>
+      bleStatus == BleStatus.scanning || bleStatus == BleStatus.connecting;
+
+  String get _bleStatusLabel {
+    switch (bleStatus) {
+      case BleStatus.disconnected:
+        return 'BLE disconnected';
+      case BleStatus.scanning:
+        return 'Scanning BLE';
+      case BleStatus.notFound:
+        return 'ESP32 not found';
+      case BleStatus.connecting:
+        return 'Connecting BLE';
+      case BleStatus.connected:
+      case BleStatus.dataUpdated:
+        return 'BLE connected';
+      case BleStatus.adapterOff:
+        return 'Bluetooth off';
+      case BleStatus.error:
+        return 'BLE error';
+    }
+  }
+
+  String get _controlPath {
+    if (_bleConnected) return 'Bluetooth backup active';
+    if (online) return 'Wi-Fi / Firebase active';
+    return 'Offline - connect Bluetooth backup';
+  }
 
   @override
   Widget build(BuildContext context) {
-    final dotColor = online ? _DT.espConnected : _DT.red;
+    final wifiDotColor = online ? _DT.espConnected : _DT.red;
+    final bleDotColor = _bleConnected
+        ? _DT.blue
+        : _bleBusy
+        ? _DT.amber
+        : Colors.grey;
+    final surfaceText = Theme.of(context).colorScheme.onSurface;
 
     return _GCard(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
-      child: Row(children: [
-        Container(
-          width: 10,
-          height: 10,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            color: dotColor,
-            boxShadow: [
-              BoxShadow(color: dotColor.withValues(alpha: 0.5), blurRadius: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                _bleConnected
+                    ? Icons.bluetooth_connected_rounded
+                    : online
+                    ? Icons.wifi_rounded
+                    : Icons.cloud_off_rounded,
+                size: 18,
+                color: _bleConnected
+                    ? _DT.blue
+                    : online
+                    ? _DT.espConnected
+                    : _DT.red,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  _controlPath,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
+              if (!_bleConnected)
+                TextButton.icon(
+                  onPressed: _bleBusy ? null : onConnectBLE,
+                  style: TextButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                  ),
+                  icon: _bleBusy
+                      ? const SizedBox(
+                    width: 12,
+                    height: 12,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                      : const Icon(Icons.bluetooth_searching_rounded, size: 16),
+                  label: Text(_bleBusy ? 'Connecting' : 'BLE'),
+                ),
             ],
           ),
-        ),
-        const SizedBox(width: 8),
-        Text(
-          online ? 'ESP32 Connected' : 'Disconnected',
-          style: TextStyle(
-              fontSize: 13, fontWeight: FontWeight.w700, color: dotColor),
-        ),
-        const SizedBox(width: 8),
-        Flexible(
-          child: SingleChildScrollView(
+          const SizedBox(height: 10),
+          SingleChildScrollView(
             scrollDirection: Axis.horizontal,
-            child: Row(mainAxisSize: MainAxisSize.min, children: [
-              _MiniChip(label: ip, icon: Icons.settings_ethernet_rounded),
-              const SizedBox(width: 5),
-              _MiniChip(label: '${ping}ms', icon: Icons.timer_outlined),
-              const SizedBox(width: 5),
-              Row(children: [
-                Icon(Icons.wifi,
-                    size: 14,
-                    color: online ? _DT.espConnected : Colors.grey.shade600),
-                const SizedBox(width: 3),
-                Text('${rssi}dBm',
-                    style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w600,
-                        color: online
-                            ? _DT.espConnected
-                            : Colors.grey.shade500)),
-              ]),
-            ]),
+            child: Row(
+              children: [
+                _StatusPill(
+                  label: online ? 'ESP online' : 'ESP offline',
+                  icon: online ? Icons.cloud_done_rounded : Icons.cloud_off_rounded,
+                  color: wifiDotColor,
+                ),
+                const SizedBox(width: 6),
+                _StatusPill(
+                  label: _bleConnected ? 'BLE connected' : _bleStatusLabel,
+                  icon: _bleConnected
+                      ? Icons.bluetooth_connected_rounded
+                      : Icons.bluetooth_disabled_rounded,
+                  color: bleDotColor,
+                ),
+                const SizedBox(width: 6),
+                _MiniChip(label: ip, icon: Icons.settings_ethernet_rounded),
+                const SizedBox(width: 6),
+                _MiniChip(label: '${ping}ms', icon: Icons.timer_outlined),
+                const SizedBox(width: 6),
+                Row(children: [
+                  Icon(Icons.wifi,
+                      size: 14,
+                      color: online ? _DT.espConnected : Colors.grey.shade600),
+                  const SizedBox(width: 3),
+                  Text('${rssi}dBm',
+                      style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                          color: online
+                              ? _DT.espConnected
+                              : Colors.grey.shade500)),
+                ]),
+              ],
+            ),
           ),
-        ),
-        Icon(Icons.chevron_right_rounded,
-            size: 18,
-            color:
-            Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.3)),
-      ]),
+          if (!online && !_bleConnected) ...[
+            const SizedBox(height: 8),
+            Text(
+              'Internet is unavailable. Connect Bluetooth to control nearby devices.',
+              style: TextStyle(
+                fontSize: 12,
+                height: 1.25,
+                color: surfaceText.withValues(alpha: 0.55),
+              ),
+            ),
+          ],
+        ],
+      ),
     );
   }
 }
 
+class _StatusPill extends StatelessWidget {
+  final String label;
+  final IconData icon;
+  final Color color;
+
+  const _StatusPill({
+    required this.label,
+    required this.icon,
+    required this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(999),
+        color: color.withValues(alpha: 0.13),
+        border: Border.all(color: color.withValues(alpha: 0.28), width: 0.8),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 6,
+            height: 6,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: color,
+              boxShadow: [BoxShadow(color: color.withValues(alpha: 0.45), blurRadius: 5)],
+            ),
+          ),
+          const SizedBox(width: 5),
+          Icon(icon, size: 12, color: color),
+          const SizedBox(width: 4),
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+              color: color,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
 class _MiniChip extends StatelessWidget {
   final String label;
   final IconData icon;
@@ -4443,10 +4602,8 @@ class _SettingsScreen extends ConsumerWidget {
     void onConnectBLE() => ref.read(bleServiceProvider).connect();
 
     Future<void> onRefresh() async {
-      if (!kIsWeb) {
-        final ble = ref.read(bleServiceProvider);
-        await ble.connect();
-      }
+      final ble = ref.read(bleServiceProvider);
+      await ble.connect();
       ref.invalidate(httpDataProvider);
     }
 
@@ -5021,8 +5178,8 @@ class _SettingsScreen extends ConsumerWidget {
               const _SDivider(),
               _STile(
                 icon: Icons.wifi_rounded,
-                title: 'ESP32 Wi‑Fi Manager',
-                subtitle: 'View current network, scan nearby Wi‑Fi, and reconnect ESP32',
+                title: 'Wi-Fi Config',
+                subtitle: 'Change network settings',
                 trailing: Icon(Icons.chevron_right_rounded,
                     size: 20,
                     color: Theme.of(context)
