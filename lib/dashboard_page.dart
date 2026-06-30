@@ -24,6 +24,93 @@ final selectedNavIndexProvider = StateProvider<int>((ref) => 0);
 // HomeContent is keyed from it, so the dashboard reloads immediately.
 final dashboardRefreshTickProvider = StateProvider<int>((ref) => 0);
 
+// In-app notification center. This is intentionally local/in-app so it works
+// without adding push-notification dependencies.
+class AppNotificationItem {
+  final String id;
+  final String key;
+  final String title;
+  final String message;
+  final DateTime createdAt;
+  final IconData icon;
+  final Color color;
+  final bool read;
+
+  const AppNotificationItem({
+    required this.id,
+    required this.key,
+    required this.title,
+    required this.message,
+    required this.createdAt,
+    required this.icon,
+    required this.color,
+    this.read = false,
+  });
+
+  AppNotificationItem copyWith({bool? read}) => AppNotificationItem(
+    id: id,
+    key: key,
+    title: title,
+    message: message,
+    createdAt: createdAt,
+    icon: icon,
+    color: color,
+    read: read ?? this.read,
+  );
+}
+
+class AppNotificationsController extends StateNotifier<List<AppNotificationItem>> {
+  AppNotificationsController() : super(const []);
+
+  void push({
+    required String key,
+    required String title,
+    required String message,
+    required IconData icon,
+    required Color color,
+    Duration suppressFor = const Duration(seconds: 45),
+  }) {
+    final now = DateTime.now();
+    final recentDuplicate = state.any(
+          (item) => item.key == key && now.difference(item.createdAt) < suppressFor,
+    );
+    if (recentDuplicate) return;
+
+    final item = AppNotificationItem(
+      id: '${key}_${now.microsecondsSinceEpoch}',
+      key: key,
+      title: title,
+      message: message,
+      createdAt: now,
+      icon: icon,
+      color: color,
+    );
+
+    state = [item, ...state].take(80).toList(growable: false);
+  }
+
+  void markAllRead() {
+    state = [for (final item in state) item.copyWith(read: true)];
+  }
+
+  void clearAll() {
+    state = const [];
+  }
+}
+
+final appNotificationsProvider =
+StateNotifierProvider<AppNotificationsController, List<AppNotificationItem>>(
+      (ref) => AppNotificationsController(),
+);
+
+String _timeAgo(DateTime date) {
+  final diff = DateTime.now().difference(date);
+  if (diff.inSeconds < 60) return 'Just now';
+  if (diff.inMinutes < 60) return '${diff.inMinutes} min ago';
+  if (diff.inHours < 24) return '${diff.inHours} h ago';
+  return '${diff.inDays} d ago';
+}
+
 final lightTheme = ThemeData(
   useMaterial3: true,
   brightness: Brightness.light,
@@ -1001,6 +1088,7 @@ class _DashboardPageState extends ConsumerState<DashboardPage>
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
+      useSafeArea: false,
       backgroundColor: Colors.transparent,
       builder: (context) => const _QuickActionDialog(),
     );
@@ -1641,6 +1729,7 @@ class _QuickActionDialogState extends ConsumerState<_QuickActionDialog> {
       padding: EdgeInsets.only(bottom: bottomInset),
       child: SafeArea(
         top: false,
+        bottom: false,
         child: Container(
           constraints: BoxConstraints(
             maxHeight: MediaQuery.of(context).size.height * 0.88,
@@ -2373,7 +2462,18 @@ class _GlassAppBar extends ConsumerWidget implements PreferredSizeWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final greeting = _getGreeting();
+    final authAsync = ref.watch(authServiceProvider);
+    final userData = ref.watch(userDataProvider).asData?.value;
+    final authUser = authAsync.asData?.value.currentUser ?? FirebaseAuth.instance.currentUser;
+    final displayName = (userData?['displayName']?.toString().trim().isNotEmpty == true)
+        ? userData!['displayName'].toString().trim()
+        : ((authUser?.displayName?.trim().isNotEmpty == true)
+        ? authUser!.displayName!.trim()
+        : (authUser?.email?.split('@').first ?? 'User'));
+    final initials = _initialsFor(displayName);
+    final greeting = _getGreeting(displayName);
+    final notifications = ref.watch(appNotificationsProvider);
+    final unreadCount = notifications.where((item) => !item.read).length;
 
     return ClipRect(
       child: BackdropFilter(
@@ -2385,16 +2485,19 @@ class _GlassAppBar extends ConsumerWidget implements PreferredSizeWidget {
           child: AppBar(
             backgroundColor: Colors.transparent,
             elevation: 0,
-            leading: const Padding(
-              padding: EdgeInsets.only(left: 16),
+            leading: Padding(
+              padding: const EdgeInsets.only(left: 16),
               child: CircleAvatar(
                 radius: 18,
                 backgroundColor: _DT.purple,
-                child: Text('JD',
-                    style: TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.w700,
-                        fontSize: 14)),
+                child: Text(
+                  initials,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w800,
+                    fontSize: 13,
+                  ),
+                ),
               ),
             ),
             title: Column(
@@ -2441,8 +2544,11 @@ class _GlassAppBar extends ConsumerWidget implements PreferredSizeWidget {
               ),
               const SizedBox(width: 6),
               _ABBtn(
-                onTap: () {},
-                child: Stack(children: [
+                onTap: () {
+                  ref.read(selectedNavIndexProvider.notifier).state = 2;
+                  ref.read(appNotificationsProvider.notifier).markAllRead();
+                },
+                child: Stack(clipBehavior: Clip.none, children: [
                   Container(
                     width: 36,
                     height: 36,
@@ -2459,14 +2565,28 @@ class _GlassAppBar extends ConsumerWidget implements PreferredSizeWidget {
                             .onSurface
                             .withValues(alpha: 0.7)),
                   ),
-                  const Positioned(
-                    top: 6,
-                    right: 6,
-                    child: CircleAvatar(
-                      radius: 4,
-                      backgroundColor: _DT.red,
+                  if (unreadCount > 0)
+                    Positioned(
+                      top: -2,
+                      right: -2,
+                      child: Container(
+                        constraints: const BoxConstraints(minWidth: 16, minHeight: 16),
+                        padding: const EdgeInsets.symmetric(horizontal: 4),
+                        decoration: const BoxDecoration(
+                          color: _DT.red,
+                          shape: BoxShape.circle,
+                        ),
+                        alignment: Alignment.center,
+                        child: Text(
+                          unreadCount > 9 ? '9+' : '$unreadCount',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 9,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                      ),
                     ),
-                  ),
                 ]),
               ),
               const SizedBox(width: 12),
@@ -2499,11 +2619,26 @@ class _GlassAppBar extends ConsumerWidget implements PreferredSizeWidget {
     return '${days[now.weekday - 1]}, ${now.day} ${months[now.month - 1]}';
   }
 
-  String _getGreeting() {
+  String _getGreeting(String name) {
+    final firstName = name.trim().split(RegExp(r'\s+')).first;
     final h = DateTime.now().hour;
-    if (h < 12) return 'Good Morning ☀️';
-    if (h < 17) return 'Good Afternoon 🌤';
-    return 'Good Evening 🌙';
+    if (h < 12) return 'Good Morning, $firstName';
+    if (h < 17) return 'Good Afternoon, $firstName';
+    return 'Good Evening, $firstName';
+  }
+
+  String _initialsFor(String name) {
+    final parts = name
+        .trim()
+        .split(RegExp(r'\s+'))
+        .where((part) => part.isNotEmpty)
+        .toList();
+    if (parts.isEmpty) return 'U';
+    if (parts.length == 1) {
+      final text = parts.first;
+      return text.substring(0, text.length >= 2 ? 2 : 1).toUpperCase();
+    }
+    return (parts.first[0] + parts.last[0]).toUpperCase();
   }
 
   @override
@@ -2584,6 +2719,9 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
   final Map<String, bool> _pendingDeviceStates = {};
   final Map<String, DateTime> _pendingDeviceStateTimes = {};
   final Set<String> _togglingDeviceIds = {};
+  bool? _lastFlameDetected;
+  bool? _lastEspOnline;
+  bool? _lastBleConnected;
 
   static const Duration _pendingStateHold = Duration(seconds: 4);
 
@@ -2680,6 +2818,65 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
 
   bool _deviceListsEqual(List<dynamic> a, List<dynamic> b) {
     return jsonEncode(a) == jsonEncode(b);
+  }
+
+
+  void _syncSystemNotifications({
+    required bool flame,
+    required bool online,
+    required BleStatus bleStatus,
+  }) {
+    final controller = ref.read(appNotificationsProvider.notifier);
+    final bleConnected = bleStatus == BleStatus.connected || bleStatus == BleStatus.dataUpdated;
+
+    if (_lastFlameDetected != null && _lastFlameDetected != flame) {
+      if (flame) {
+        controller.push(
+          key: 'flame_alert',
+          title: 'Flame detected',
+          message: 'The flame sensor reported a possible fire event. Check the area now.',
+          icon: Icons.local_fire_department_rounded,
+          color: _DT.red,
+          suppressFor: const Duration(seconds: 10),
+        );
+      } else {
+        controller.push(
+          key: 'flame_clear',
+          title: 'Flame sensor clear',
+          message: 'The flame sensor returned to a safe state.',
+          icon: Icons.shield_rounded,
+          color: _DT.green,
+        );
+      }
+    }
+
+    if (_lastEspOnline != null && _lastEspOnline != online) {
+      controller.push(
+        key: online ? 'esp_online' : 'esp_offline',
+        title: online ? 'ESP32 is online' : 'ESP32 is offline',
+        message: online
+            ? 'Wi-Fi/Firebase control is available again.'
+            : 'Remote control is unavailable. Bluetooth backup can still control nearby devices.',
+        icon: online ? Icons.cloud_done_rounded : Icons.cloud_off_rounded,
+        color: online ? _DT.green : _DT.red,
+      );
+    }
+
+    if (_lastBleConnected != null && _lastBleConnected != bleConnected) {
+      controller.push(
+        key: bleConnected ? 'ble_connected' : 'ble_disconnected',
+        title: bleConnected ? 'Bluetooth backup connected' : 'Bluetooth backup disconnected',
+        message: bleConnected
+            ? 'Direct offline control is ready.'
+            : 'Bluetooth backup is not connected.',
+        icon: bleConnected ? Icons.bluetooth_connected_rounded : Icons.bluetooth_disabled_rounded,
+        color: bleConnected ? _DT.blue : Colors.grey,
+      );
+    }
+
+    _lastFlameDetected = flame;
+    _lastEspOnline = online;
+    _lastBleConnected = bleConnected;
   }
 
   Future<void> _loadDashboardState() async {
@@ -2943,6 +3140,18 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
         return;
       }
 
+      final deviceName = index != -1 && devices[index] is Map
+          ? ((devices[index] as Map)['name']?.toString() ?? 'Device')
+          : 'Device';
+      ref.read(appNotificationsProvider.notifier).push(
+        key: 'device_${id}_state',
+        title: '$deviceName ${state ? 'turned on' : 'turned off'}',
+        message: 'GPIO command was accepted by the active control path.',
+        icon: state ? Icons.power_rounded : Icons.power_off_rounded,
+        color: state ? _DT.green : Colors.grey,
+        suppressFor: const Duration(seconds: 2),
+      );
+
       Future.delayed(const Duration(milliseconds: 1800), () {
         if (!mounted) return;
         if (_pendingDeviceStates[id] == state) {
@@ -2995,6 +3204,15 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
           final rssi = status['rssi'] ?? -38;
           final energy = (data['energy'] as Map?) ?? {};
           final todayKw = (energy['today'] ?? 3.4).toDouble();
+
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!mounted) return;
+            _syncSystemNotifications(
+              flame: flame,
+              online: online == true,
+              bleStatus: widget.bleStatus,
+            );
+          });
 
           final devicesList = _esp32Devices['devices'] as List? ?? [];
           final rooms = _getVisibleRooms(devicesList);
@@ -4510,77 +4728,177 @@ class _EnergyScreen extends StatelessWidget {
 }
 
 // ────────────────────────────────────────────────────────────
-// 29. ALERTS SCREEN
+// 29. ALERTS / IN-APP NOTIFICATIONS SCREEN
 // ────────────────────────────────────────────────────────────
-class _AlertsScreen extends StatelessWidget {
+class _AlertsScreen extends ConsumerWidget {
   const _AlertsScreen();
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final padding = ResponsiveHelper.getPadding(context);
     final isDesktop = ResponsiveHelper.isDesktop(context);
+    final notifications = ref.watch(appNotificationsProvider);
+    final unreadCount = notifications.where((item) => !item.read).length;
 
-    final alerts = [
-      (Icons.motion_photos_on_rounded, Colors.orange,
-      'Motion in Living Room', '2 minutes ago'),
-      (Icons.local_fire_department_rounded, _DT.red,
-      'Flame sensor test — All Clear', '1 hour ago'),
-      (Icons.power_off_rounded, _DT.blue,
-      'Device offline: Bedroom Light', '3 hours ago'),
-      (Icons.water_drop_rounded, Colors.teal,
-      'High humidity in Kitchen', '5 hours ago'),
-    ];
-
-    return ListView.separated(
+    return ListView(
       padding: EdgeInsets.only(
         top: MediaQuery.of(context).padding.top + kToolbarHeight + 12,
         left: padding,
         right: padding,
         bottom: isDesktop ? 40 : 100,
       ),
-      itemCount: alerts.length,
-      separatorBuilder: (_, __) => const SizedBox(height: 10),
-      itemBuilder: (context, i) {
-        final (icon, color, title, time) = alerts[i];
-        return _GCard(
-          padding: const EdgeInsets.all(14),
-          glowColor: i == 0 ? color : null,
-          child: Row(children: [
-            Container(
-              width: 44,
-              height: 44,
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(14),
-                color: color.withValues(alpha: 0.15),
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Notifications',
+                    style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    unreadCount == 0
+                        ? 'All notifications are read'
+                        : '$unreadCount unread notification${unreadCount == 1 ? '' : 's'}',
+                    style: TextStyle(
+                      fontSize: 13,
+                      color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.55),
+                    ),
+                  ),
+                ],
               ),
-              child: Icon(icon, color: color, size: 22),
             ),
-            const SizedBox(width: 12),
-            Expanded(child: Column(
+            if (notifications.isNotEmpty) ...[
+              IconButton.filledTonal(
+                tooltip: 'Mark all read',
+                onPressed: () => ref.read(appNotificationsProvider.notifier).markAllRead(),
+                icon: const Icon(Icons.done_all_rounded),
+              ),
+              const SizedBox(width: 8),
+              IconButton.filledTonal(
+                tooltip: 'Clear notifications',
+                onPressed: () => ref.read(appNotificationsProvider.notifier).clearAll(),
+                icon: const Icon(Icons.delete_sweep_rounded),
+              ),
+            ],
+          ],
+        ),
+        const SizedBox(height: 16),
+        if (notifications.isEmpty)
+          _GCard(
+            padding: const EdgeInsets.all(28),
+            child: Column(
+              children: [
+                Container(
+                  width: 64,
+                  height: 64,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: _DT.green.withValues(alpha: 0.14),
+                  ),
+                  child: const Icon(Icons.notifications_none_rounded, color: _DT.green, size: 30),
+                ),
+                const SizedBox(height: 14),
+                const Text(
+                  'No notifications yet',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Device changes, ESP online/offline events, Bluetooth backup status, and flame alerts will appear here.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: 13,
+                    height: 1.35,
+                    color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.55),
+                  ),
+                ),
+              ],
+            ),
+          )
+        else
+          ...notifications.map((item) => Padding(
+            padding: const EdgeInsets.only(bottom: 10),
+            child: _NotificationTile(item: item),
+          )),
+      ],
+    );
+  }
+}
+
+class _NotificationTile extends StatelessWidget {
+  final AppNotificationItem item;
+  const _NotificationTile({required this.item});
+
+  @override
+  Widget build(BuildContext context) {
+    return _GCard(
+      padding: const EdgeInsets.all(14),
+      glowColor: item.read ? null : item.color,
+      child: Row(
+        children: [
+          Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(14),
+              color: item.color.withValues(alpha: 0.15),
+            ),
+            child: Icon(item.icon, color: item.color, size: 22),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(title,
-                    style: const TextStyle(
-                        fontSize: 14, fontWeight: FontWeight.w600)),
-                const SizedBox(height: 3),
-                Text(time,
-                    style: TextStyle(
-                        fontSize: 12,
-                        color: Theme.of(context)
-                            .colorScheme
-                            .onSurface
-                            .withValues(alpha: 0.45))),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        item.title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
+                      ),
+                    ),
+                    if (!item.read)
+                      Container(
+                        width: 8,
+                        height: 8,
+                        decoration: const BoxDecoration(
+                          color: _DT.red,
+                          shape: BoxShape.circle,
+                        ),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  item.message,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 12,
+                    height: 1.25,
+                    color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.58),
+                  ),
+                ),
+                const SizedBox(height: 5),
+                Text(
+                  _timeAgo(item.createdAt),
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.42),
+                  ),
+                ),
               ],
-            )),
-            Icon(Icons.chevron_right_rounded,
-                size: 18,
-                color: Theme.of(context)
-                    .colorScheme
-                    .onSurface
-                    .withValues(alpha: 0.3)),
-          ]),
-        );
-      },
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
