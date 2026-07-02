@@ -217,8 +217,31 @@ class ESP32DeviceService {
 
   ESP32DeviceService(this.esp32Ip, this.bleService);
 
-  // Read devices from Firebase - FIXED null handling
+  Map<String, dynamic>? _devicesFromBleCache() {
+    if (!bleService.isConnected) return null;
+    final bleDevices = bleService.devices
+        .map((device) => Map<String, dynamic>.from(device))
+        .toList();
+    return {'devices': bleDevices};
+  }
+
+  Future<Map<String, dynamic>?> _tryGetDevicesFromBle() async {
+    if (!bleService.isConnected) return null;
+    try {
+      await bleService.refreshDevices().timeout(const Duration(seconds: 4));
+      return _devicesFromBleCache();
+    } catch (e) {
+      logDebug('BLE device list unavailable: $e');
+      return _devicesFromBleCache();
+    }
+  }
+
+  // Read devices. When Bluetooth backup is connected, prefer the ESP32 local
+  // BLE device list so rooms/devices still appear when the phone has no internet.
   Future<Map<String, dynamic>> getDevices() async {
+    final bleResult = await _tryGetDevicesFromBle();
+    if (bleResult != null) return bleResult;
+
     try {
       final String databaseUrl = AppConfig.databaseUrl;
       final String uid = FirebaseAuth.instance.currentUser!.uid;
@@ -251,7 +274,7 @@ class ESP32DeviceService {
       return {'devices': []};
     } catch (e) {
       logDebug('Error getting devices: $e');
-      return {'devices': []};
+      return _devicesFromBleCache() ?? {'devices': []};
     }
   }
 
@@ -454,9 +477,28 @@ class ESP32DeviceService {
       return false;
     }
   }
+  List<String> _roomsFromDeviceList(List<Map<String, dynamic>> devices) {
+    final rooms = <String>{};
+    for (final device in devices) {
+      final room = device['room']?.toString().trim() ?? '';
+      if (room.isNotEmpty) rooms.add(room);
+    }
+    return rooms.toList()..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+  }
+
   // Get rooms from Firebase. Important: do NOT invent default rooms.
-  // The dashboard should show no rooms until the user creates one.
+  // When Bluetooth backup is connected, derive rooms from the ESP32 local device list.
   Future<List<String>> getRooms() async {
+    if (bleService.isConnected) {
+      try {
+        await bleService.refreshDevices().timeout(const Duration(seconds: 4));
+      } catch (e) {
+        logDebug('BLE room refresh skipped: $e');
+      }
+      final bleRooms = _roomsFromDeviceList(bleService.devices);
+      if (bleRooms.isNotEmpty) return bleRooms;
+    }
+
     List<String> normalizeRooms(dynamic data) {
       final Set<String> rooms = {};
 
@@ -611,20 +653,26 @@ class ESP32DeviceService {
 // 5. ESP32 IP PROVIDER
 // ────────────────────────────────────────────────────────────
 final userEsp32CodeProvider = FutureProvider<String?>((ref) async {
-  final authService = await ref.watch(authServiceProvider.future);
-  final user = authService.currentUser;
+  try {
+    final authService = await ref.watch(authServiceProvider.future);
+    final user = authService.currentUser;
 
-  if (user != null) {
-    final String databaseUrl = AppConfig.databaseUrl;
-    final response = await http.get(
-      Uri.parse('$databaseUrl/users/${user.uid}/esp32Code.json'),
-      headers: {'Cache-Control': 'no-cache'},
-    ).timeout(const Duration(seconds: 3));
+    if (user != null) {
+      final String databaseUrl = AppConfig.databaseUrl;
+      final response = await http.get(
+        Uri.parse('$databaseUrl/users/${user.uid}/esp32Code.json'),
+        headers: {'Cache-Control': 'no-cache'},
+      ).timeout(const Duration(seconds: 3));
 
-    if (response.statusCode == 200) {
-      final data = jsonDecode(response.body);
-      return data as String?;
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        return data as String?;
+      }
     }
+  } catch (e) {
+    // Phone may have no internet while Bluetooth backup is connected.
+    // Do not break the Settings page with a raw SocketException.
+    logDebug('ESP32 code lookup unavailable offline: $e');
   }
   return null;
 });
@@ -807,14 +855,18 @@ final smartHomeDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
   controller.add(Map.from(currentData));
 
   void updateFromBle() {
-    if (bleService.currentStatus == BleStatus.connected) {
+    if (bleService.isConnected) {
       currentData['sensors'] = {
         'temperature': bleService.temperature,
         'humidity': bleService.humidity,
         'flame': bleService.flameDetected,
       };
       currentData['lights'] = Map.from(bleService.lights);
-      currentData['status']['online'] = true;
+      final status = Map<String, dynamic>.from(currentData['status'] as Map? ?? {});
+      status['online'] = true;
+      status['ip'] = status['ip'] ?? 'BLE';
+      status['ping'] = status['ping'] ?? 0;
+      currentData['status'] = status;
       if (user != null) {
         cache.set('bleData_${user.uid}', currentData);
       }
@@ -838,7 +890,9 @@ final smartHomeDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
         currentData = httpData;
         if (!controller.isClosed) controller.add(Map.from(currentData));
       } else if (httpData.containsKey('status')) {
-        currentData['status'] = httpData['status'];
+        final status = Map<String, dynamic>.from(httpData['status'] as Map? ?? {});
+        status['online'] = true;
+        currentData['status'] = status;
         if (!controller.isClosed) controller.add(Map.from(currentData));
       }
     } catch (e) {
@@ -2911,10 +2965,31 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
     } catch (e) {
       logDebug('Error loading ESP32 dashboard state: $e');
       if (!mounted) return;
+
+      // Keep the last known dashboard state when cloud/http is unavailable.
+      // If BLE is connected, use its device cache instead of clearing rooms.
+      final ble = ref.read(bleServiceProvider);
+      List<Map<String, dynamic>> bleDevices = const [];
+      if (ble.isConnected) {
+        try {
+          await ble.refreshDevices().timeout(const Duration(seconds: 4));
+          bleDevices = ble.devices.map((d) => Map<String, dynamic>.from(d)).toList();
+        } catch (_) {
+          bleDevices = ble.devices.map((d) => Map<String, dynamic>.from(d)).toList();
+        }
+      }
+
       setState(() {
-        _esp32Devices = {'devices': []};
-        _rooms = [];
-        _selectedRoom = '';
+        if (bleDevices.isNotEmpty) {
+          final visibleRooms = <String>{};
+          for (final device in bleDevices) {
+            final room = device['room']?.toString().trim() ?? '';
+            if (room.isNotEmpty) visibleRooms.add(room);
+          }
+          _esp32Devices = {'devices': bleDevices};
+          _rooms = visibleRooms.toList()..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+          _syncSelectedRoom(_rooms);
+        }
         _isLoadingDevices = false;
         _initialLoadDone = true;
       });
@@ -5362,10 +5437,10 @@ class _SettingsScreen extends ConsumerWidget {
               _STile(
                 icon: Icons.bluetooth_rounded,
                 title: 'Bluetooth',
-                subtitle: bleStatus == BleStatus.connected
-                    ? 'Connected'
+                subtitle: (bleStatus == BleStatus.connected || bleStatus == BleStatus.dataUpdated)
+                    ? 'Connected - offline backup ready'
                     : 'Not connected',
-                trailing: bleStatus == BleStatus.connected
+                trailing: (bleStatus == BleStatus.connected || bleStatus == BleStatus.dataUpdated)
                     ? Container(
                   padding: const EdgeInsets.symmetric(
                       horizontal: 10, vertical: 5),
@@ -5526,7 +5601,16 @@ class _SettingsScreen extends ConsumerWidget {
         );
       },
       loading: () => const Center(child: CircularProgressIndicator()),
-      error: (err, _) => Center(child: Text('Error: $err')),
+      error: (err, _) => Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Text(
+            'Cloud settings are unavailable while the phone is offline. Bluetooth backup can still control nearby devices.',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.65)),
+          ),
+        ),
+      ),
     );
   }
 }
