@@ -11,7 +11,7 @@ jobs:
   # 1. Update version & tag
   # ---------------------------
   update-version:
-    name: 🔢 Set version to V2.0.0
+    name: 🔢 Auto-increment version
     runs-on: ubuntu-latest
     outputs:
       new_version: ${{ steps.get_version.outputs.new_version }}
@@ -19,22 +19,44 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Read current version from main.dart
         id: read_version
         run: |
           VERSION=$(grep -oP "const String appVersion = '\K[^']+" lib/main.dart)
+
+          if [ -z "$VERSION" ]; then
+            echo "❌ Could not find appVersion in lib/main.dart"
+            exit 1
+          fi
+
           echo "current_version=$VERSION" >> $GITHUB_OUTPUT
           echo "Current version: $VERSION"
 
-      - name: Set next version to V2.0.0
+      - name: Bump patch version
         id: bump
         run: |
-          NEW_VERSION="V2.0.0"
-          NEW_TAG="V2.0.0"
+          VERSION="${{ steps.read_version.outputs.current_version }}"
+
+          # Remove V/v prefix if it exists
+          CLEAN_VERSION=$(echo "$VERSION" | sed 's/^[Vv]//')
+
+          IFS='.' read -r major minor patch <<< "$CLEAN_VERSION"
+
+          if [ -z "$major" ] || [ -z "$minor" ] || [ -z "$patch" ]; then
+            echo "❌ Invalid version format: $VERSION"
+            echo "Expected format: V2.0.0"
+            exit 1
+          fi
+
+          patch=$((patch + 1))
+
+          NEW_VERSION="V${major}.${minor}.${patch}"
+          NEW_TAG="$NEW_VERSION"
 
           echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
           echo "new_tag=$NEW_TAG" >> $GITHUB_OUTPUT
@@ -46,12 +68,25 @@ jobs:
         run: |
           sed -i "s/const String appVersion = '.*';/const String appVersion = '${{ steps.bump.outputs.new_version }}';/" lib/main.dart
 
+      - name: Update pubspec.yaml version if exists
+        run: |
+          CLEAN_VERSION=$(echo "${{ steps.bump.outputs.new_version }}" | sed 's/^[Vv]//')
+
+          if [ -f pubspec.yaml ]; then
+            if grep -q "^version:" pubspec.yaml; then
+              sed -i "s/^version:.*/version: ${CLEAN_VERSION}+${{ github.run_number }}/" pubspec.yaml
+              echo "✅ Updated pubspec.yaml version to ${CLEAN_VERSION}+${{ github.run_number }}"
+            else
+              echo "⚠️ No version field found in pubspec.yaml"
+            fi
+          fi
+
       - name: Commit version bump
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          git add lib/main.dart
+          git add lib/main.dart pubspec.yaml || true
 
           if git diff --cached --quiet; then
             echo "No version change to commit."
@@ -60,16 +95,22 @@ jobs:
             git push
           fi
 
-      - name: Create tag
+      - name: Create and push tag
         run: |
+          git fetch --tags
+
           if git rev-parse "${{ steps.bump.outputs.new_tag }}" >/dev/null 2>&1; then
-            echo "Tag ${{ steps.bump.outputs.new_tag }} already exists locally."
-          elif git ls-remote --tags origin "${{ steps.bump.outputs.new_tag }}" | grep "${{ steps.bump.outputs.new_tag }}"; then
-            echo "Tag ${{ steps.bump.outputs.new_tag }} already exists on remote."
-          else
-            git tag ${{ steps.bump.outputs.new_tag }}
-            git push origin ${{ steps.bump.outputs.new_tag }}
+            echo "❌ Tag ${{ steps.bump.outputs.new_tag }} already exists locally."
+            exit 1
           fi
+
+          if git ls-remote --tags origin "${{ steps.bump.outputs.new_tag }}" | grep "${{ steps.bump.outputs.new_tag }}"; then
+            echo "❌ Tag ${{ steps.bump.outputs.new_tag }} already exists on remote."
+            exit 1
+          fi
+
+          git tag ${{ steps.bump.outputs.new_tag }}
+          git push origin ${{ steps.bump.outputs.new_tag }}
 
       - name: Set outputs
         id: get_version
@@ -87,7 +128,7 @@ jobs:
 
     steps:
       - name: Checkout at new tag
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           ref: ${{ needs.update-version.outputs.new_tag }}
 
@@ -121,7 +162,7 @@ jobs:
 
     steps:
       - name: Checkout at new tag
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           ref: ${{ needs.update-version.outputs.new_tag }}
           fetch-depth: 0
@@ -142,7 +183,7 @@ jobs:
         run: |
           FLUTTER_PATH=$(dirname $(dirname $(which flutter)))
 
-          cat > ios/Podfile << EOF
+          cat > ios/Podfile <<EOF
           ENV['COCOAPODS_DISABLE_STATS'] = 'true'
 
           project 'Runner', {
