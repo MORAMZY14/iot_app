@@ -586,16 +586,46 @@ class ESP32DeviceService {
   // GPIOs shown in menus. This combines the ESP scan with Firebase devices,
   // then removes every pin already used anywhere, even in another room.
   Future<List<int>> getSelectableGPIOs({String? excludingDeviceId, int? currentGpio}) async {
-    final scannedPins = await getAvailableGPIOs();
-    final usedPins = await getUsedGPIOs(excludingDeviceId: excludingDeviceId);
+    List<int> scannedPins = const [];
+    Set<int> usedPins = const {};
+
+    try {
+      scannedPins = await getAvailableGPIOs();
+    } catch (e) {
+      logDebug('GPIO scan failed, using safe defaults: $e');
+    }
+
+    try {
+      usedPins = await getUsedGPIOs(excludingDeviceId: excludingDeviceId);
+    } catch (e) {
+      logDebug('Used GPIO lookup failed, using BLE cache only: $e');
+      usedPins = <int>{};
+      if (bleService.isConnected) {
+        for (final device in bleService.devices) {
+          final id = device['id']?.toString();
+          if (excludingDeviceId != null && id == excludingDeviceId) continue;
+          final raw = device['gpio'];
+          final gpio = raw is int ? raw : int.tryParse(raw?.toString() ?? '');
+          if (gpio != null) usedPins.add(gpio);
+        }
+      }
+    }
 
     final pins = <int>{..._getDefaultGPIOs(), ...scannedPins};
     if (currentGpio != null) pins.add(currentGpio);
 
-    final selectable = pins
+    var selectable = pins
         .where((pin) => !usedPins.contains(pin) || pin == currentGpio)
         .toList()
       ..sort();
+
+    // Do not show a false “No free GPIO” just because scan/Firebase failed.
+    if (selectable.isEmpty && usedPins.length < _getDefaultGPIOs().length) {
+      selectable = _getDefaultGPIOs()
+          .where((pin) => !usedPins.contains(pin) || pin == currentGpio)
+          .toList()
+        ..sort();
+    }
 
     return selectable;
   }
@@ -834,8 +864,6 @@ final httpDataProvider = FutureProvider<Map<String, dynamic>>((ref) async {
 // ────────────────────────────────────────────────────────────
 // 7. BLE + HTTP MERGED DATA PROVIDER
 // ────────────────────────────────────────────────────────────
-final bleServiceProvider = Provider<BleService>((ref) => BleService());
-
 final smartHomeDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
   final bleService = ref.watch(bleServiceProvider);
   final controller = StreamController<Map<String, dynamic>>();
@@ -877,7 +905,7 @@ final smartHomeDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
   Future<void> fetchHttpData() async {
     try {
       final httpData = await ref.read(httpDataProvider.future);
-      if (bleService.currentStatus != BleStatus.connected) {
+      if (!bleService.isConnected) {
         if (user != null) {
           final cachedBle = cache.get('bleData_${user.uid}');
           if (cachedBle != null) {
@@ -924,26 +952,14 @@ final smartHomeDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
 
   httpTimer = Timer.periodic(const Duration(seconds: 5), (_) => fetchHttpData());
 
-  Future<void> connectWithRetry() async {
-    int attempts = 0;
-    while (attempts < 3) {
-      try {
-        await bleService.connect();
-        break;
-      } catch (_) {
-        attempts++;
-        if (attempts < 3) await Future.delayed(Duration(seconds: attempts));
-      }
-    }
-  }
-
-  connectWithRetry();
+  // Do not auto-open the browser Bluetooth chooser.
+  // Bluetooth connection is now manual only, so cancelling the Web Bluetooth
+  // popup cannot create red errors or trigger tab-switch glitches.
 
   ref.onDispose(() {
     bleStatusSub.cancel();
     httpTimer?.cancel();
     controller.close();
-    bleService.dispose();
   });
 
   return controller.stream;
@@ -1131,7 +1147,9 @@ class _DashboardPageState extends ConsumerState<DashboardPage>
 
   Future<void> _manualRefresh() async {
     final bleService = ref.read(bleServiceProvider);
-    await bleService.connect();
+    if (bleService.isConnected) {
+      await bleService.refreshDevices().catchError((_) {});
+    }
     ref.invalidate(httpDataProvider);
 
     final authService = ref.read(authServiceProvider).requireValue;
@@ -1161,28 +1179,16 @@ class _DashboardPageState extends ConsumerState<DashboardPage>
       appBar: _GlassAppBar(
         onRefresh: _manualRefresh,
         bleStatus: bleService.currentStatus,
-        onConnectBLE: () => bleService.connect(),
+        onConnectBLE: () => unawaited(bleService.connect().catchError((_) {})),
       ),
       body: _WallpaperBackground(
-        child: AnimatedSwitcher(
-          duration: const Duration(milliseconds: 300),
-          switchInCurve: Curves.easeOutCubic,
-          switchOutCurve: Curves.easeInCubic,
-          transitionBuilder: (child, animation) {
-            return FadeTransition(
-              opacity: animation,
-              child: ScaleTransition(
-                scale: Tween<double>(begin: 0.97, end: 1.0).animate(
-                  CurvedAnimation(parent: animation, curve: Curves.easeOutCubic),
-                ),
-                child: RepaintBoundary(child: child),
-              ),
-            );
-          },
-          child: KeyedSubtree(
-            key: ValueKey(selectedIndex),
-            child: _pages[selectedIndex],
-          ),
+        // Keep every tab alive. AnimatedSwitcher was destroying Home when moving
+        // to Settings/Alerts, which could clear the cached rooms/devices while
+        // Firebase/local HTTP was temporarily unavailable. IndexedStack keeps the
+        // Home dashboard state stable between tab changes.
+        child: IndexedStack(
+          index: selectedIndex,
+          children: _pages,
         ),
       ),
       floatingActionButton: isDesktop
@@ -1643,10 +1649,24 @@ class _QuickActionDialogState extends ConsumerState<_QuickActionDialog> {
       List<Map<String, dynamic>> types;
 
       try {
-        gpios = await service.getSelectableGPIOs().timeout(const Duration(seconds: 3));
+        gpios = await service.getSelectableGPIOs().timeout(const Duration(seconds: 5));
       } catch (e) {
         logDebug('GPIO fetch failed: $e');
         gpios = [];
+      }
+
+      if (gpios.isEmpty) {
+        // Last-resort fallback so the Add Device sheet does not falsely say
+        // “No free GPIO” when ESP/Firebase lookup timed out.
+        const defaultPins = [4, 5, 13, 14, 16, 17, 18, 19, 21, 22, 23, 25, 26, 27, 32, 33];
+        final ble = ref.read(bleServiceProvider);
+        final used = <int>{};
+        for (final device in ble.devices) {
+          final raw = device['gpio'];
+          final gpio = raw is int ? raw : int.tryParse(raw?.toString() ?? '');
+          if (gpio != null) used.add(gpio);
+        }
+        gpios = defaultPins.where((pin) => !used.contains(pin)).toList();
       }
 
       try {
@@ -1737,7 +1757,9 @@ class _QuickActionDialogState extends ConsumerState<_QuickActionDialog> {
       // Re-check Firebase right before saving. This prevents duplicate GPIOs
       // if another room/device was added before the dialog refreshed.
       final latestFreeGPIOs = await service.getSelectableGPIOs();
-      if (!latestFreeGPIOs.contains(_selectedGpio)) {
+      // If the live lookup failed and returned empty, trust the GPIO list that
+      // was already loaded in the sheet instead of blocking with a false error.
+      if (latestFreeGPIOs.isNotEmpty && !latestFreeGPIOs.contains(_selectedGpio)) {
         if (!mounted) return;
         setState(() {
           _availableGPIOs = latestFreeGPIOs;
@@ -2723,7 +2745,9 @@ class _HomeContentWrapper extends ConsumerStatefulWidget {
 class _HomeContentWrapperState extends ConsumerState<_HomeContentWrapper> {
   Future<void> _refresh() async {
     final ble = ref.read(bleServiceProvider);
-    await ble.connect();
+    if (ble.isConnected) {
+      await ble.refreshDevices().catchError((_) {});
+    }
     ref.invalidate(httpDataProvider);
   }
 
@@ -2737,7 +2761,7 @@ class _HomeContentWrapperState extends ConsumerState<_HomeContentWrapper> {
       dataAsync: dataAsync,
       onRefresh: _refresh,
       bleStatus: bleService.currentStatus,
-      onConnectBLE: () => bleService.connect(),
+      onConnectBLE: () => unawaited(bleService.connect().catchError((_) {})),
     );
   }
 }
@@ -3010,13 +3034,20 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
 
       final currentDevices = _esp32Devices['devices'] as List? ?? [];
       final nextRooms = rooms.toList()..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+
+      // Never let a temporary empty Firebase/local HTTP response wipe the
+      // already visible dashboard. This was the reason rooms/devices could
+      // disappear after moving between tabs.
+      if (mergedDevices.isEmpty && currentDevices.isNotEmpty) return;
+      if (nextRooms.isEmpty && _rooms.isNotEmpty && mergedDevices.isEmpty) return;
+
       final roomsChanged = jsonEncode(_rooms) != jsonEncode(nextRooms);
       final devicesChanged = !_deviceListsEqual(currentDevices, mergedDevices);
       if (!roomsChanged && !devicesChanged) return;
 
       setState(() {
         _esp32Devices = {'devices': mergedDevices};
-        _rooms = nextRooms;
+        _rooms = nextRooms.isEmpty ? _getVisibleRooms(mergedDevices) : nextRooms;
         _syncSelectedRoom(_getVisibleRooms(mergedDevices));
       });
     } catch (_) {
@@ -4303,7 +4334,7 @@ class _PillBtn extends StatelessWidget {
 // ────────────────────────────────────────────────────────────
 // 27. GLASS BOTTOM NAV
 // ────────────────────────────────────────────────────────────
-class _GlassBottomNav extends StatefulWidget {
+class _GlassBottomNav extends StatelessWidget {
   final int selectedIndex;
   final ValueChanged<int> onTap;
 
@@ -4312,12 +4343,6 @@ class _GlassBottomNav extends StatefulWidget {
     required this.onTap,
   });
 
-  @override
-  State<_GlassBottomNav> createState() => _GlassBottomNavState();
-}
-
-class _GlassBottomNavState extends State<_GlassBottomNav>
-    with SingleTickerProviderStateMixin {
   static const _items = [
     (Icons.home_rounded, 'Home'),
     (Icons.bolt_rounded, 'Energy'),
@@ -4325,97 +4350,10 @@ class _GlassBottomNavState extends State<_GlassBottomNav>
     (Icons.settings_rounded, 'Settings'),
   ];
 
-  late AnimationController _pillController;
-  late Animation<double> _pillPosition;
-
-  double _visualPosition = 0;
-  bool _isDragging = false;
-  double _tabWidth = 0;
-  int _prevIndex = 0;
-
-  @override
-  void initState() {
-    super.initState();
-    _prevIndex = widget.selectedIndex;
-    _visualPosition = widget.selectedIndex.toDouble();
-    _pillController = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 380),
-    );
-    _pillPosition = AlwaysStoppedAnimation(_visualPosition);
-  }
-
-  @override
-  void didUpdateWidget(_GlassBottomNav old) {
-    super.didUpdateWidget(old);
-    if (!_isDragging && old.selectedIndex != widget.selectedIndex) {
-      _animatePillTo(widget.selectedIndex.toDouble());
-      _prevIndex = widget.selectedIndex;
-    }
-  }
-
-  void _animatePillTo(double target) {
-    final from = _visualPosition;
-    _pillPosition = Tween<double>(begin: from, end: target).animate(
-      CurvedAnimation(parent: _pillController, curve: Curves.easeOutExpo),
-    );
-    _pillController.forward(from: 0).then((_) {
-      _visualPosition = target;
-    });
-  }
-
-  double _dxToIndex(double dx) {
-    if (_tabWidth <= 0) return widget.selectedIndex.toDouble();
-    return (dx / _tabWidth).clamp(0.0, _items.length - 1.0);
-  }
-
-  int _nearestTab(double fractional) => fractional.round().clamp(0, _items.length - 1);
-
-  void _onDragStart(DragStartDetails d) {
-    _isDragging = true;
-    _pillController.stop();
-    final idx = _dxToIndex(d.localPosition.dx);
-    setState(() {
-      _visualPosition = idx;
-      _pillPosition = AlwaysStoppedAnimation(idx);
-    });
-  }
-
-  void _onDragUpdate(DragUpdateDetails d) {
-    final idx = _dxToIndex(d.localPosition.dx);
-    final nearest = _nearestTab(idx);
-
-    setState(() {
-      _visualPosition = idx;
-      _pillPosition = AlwaysStoppedAnimation(idx);
-    });
-
-    if (nearest != _prevIndex) {
-      HapticFeedback.selectionClick();
-      _prevIndex = nearest;
-      widget.onTap(nearest);
-    }
-  }
-
-  void _onDragEnd(DragEndDetails d) {
-    _isDragging = false;
-    final nearest = _nearestTab(_visualPosition);
-    _animatePillTo(nearest.toDouble());
-    widget.onTap(nearest);
-  }
-
-  void _onTap(int index) {
-    if (_isDragging) return;
+  void _handleTap(int index) {
+    if (index == selectedIndex) return;
     HapticFeedback.selectionClick();
-    _animatePillTo(index.toDouble());
-    _prevIndex = index;
-    widget.onTap(index);
-  }
-
-  @override
-  void dispose() {
-    _pillController.dispose();
-    super.dispose();
+    onTap(index);
   }
 
   @override
@@ -4468,53 +4406,100 @@ class _GlassBottomNavState extends State<_GlassBottomNav>
             ),
             child: LayoutBuilder(
               builder: (context, constraints) {
-                _tabWidth = constraints.maxWidth / _items.length;
+                final tabWidth = constraints.maxWidth / _items.length;
+                final activeIndex = selectedIndex.clamp(0, _items.length - 1);
 
-                return GestureDetector(
-                  onHorizontalDragStart: _onDragStart,
-                  onHorizontalDragUpdate: _onDragUpdate,
-                  onHorizontalDragEnd: _onDragEnd,
-                  behavior: HitTestBehavior.opaque,
-                  child: Stack(children: [
-                    AnimatedBuilder(
-                      animation: _pillPosition,
-                      builder: (context, _) {
-                        return Positioned(
-                          top: 8,
-                          bottom: 8,
-                          left: _pillPosition.value * _tabWidth + 6,
-                          width: _tabWidth - 12,
-                          child: ClipRRect(
-                            borderRadius: BorderRadius.circular(26),
-                            child: BackdropFilter(
-                              filter: ui.ImageFilter.blur(
-                                  sigmaX: 12, sigmaY: 12),
-                              child: Container(
-                                decoration: BoxDecoration(
-                                  borderRadius: BorderRadius.circular(26),
-                                  gradient: LinearGradient(
-                                    begin: Alignment.topLeft,
-                                    end: Alignment.bottomRight,
-                                    colors: isDark
-                                        ? [
-                                      _DT.purple.withValues(alpha: 0.38),
-                                      _DT.purple.withValues(alpha: 0.20),
-                                    ]
-                                        : [
-                                      _DT.purple.withValues(alpha: 0.20),
-                                      _DT.purple.withValues(alpha: 0.10),
-                                    ],
-                                  ),
-                                  border: Border.all(
-                                    color: _DT.purple.withValues(
-                                        alpha: isDark ? 0.50 : 0.30),
-                                    width: 0.8,
-                                  ),
-                                  boxShadow: [
-                                    BoxShadow(
-                                      color: _DT.purple.withValues(alpha: 0.28),
-                                      blurRadius: 14,
-                                      offset: const Offset(0, 2),
+                return Stack(
+                  children: [
+                    AnimatedPositioned(
+                      duration: const Duration(milliseconds: 240),
+                      curve: Curves.easeOutCubic,
+                      top: 8,
+                      bottom: 8,
+                      left: activeIndex * tabWidth + 6,
+                      width: tabWidth - 12,
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(26),
+                        child: BackdropFilter(
+                          filter: ui.ImageFilter.blur(sigmaX: 12, sigmaY: 12),
+                          child: Container(
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(26),
+                              gradient: LinearGradient(
+                                begin: Alignment.topLeft,
+                                end: Alignment.bottomRight,
+                                colors: isDark
+                                    ? [
+                                  _DT.purple.withValues(alpha: 0.38),
+                                  _DT.purple.withValues(alpha: 0.20),
+                                ]
+                                    : [
+                                  _DT.purple.withValues(alpha: 0.20),
+                                  _DT.purple.withValues(alpha: 0.10),
+                                ],
+                              ),
+                              border: Border.all(
+                                color: _DT.purple.withValues(alpha: isDark ? 0.50 : 0.30),
+                                width: 0.8,
+                              ),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: _DT.purple.withValues(alpha: 0.28),
+                                  blurRadius: 14,
+                                  offset: const Offset(0, 2),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                    Row(
+                      children: _items.asMap().entries.map((entry) {
+                        final index = entry.key;
+                        final (icon, label) = entry.value;
+                        final isActive = activeIndex == index;
+
+                        return Expanded(
+                          child: Semantics(
+                            button: true,
+                            selected: isActive,
+                            label: label,
+                            child: GestureDetector(
+                              behavior: HitTestBehavior.opaque,
+                              onTap: () => _handleTap(index),
+                              child: SizedBox(
+                                height: 68,
+                                child: Column(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    AnimatedScale(
+                                      duration: const Duration(milliseconds: 180),
+                                      curve: Curves.easeOutCubic,
+                                      scale: isActive ? 1.06 : 1.0,
+                                      child: Icon(
+                                        icon,
+                                        size: isActive ? 24 : 21,
+                                        color: isActive
+                                            ? _DT.purple
+                                            : (isDark
+                                            ? Colors.white.withValues(alpha: 0.38)
+                                            : Colors.black.withValues(alpha: 0.28)),
+                                      ),
+                                    ),
+                                    const SizedBox(height: 3),
+                                    AnimatedDefaultTextStyle(
+                                      duration: const Duration(milliseconds: 180),
+                                      style: TextStyle(
+                                        fontSize: 10,
+                                        fontWeight: isActive ? FontWeight.w700 : FontWeight.w500,
+                                        color: isActive
+                                            ? _DT.purple
+                                            : (isDark
+                                            ? Colors.white.withValues(alpha: 0.38)
+                                            : Colors.black.withValues(alpha: 0.28)),
+                                      ),
+                                      child: Text(label, maxLines: 1),
                                     ),
                                   ],
                                 ),
@@ -4522,68 +4507,9 @@ class _GlassBottomNavState extends State<_GlassBottomNav>
                             ),
                           ),
                         );
-                      },
-                    ),
-
-                    Row(
-                      children: _items.asMap().entries.map((entry) {
-                        final index = entry.key;
-                        final (icon, label) = entry.value;
-                        final isActive = widget.selectedIndex == index;
-
-                        return Expanded(
-                          child: GestureDetector(
-                            behavior: HitTestBehavior.opaque,
-                            onTap: () => _onTap(index),
-                            child: SizedBox(
-                              height: 68,
-                              child: Column(
-                                mainAxisAlignment:
-                                MainAxisAlignment.center,
-                                children: [
-                                  AnimatedSwitcher(
-                                    duration:
-                                    const Duration(milliseconds: 180),
-                                    child: Icon(
-                                      icon,
-                                      key: ValueKey(isActive),
-                                      size: isActive ? 24 : 21,
-                                      color: isActive
-                                          ? _DT.purple
-                                          : (isDark
-                                          ? Colors.white
-                                          .withValues(alpha: 0.38)
-                                          : Colors.black
-                                          .withValues(alpha: 0.28)),
-                                    ),
-                                  ),
-                                  const SizedBox(height: 3),
-                                  AnimatedDefaultTextStyle(
-                                    duration:
-                                    const Duration(milliseconds: 180),
-                                    style: TextStyle(
-                                      fontSize: 10,
-                                      fontWeight: isActive
-                                          ? FontWeight.w700
-                                          : FontWeight.w500,
-                                      color: isActive
-                                          ? _DT.purple
-                                          : (isDark
-                                          ? Colors.white
-                                          .withValues(alpha: 0.38)
-                                          : Colors.black
-                                          .withValues(alpha: 0.28)),
-                                    ),
-                                    child: Text(label),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        );
                       }).toList(),
                     ),
-                  ]),
+                  ],
                 );
               },
             ),
@@ -4591,6 +4517,149 @@ class _GlassBottomNavState extends State<_GlassBottomNav>
         ),
       ),
     );
+  }
+}
+
+class _LiquidSelectionLens extends StatelessWidget {
+  final bool isDark;
+  const _LiquidSelectionLens({required this.isDark});
+
+  @override
+  Widget build(BuildContext context) {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(32),
+      child: BackdropFilter(
+        filter: ui.ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(32),
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: isDark
+                  ? [
+                Colors.white.withValues(alpha: 0.26),
+                _DT.purple.withValues(alpha: 0.38),
+                Colors.white.withValues(alpha: 0.08),
+              ]
+                  : [
+                Colors.white.withValues(alpha: 0.92),
+                _DT.purple.withValues(alpha: 0.19),
+                Colors.white.withValues(alpha: 0.56),
+              ],
+            ),
+            border: Border.all(
+              color: Colors.white.withValues(alpha: isDark ? 0.32 : 0.78),
+              width: 1,
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: _DT.purple.withValues(alpha: isDark ? 0.32 : 0.20),
+                blurRadius: 22,
+                offset: const Offset(0, 8),
+              ),
+              BoxShadow(
+                color: Colors.white.withValues(alpha: isDark ? 0.05 : 0.62),
+                blurRadius: 12,
+                offset: const Offset(-3, -4),
+              ),
+            ],
+          ),
+          child: Stack(
+            children: [
+              Positioned(
+                left: 15,
+                right: 15,
+                top: 7,
+                height: 11,
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(30),
+                    gradient: LinearGradient(
+                      colors: [
+                        Colors.white.withValues(alpha: isDark ? 0.23 : 0.78),
+                        Colors.white.withValues(alpha: 0.02),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+              Positioned(
+                left: 10,
+                right: 10,
+                bottom: 5,
+                height: 12,
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(30),
+                    gradient: LinearGradient(
+                      colors: [
+                        Colors.white.withValues(alpha: 0.0),
+                        _DT.purple.withValues(alpha: isDark ? 0.18 : 0.12),
+                        Colors.white.withValues(alpha: 0.0),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _LiquidGlassNavShinePainter extends CustomPainter {
+  final bool isDark;
+  const _LiquidGlassNavShinePainter({required this.isDark});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final highlight = Paint()
+      ..shader = ui.Gradient.linear(
+        Offset(0, 0),
+        Offset(size.width, size.height),
+        [
+          Colors.white.withValues(alpha: isDark ? 0.10 : 0.36),
+          Colors.white.withValues(alpha: 0.00),
+          Colors.white.withValues(alpha: isDark ? 0.05 : 0.18),
+        ],
+        const [0.0, 0.50, 1.0],
+      );
+
+    final glow = Paint()
+      ..shader = ui.Gradient.radial(
+        Offset(size.width * 0.18, size.height * 0.10),
+        size.width * 0.50,
+        [
+          Colors.white.withValues(alpha: isDark ? 0.09 : 0.42),
+          Colors.white.withValues(alpha: 0.00),
+        ],
+      );
+
+    final purpleGlow = Paint()
+      ..shader = ui.Gradient.radial(
+        Offset(size.width * 0.82, size.height * 1.15),
+        size.width * 0.45,
+        [
+          _DT.purple.withValues(alpha: isDark ? 0.12 : 0.09),
+          _DT.purple.withValues(alpha: 0.00),
+        ],
+      );
+
+    final rrect = RRect.fromRectAndRadius(
+      Offset.zero & size,
+      const Radius.circular(38),
+    );
+    canvas.drawRRect(rrect, highlight);
+    canvas.drawCircle(Offset(size.width * 0.18, size.height * 0.12), size.width * 0.46, glow);
+    canvas.drawCircle(Offset(size.width * 0.82, size.height * 1.05), size.width * 0.42, purpleGlow);
+  }
+
+  @override
+  bool shouldRepaint(covariant _LiquidGlassNavShinePainter oldDelegate) {
+    return oldDelegate.isDark != isDark;
   }
 }
 
@@ -4992,11 +5061,15 @@ class _SettingsScreen extends ConsumerWidget {
     final authService = ref.watch(authServiceProvider).requireValue;
     final user = authService.currentUser;
 
-    void onConnectBLE() => ref.read(bleServiceProvider).connect();
+    void onConnectBLE() {
+      unawaited(ref.read(bleServiceProvider).connect().catchError((_) {}));
+    }
 
     Future<void> onRefresh() async {
       final ble = ref.read(bleServiceProvider);
-      await ble.connect();
+      if (ble.isConnected) {
+        await ble.refreshDevices().catchError((_) {});
+      }
       ref.invalidate(httpDataProvider);
     }
 

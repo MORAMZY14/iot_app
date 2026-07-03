@@ -44,6 +44,17 @@ class BleService {
   BleStatus get currentStatus => _currentStatus;
   bool get isConnected => _currentStatus == BleStatus.connected || _currentStatus == BleStatus.dataUpdated;
 
+  bool _isUserCancelledBluetoothError(Object error) {
+    final message = error.toString().toLowerCase();
+    return message.contains('notfounderror') ||
+        message.contains('user cancelled') ||
+        message.contains('user canceled') ||
+        message.contains('cancelled the requestdevice') ||
+        message.contains('canceled the requestdevice') ||
+        message.contains('requestdevice() chooser') ||
+        message.contains('bluetooth device chooser');
+  }
+
   BleService() {
     _adapterSub = FlutterBluePlus.adapterState.listen((state) {
       if (_disposed) return;
@@ -72,21 +83,28 @@ class BleService {
     try {
       await _safeStopScan();
 
-      scanSub = FlutterBluePlus.scanResults.listen((results) {
-        for (final result in results) {
-          final name = result.device.platformName.isNotEmpty
-              ? result.device.platformName
-              : result.advertisementData.advName;
-          final hasService = result.advertisementData.serviceUuids
-              .map((e) => e.toString().toLowerCase())
-              .contains(serviceUuid.toLowerCase());
+      scanSub = FlutterBluePlus.scanResults.listen(
+            (results) {
+          for (final result in results) {
+            final name = result.device.platformName.isNotEmpty
+                ? result.device.platformName
+                : result.advertisementData.advName;
+            final hasService = result.advertisementData.serviceUuids
+                .map((e) => e.toString().toLowerCase())
+                .contains(serviceUuid.toLowerCase());
 
-          if ((name == esp32DeviceName || hasService) && !foundDevice.isCompleted) {
-            foundDevice.complete(result.device);
-            break;
+            if ((name == esp32DeviceName || hasService) && !foundDevice.isCompleted) {
+              foundDevice.complete(result.device);
+              break;
+            }
           }
-        }
-      });
+        },
+        onError: (Object error, StackTrace stackTrace) {
+          if (!foundDevice.isCompleted) {
+            foundDevice.completeError(error, stackTrace);
+          }
+        },
+      );
 
       await FlutterBluePlus.startScan(
         timeout: const Duration(seconds: 6),
@@ -98,10 +116,9 @@ class BleService {
         onTimeout: () => null,
       );
     } catch (e) {
-      final message = e.toString();
-      // On Flutter Web, closing the browser Bluetooth chooser throws NotFoundError.
-      // Treat it like a cancelled connection, not as an app crash.
-      if (message.contains('NotFoundError') || message.contains('cancelled') || message.contains('canceled')) {
+      // On Flutter Web, closing/cancelling the browser Bluetooth chooser throws
+      // NotFoundError. This is a normal user action, not a real app error.
+      if (_isUserCancelledBluetoothError(e)) {
         logDebug('BLE scan cancelled by user: $e');
         _updateStatus(BleStatus.disconnected);
         return;
@@ -151,6 +168,12 @@ class BleService {
       unawaited(refreshDevices());
       _startSensorPolling();
     } catch (e) {
+      if (_isUserCancelledBluetoothError(e)) {
+        logDebug('BLE connection cancelled by user: $e');
+        _disconnect();
+        _updateStatus(BleStatus.disconnected);
+        return;
+      }
       logDebug('BLE connection error: $e');
       _disconnect();
       _updateStatus(BleStatus.error);
@@ -247,6 +270,11 @@ class BleService {
   }
 
   Future<void> readLightStates() => refreshDevices();
+
+  Future<void> disconnect() async {
+    _disconnect(clearDevice: true);
+    _updateStatus(BleStatus.disconnected);
+  }
 
   Future<bool> controlDevice({required String id, required bool state}) async {
     final response = await sendCommand({
