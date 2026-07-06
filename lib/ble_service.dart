@@ -6,6 +6,7 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'app_logger.dart';
+import 'app_constants.dart';
 
 // Must match the ESP32 BLE backup firmware.
 const String esp32DeviceName = 'ESP32_SmartHome';
@@ -107,12 +108,12 @@ class BleService {
       );
 
       await FlutterBluePlus.startScan(
-        timeout: const Duration(seconds: 6),
+        timeout: const Duration(seconds: 4),
         withServices: kIsWeb ? [Guid(serviceUuid)] : [],
       );
 
       _device = await foundDevice.future.timeout(
-        const Duration(seconds: 7),
+        const Duration(seconds: 5),
         onTimeout: () => null,
       );
     } catch (e) {
@@ -138,7 +139,7 @@ class BleService {
 
     _updateStatus(BleStatus.connecting);
     try {
-      await _device!.connect(autoConnect: false).timeout(const Duration(seconds: 10));
+      await _device!.connect(autoConnect: false).timeout(const Duration(seconds: 6));
       await _connectionSub?.cancel();
       _connectionSub = _device!.connectionState.listen((state) {
         if (_disposed) return;
@@ -182,7 +183,7 @@ class BleService {
 
   Future<Map<String, dynamic>> sendCommand(
       Map<String, dynamic> command, {
-        Duration timeout = const Duration(seconds: 5),
+        Duration timeout = AppConfig.mediumTimeout,
       }) async {
     if (!isConnected || _commandChar == null) {
       throw StateError('BLE is not connected');
@@ -203,7 +204,7 @@ class BleService {
       final deadline = DateTime.now().add(timeout);
       Map<String, dynamic>? last;
       while (DateTime.now().isBefore(deadline)) {
-        await Future.delayed(const Duration(milliseconds: 160));
+        await Future.delayed(const Duration(milliseconds: 60));
         final value = await _commandChar!.read();
         final text = utf8.decode(value, allowMalformed: true).trim();
         if (text.isEmpty) continue;
@@ -226,7 +227,7 @@ class BleService {
 
   void _startSensorPolling() {
     _sensorPollTimer?.cancel();
-    _sensorPollTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+    _sensorPollTimer = Timer.periodic(const Duration(seconds: 8), (_) {
       readSensorData();
     });
   }
@@ -234,7 +235,7 @@ class BleService {
   Future<void> readSensorData() async {
     if (!isConnected) return;
     try {
-      final data = await sendCommand({'cmd': 'status'}, timeout: const Duration(seconds: 3));
+      final data = await sendCommand({'cmd': 'status'}, timeout: AppConfig.shortTimeout);
       final temp = data['temp'] ?? data['temperature'];
       final hum = data['hum'] ?? data['humidity'];
       final flame = data['flame'];
@@ -250,7 +251,7 @@ class BleService {
   Future<void> refreshDevices() async {
     if (!isConnected) return;
     try {
-      final response = await sendCommand({'cmd': 'get_devices'}, timeout: const Duration(seconds: 5));
+      final response = await sendCommand({'cmd': 'get_devices'}, timeout: AppConfig.mediumTimeout);
       final rawDevices = response['devices'];
       if (rawDevices is List) {
         devices = rawDevices
@@ -281,7 +282,7 @@ class BleService {
       'cmd': 'set_device',
       'id': id,
       'state': state,
-    }, timeout: const Duration(seconds: 4));
+    }, timeout: AppConfig.bleControlTimeout);
     if (response['ok'] == true) {
       for (final d in devices) {
         if ((d['id'] ?? '').toString() == id) {
@@ -301,7 +302,7 @@ class BleService {
       'cmd': 'set_room',
       'room': room,
       'state': state,
-    }, timeout: const Duration(seconds: 4));
+    }, timeout: AppConfig.bleControlTimeout);
     if (response['ok'] == true) {
       lights[room] = state;
       _updateStatus(BleStatus.dataUpdated);
@@ -313,7 +314,7 @@ class BleService {
       'cmd': 'edit_gpio',
       'id': id,
       'gpio': gpio,
-    }, timeout: const Duration(seconds: 5));
+    }, timeout: AppConfig.mediumTimeout);
     return response['ok'] == true;
   }
 
@@ -322,14 +323,14 @@ class BleService {
       'cmd': 'wifi_connect',
       'ssid': ssid,
       'password': password,
-    }, timeout: const Duration(seconds: 5));
+    }, timeout: AppConfig.mediumTimeout);
     return response['ok'] == true;
   }
 
   Future<List<Map<String, dynamic>>> scanWifi() async {
     final response = await sendCommand({
       'cmd': 'wifi_scan',
-    }, timeout: const Duration(seconds: 18));
+    }, timeout: const Duration(seconds: 10));
 
     final networks = response['networks'];
     if (networks is List) {
@@ -345,14 +346,14 @@ class BleService {
     try {
       final response = await sendCommand({
         'cmd': 'forget_wifi',
-      }, timeout: const Duration(seconds: 5));
+      }, timeout: AppConfig.mediumTimeout);
       return response['ok'] == true;
     } catch (_) {
       // Older experimental firmware used wifi_forget. Keep this fallback so
       // mixed app/firmware versions do not fail at compile/runtime.
       final response = await sendCommand({
         'cmd': 'wifi_forget',
-      }, timeout: const Duration(seconds: 5));
+      }, timeout: AppConfig.mediumTimeout);
       return response['ok'] == true;
     }
   }

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io' show Platform;
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
@@ -52,19 +53,26 @@ void main() async {
     return;
   }
 
-  if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
-    await [
-      Permission.bluetoothScan,
-      Permission.bluetoothConnect,
-      Permission.locationWhenInUse,
-    ].request();
-  }
-
   runApp(
     const ProviderScope(
       child: MyApp(),
     ),
   );
+
+  unawaited(_requestMobilePermissions());
+}
+
+Future<void> _requestMobilePermissions() async {
+  if (kIsWeb || !(Platform.isAndroid || Platform.isIOS)) return;
+  try {
+    await [
+      Permission.bluetoothScan,
+      Permission.bluetoothConnect,
+      Permission.locationWhenInUse,
+    ].request();
+  } catch (e) {
+    debugPrint('Permission request skipped: $e');
+  }
 }
 
 class MyApp extends ConsumerWidget {

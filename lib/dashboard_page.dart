@@ -183,7 +183,7 @@ class CacheService {
   CacheService._internal();
 
   final Map<String, _CacheEntry> _cache = {};
-  final Duration _ttl = const Duration(seconds: 5);
+  final Duration _ttl = const Duration(seconds: 3);
 
   void set(String key, dynamic data) {
     _cache[key] = _CacheEntry(data, DateTime.now().add(_ttl));
@@ -228,7 +228,7 @@ class ESP32DeviceService {
   Future<Map<String, dynamic>?> _tryGetDevicesFromBle() async {
     if (!bleService.isConnected) return null;
     try {
-      await bleService.refreshDevices().timeout(const Duration(seconds: 4));
+      await bleService.refreshDevices().timeout(AppConfig.mediumTimeout);
       return _devicesFromBleCache();
     } catch (e) {
       logDebug('BLE device list unavailable: $e');
@@ -236,9 +236,32 @@ class ESP32DeviceService {
     }
   }
 
+  Future<Map<String, dynamic>?> _tryGetDevicesFromLocalHttp() async {
+    try {
+      final response = await http.get(
+        Uri.parse('http://$esp32Ip/api/devices'),
+        headers: const {'Cache-Control': 'no-cache'},
+      ).timeout(AppConfig.shortTimeout);
+
+      if (response.statusCode != 200 || response.body.isEmpty) return null;
+      final data = jsonDecode(response.body);
+      if (data is Map<String, dynamic>) return data;
+      if (data is Map) return data.cast<String, dynamic>();
+    } catch (e) {
+      logDebug('Local device list unavailable: $e');
+    }
+    return null;
+  }
+
   // Read devices. When Bluetooth backup is connected, prefer the ESP32 local
   // BLE device list so rooms/devices still appear when the phone has no internet.
   Future<Map<String, dynamic>> getDevices() async {
+    final bleCached = _devicesFromBleCache();
+    if (bleCached != null && (bleCached['devices'] as List).isNotEmpty) return bleCached;
+
+    final localResult = await _tryGetDevicesFromLocalHttp();
+    if (localResult != null) return localResult;
+
     final bleResult = await _tryGetDevicesFromBle();
     if (bleResult != null) return bleResult;
 
@@ -249,7 +272,7 @@ class ESP32DeviceService {
       final response = await http.get(
         Uri.parse('$databaseUrl/smartHome/$uid/devices.json'),
         headers: {'Cache-Control': 'no-cache'},
-      ).timeout(const Duration(seconds: 10));
+      ).timeout(AppConfig.mediumTimeout);
 
       if (response.statusCode == 200) {
         final String responseBody = response.body;
@@ -311,7 +334,7 @@ class ESP32DeviceService {
         Uri.parse('$databaseUrl/smartHome/$uid/devices/$id.json'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode(deviceData),
-      ).timeout(const Duration(seconds: 5));
+      ).timeout(AppConfig.mediumTimeout);
 
       return response.statusCode == 200;
     } catch (e) {
@@ -339,7 +362,7 @@ class ESP32DeviceService {
         Uri.parse('$databaseUrl/smartHome/$uid/devices/$id.json'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'gpio': newGpio}),
-      ).timeout(const Duration(seconds: 5));
+      ).timeout(AppConfig.mediumTimeout);
 
       return response.statusCode == 200;
     } catch (e) {
@@ -348,44 +371,83 @@ class ESP32DeviceService {
     }
   }
 
-  // Control device quickly. If the phone can reach the ESP32 locally,
-  // use the ESP32 HTTP API first for near-instant GPIO switching. The ESP32
-  // will update Firebase after switching the GPIO. If local access fails,
-  // Firebase is used as the fallback path.
+  // Control device quickly. Local Wi-Fi and BLE race each other; the first
+  // successful path wins. Firebase is only used when fast local paths fail.
   Future<bool> controlDevice({
     required String id,
     required bool state,
   }) async {
-    // Backup path: if BLE is already connected, use it first.
-    // This keeps control working even when internet/router/Firebase is unavailable.
+    final fastAttempts = <Future<bool>>[
+      _tryLocalControl(id: id, state: state),
+    ];
+
     if (bleService.isConnected) {
-      try {
-        final ok = await bleService.controlDevice(id: id, state: state)
-            .timeout(const Duration(milliseconds: 900));
-        if (ok) return true;
-      } catch (e) {
-        logDebug('BLE backup control failed, trying local Wi-Fi/Firebase: $e');
-      }
+      fastAttempts.add(_tryBleControl(id: id, state: state));
     }
 
+    final fastSuccess = await _firstSuccessful(
+      fastAttempts,
+      timeout: const Duration(milliseconds: 780),
+    );
+    if (fastSuccess) return true;
+
+    return _controlDeviceViaFirebase(id: id, state: state);
+  }
+
+  Future<bool> _tryBleControl({required String id, required bool state}) async {
+    if (!bleService.isConnected) return false;
+    try {
+      return await bleService
+          .controlDevice(id: id, state: state)
+          .timeout(AppConfig.bleControlTimeout);
+    } catch (e) {
+      logDebug('BLE control skipped: $e');
+      return false;
+    }
+  }
+
+  Future<bool> _tryLocalControl({required String id, required bool state}) async {
     try {
       final localResponse = await http.post(
         Uri.parse('http://$esp32Ip/api/devices/control'),
-        body: {
-          'id': id,
-          'state': state ? 'true' : 'false',
-        },
-      ).timeout(const Duration(milliseconds: 650));
-
-      if (localResponse.statusCode == 200) {
-        return true;
-      }
+        headers: const {'Cache-Control': 'no-cache'},
+        body: {'id': id, 'state': state ? 'true' : 'false'},
+      ).timeout(AppConfig.localControlTimeout);
+      return localResponse.statusCode == 200;
     } catch (_) {
-      // Local ESP32 API is optional. This will fail when the phone is not on
-      // the same Wi-Fi network, so fall back to Firebase below.
+      return false;
+    }
+  }
+
+  Future<bool> _firstSuccessful(
+    List<Future<bool>> attempts, {
+    required Duration timeout,
+  }) async {
+    if (attempts.isEmpty) return false;
+
+    final completer = Completer<bool>();
+    var remaining = attempts.length;
+
+    for (final attempt in attempts) {
+      unawaited(attempt.then((ok) {
+        if (ok && !completer.isCompleted) {
+          completer.complete(true);
+          return;
+        }
+        remaining--;
+        if (remaining <= 0 && !completer.isCompleted) {
+          completer.complete(false);
+        }
+      }).catchError((_) {
+        remaining--;
+        if (remaining <= 0 && !completer.isCompleted) {
+          completer.complete(false);
+        }
+        return false;
+      }));
     }
 
-    return _controlDeviceViaFirebase(id: id, state: state);
+    return completer.future.timeout(timeout, onTimeout: () => false);
   }
 
   Future<bool> _controlDeviceViaFirebase({
@@ -400,7 +462,7 @@ class ESP32DeviceService {
         Uri.parse('$databaseUrl/smartHome/$uid/devices/$id.json'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'state': state}),
-      ).timeout(const Duration(seconds: 5));
+      ).timeout(AppConfig.firebaseControlTimeout);
 
       return response.statusCode == 200;
     } catch (e) {
@@ -417,7 +479,7 @@ class ESP32DeviceService {
 
       final response = await http.delete(
         Uri.parse('$databaseUrl/smartHome/$uid/devices/$id.json'),
-      ).timeout(const Duration(seconds: 3));
+      ).timeout(AppConfig.shortTimeout);
 
       return response.statusCode == 200;
     } catch (e) {
@@ -436,7 +498,7 @@ class ESP32DeviceService {
         Uri.parse('$databaseUrl/smartHome/$uid/rooms.json'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode(rooms),
-      ).timeout(const Duration(seconds: 5));
+      ).timeout(AppConfig.mediumTimeout);
 
       return response.statusCode == 200;
     } catch (e) {
@@ -466,7 +528,7 @@ class ESP32DeviceService {
             Uri.parse('$databaseUrl/smartHome/$uid/devices/$id.json'),
             headers: {'Content-Type': 'application/json'},
             body: jsonEncode({'room': newRoom}),
-          ).timeout(const Duration(seconds: 5));
+          ).timeout(AppConfig.mediumTimeout);
           ok = ok && response.statusCode == 200;
         }
       }
@@ -490,8 +552,10 @@ class ESP32DeviceService {
   // When Bluetooth backup is connected, derive rooms from the ESP32 local device list.
   Future<List<String>> getRooms() async {
     if (bleService.isConnected) {
+      final bleRoomsCached = _roomsFromDeviceList(bleService.devices);
+      if (bleRoomsCached.isNotEmpty) return bleRoomsCached;
       try {
-        await bleService.refreshDevices().timeout(const Duration(seconds: 4));
+        await bleService.refreshDevices().timeout(AppConfig.shortTimeout);
       } catch (e) {
         logDebug('BLE room refresh skipped: $e');
       }
@@ -519,13 +583,26 @@ class ESP32DeviceService {
     }
 
     try {
+      final localResponse = await http.get(
+        Uri.parse('http://$esp32Ip/api/rooms'),
+        headers: const {'Cache-Control': 'no-cache'},
+      ).timeout(AppConfig.shortTimeout);
+      if (localResponse.statusCode == 200 && localResponse.body.isNotEmpty) {
+        final rooms = normalizeRooms(jsonDecode(localResponse.body)['rooms']);
+        if (rooms.isNotEmpty) return rooms;
+      }
+    } catch (e) {
+      logDebug('Local rooms unavailable: $e');
+    }
+
+    try {
       final String databaseUrl = AppConfig.databaseUrl;
       final String uid = FirebaseAuth.instance.currentUser!.uid;
 
       final response = await http.get(
         Uri.parse('$databaseUrl/smartHome/$uid/rooms.json'),
         headers: {'Cache-Control': 'no-cache'},
-      ).timeout(const Duration(seconds: 3));
+      ).timeout(AppConfig.shortTimeout);
 
       if (response.statusCode == 200 && response.body.isNotEmpty && response.body != 'null') {
         final rooms = normalizeRooms(jsonDecode(response.body));
@@ -537,7 +614,7 @@ class ESP32DeviceService {
       final devicesResponse = await http.get(
         Uri.parse('$databaseUrl/smartHome/$uid/devices.json'),
         headers: {'Cache-Control': 'no-cache'},
-      ).timeout(const Duration(seconds: 3));
+      ).timeout(AppConfig.shortTimeout);
 
       if (devicesResponse.statusCode == 200 && devicesResponse.body.isNotEmpty && devicesResponse.body != 'null') {
         final dynamic data = jsonDecode(devicesResponse.body);
@@ -634,7 +711,7 @@ class ESP32DeviceService {
     try {
       final response = await http.get(
         Uri.parse('http://$esp32Ip/api/gpio/scan'),
-      ).timeout(const Duration(seconds: 3));
+      ).timeout(AppConfig.shortTimeout);
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body) as Map<String, dynamic>;
@@ -656,7 +733,7 @@ class ESP32DeviceService {
     try {
       final response = await http.get(
         Uri.parse('http://$esp32Ip/api/devicetypes'),
-      ).timeout(const Duration(seconds: 3));
+      ).timeout(AppConfig.shortTimeout);
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body) as Map<String, dynamic>;
@@ -692,7 +769,7 @@ final userEsp32CodeProvider = FutureProvider<String?>((ref) async {
       final response = await http.get(
         Uri.parse('$databaseUrl/users/${user.uid}/esp32Code.json'),
         headers: {'Cache-Control': 'no-cache'},
-      ).timeout(const Duration(seconds: 3));
+      ).timeout(AppConfig.shortTimeout);
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
@@ -713,7 +790,7 @@ final esp32IpProvider = FutureProvider<String>((ref) async {
   final user = authService.currentUser;
 
   if (code == null || code.isEmpty || user == null) {
-    return '192.168.1.9';
+    return AppConfig.fallbackEsp32Ip;
   }
 
   logDebug('🔎 Looking up IP for ESP32 Code: $code');
@@ -724,7 +801,7 @@ final esp32IpProvider = FutureProvider<String>((ref) async {
     final response = await http.get(
       Uri.parse('$databaseUrl/esp_public/$code/status.json'),
       headers: {'Cache-Control': 'no-cache'},
-    ).timeout(const Duration(seconds: 10));
+    ).timeout(AppConfig.mediumTimeout);
 
     if (response.statusCode == 200) {
       final data = jsonDecode(response.body);
@@ -740,19 +817,19 @@ final esp32IpProvider = FutureProvider<String>((ref) async {
     final response = await http.get(
       Uri.parse('$databaseUrl/smartHome/${user.uid}/status.json'),
       headers: {'Cache-Control': 'no-cache'},
-    ).timeout(const Duration(seconds: 3));
+    ).timeout(AppConfig.shortTimeout);
 
     if (response.statusCode == 200) {
       final data = jsonDecode(response.body);
       if (data != null && data['uniqueCode'] == code) {
-        return data['ip'] ?? '192.168.1.9';
+        return data['ip'] ?? AppConfig.fallbackEsp32Ip;
       }
     }
   } catch (e) {
     logDebug('Error fetching IP from user node: $e');
   }
 
-  return '192.168.1.9';
+  return AppConfig.fallbackEsp32Ip;
 });
 
 final esp32DeviceServiceProvider = FutureProvider<ESP32DeviceService>((ref) async {
@@ -788,14 +865,14 @@ final httpDataProvider = FutureProvider<Map<String, dynamic>>((ref) async {
   }
 
   int retryCount = 0;
-  final maxRetries = 3;
+  final maxRetries = 1;
 
   while (retryCount < maxRetries) {
     try {
       final response = await http.get(
         Uri.parse('$url/smartHome/${user.uid}.json'),
         headers: {'Cache-Control': 'no-cache'},
-      ).timeout(const Duration(seconds: 5));
+      ).timeout(AppConfig.mediumTimeout);
 
       if (response.statusCode == 200) {
         final jsonData = jsonDecode(response.body);
@@ -850,7 +927,7 @@ final httpDataProvider = FutureProvider<Map<String, dynamic>>((ref) async {
     } catch (_) {
       retryCount++;
       if (retryCount < maxRetries) {
-        await Future.delayed(Duration(milliseconds: 500 * retryCount));
+        await Future.delayed(Duration(milliseconds: 250 * retryCount));
       }
     }
   }
@@ -950,7 +1027,7 @@ final smartHomeDataProvider = StreamProvider<Map<String, dynamic>>((ref) {
 
   fetchHttpData();
 
-  httpTimer = Timer.periodic(const Duration(seconds: 5), (_) => fetchHttpData());
+  httpTimer = Timer.periodic(const Duration(seconds: 8), (_) => fetchHttpData());
 
   // Do not auto-open the browser Bluetooth chooser.
   // Bluetooth connection is now manual only, so cancelling the Web Bluetooth
@@ -1025,7 +1102,7 @@ class LightToggleService {
         Uri.parse('$url/smartHome/${user.uid}/lights.json'),
         body: jsonEncode({room: value}),
       )
-          .timeout(const Duration(seconds: 5));
+          .timeout(AppConfig.firebaseControlTimeout);
 
       if (response.statusCode != 200) {
         throw Exception('HTTP ${response.statusCode}');
@@ -1644,20 +1721,26 @@ class _QuickActionDialogState extends ConsumerState<_QuickActionDialog> {
     try {
       final service = await ref.read(esp32DeviceServiceProvider.future);
 
-      List<int> gpios;
-      List<String> rooms;
-      List<Map<String, dynamic>> types;
+      final results = await Future.wait<dynamic>([
+        service.getSelectableGPIOs().timeout(AppConfig.mediumTimeout).catchError((e) {
+          logDebug('GPIO fetch failed: $e');
+          return <int>[];
+        }),
+        service.getRooms().timeout(AppConfig.shortTimeout).catchError((e) {
+          logDebug('Rooms fetch failed: $e');
+          return <String>[];
+        }),
+        service.getDeviceTypes().timeout(AppConfig.shortTimeout).catchError((e) {
+          logDebug('Types fetch failed: $e');
+          return fallbackTypes;
+        }),
+      ]);
 
-      try {
-        gpios = await service.getSelectableGPIOs().timeout(const Duration(seconds: 5));
-      } catch (e) {
-        logDebug('GPIO fetch failed: $e');
-        gpios = [];
-      }
+      var gpios = (results[0] as List).cast<int>();
+      final rooms = (results[1] as List).cast<String>();
+      var types = (results[2] as List).cast<Map<String, dynamic>>();
 
       if (gpios.isEmpty) {
-        // Last-resort fallback so the Add Device sheet does not falsely say
-        // “No free GPIO” when ESP/Firebase lookup timed out.
         const defaultPins = [4, 5, 13, 14, 16, 17, 18, 19, 21, 22, 23, 25, 26, 27, 32, 33];
         final ble = ref.read(bleServiceProvider);
         final used = <int>{};
@@ -1669,20 +1752,7 @@ class _QuickActionDialogState extends ConsumerState<_QuickActionDialog> {
         gpios = defaultPins.where((pin) => !used.contains(pin)).toList();
       }
 
-      try {
-        rooms = await service.getRooms().timeout(const Duration(seconds: 3));
-      } catch (e) {
-        logDebug('Rooms fetch failed: $e');
-        rooms = [];
-      }
-
-      try {
-        types = await service.getDeviceTypes().timeout(const Duration(seconds: 3));
-        if (types.isEmpty) types = fallbackTypes;
-      } catch (e) {
-        logDebug('Types fetch failed: $e');
-        types = fallbackTypes;
-      }
+      if (types.isEmpty) types = fallbackTypes;
 
       if (!mounted) return;
       setState(() {
@@ -3258,7 +3328,7 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
         suppressFor: const Duration(seconds: 2),
       );
 
-      Future.delayed(const Duration(milliseconds: 1800), () {
+      Future.delayed(const Duration(milliseconds: 350), () {
         if (!mounted) return;
         if (_pendingDeviceStates[id] == state) {
           _pendingDeviceStates.remove(id);

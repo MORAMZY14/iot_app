@@ -24,7 +24,7 @@ class AuthService {
       final response = await http.get(
         Uri.parse('$databaseUrl/esp_public/$esp32Code/status.json'),
         headers: {'Cache-Control': 'no-cache'},
-      ).timeout(const Duration(seconds: 5));
+      ).timeout(AppConfig.mediumTimeout);
 
       if (response.statusCode != 200) {
         throw 'ESP32 not found. Please check the code and try again.';
@@ -61,7 +61,7 @@ class AuthService {
           Uri.parse('$databaseUrl/users/${user.uid}.json'),
           headers: {'Content-Type': 'application/json'},
           body: jsonEncode(userData),
-        ).timeout(const Duration(seconds: 5));
+        ).timeout(AppConfig.mediumTimeout);
 
         if (userResponse.statusCode != 200) {
           throw Exception('Failed to create user in Realtime Database');
@@ -73,7 +73,7 @@ class AuthService {
           Uri.parse('$databaseUrl/esp_public/$esp32Code/ownerUID.json'),
           headers: {'Content-Type': 'application/json'},
           body: jsonEncode(user.uid),
-        ).timeout(const Duration(seconds: 5));
+        ).timeout(AppConfig.mediumTimeout);
 
         if (claimResponse.statusCode == 200) {
           logDebug('✅ ESP claimed successfully!');
@@ -143,7 +143,7 @@ class AuthService {
       final response = await http.get(
         Uri.parse('$databaseUrl/users/$uid.json'),
         headers: {'Cache-Control': 'no-cache'},
-      ).timeout(const Duration(seconds: 3));
+      ).timeout(AppConfig.shortTimeout);
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
@@ -163,7 +163,7 @@ class AuthService {
         Uri.parse('$databaseUrl/users/$uid.json'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'esp32Code': newCode}),
-      ).timeout(const Duration(seconds: 5));
+      ).timeout(AppConfig.mediumTimeout);
 
       if (response.statusCode != 200) {
         throw Exception('HTTP ${response.statusCode}');
@@ -180,7 +180,7 @@ class AuthService {
       final response = await http.get(
         Uri.parse('$databaseUrl/users/$uid/esp32Code.json'),
         headers: {'Cache-Control': 'no-cache'},
-      ).timeout(const Duration(seconds: 3));
+      ).timeout(AppConfig.shortTimeout);
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
@@ -200,7 +200,7 @@ class AuthService {
         // 🔥 FIX: Delete user from Realtime Database
         await http.delete(
           Uri.parse('$databaseUrl/users/${user.uid}.json'),
-        ).timeout(const Duration(seconds: 3));
+        ).timeout(AppConfig.shortTimeout);
         await user.delete();
       }
     } catch (e) {
