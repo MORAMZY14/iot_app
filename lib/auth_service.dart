@@ -1,9 +1,18 @@
 import 'dart:convert';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:http/http.dart' as http;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'app_logger.dart';
 import 'app_constants.dart';
+import 'firebase_options.dart';
+
+Future<void> ensureFirebaseInitialized() async {
+  if (Firebase.apps.isNotEmpty) return;
+  await Firebase.initializeApp(
+    options: DefaultFirebaseOptions.currentPlatform,
+  );
+}
 
 class AuthService {
   final FirebaseAuth _auth = FirebaseAuth.instance;
@@ -211,7 +220,12 @@ class AuthService {
 }
 
 // 🔥 PROVIDERS
+final firebaseInitializationProvider = FutureProvider<void>((ref) async {
+  await ensureFirebaseInitialized();
+});
+
 final authServiceProvider = FutureProvider<AuthService>((ref) async {
+  await ref.watch(firebaseInitializationProvider.future);
   return AuthService();
 });
 

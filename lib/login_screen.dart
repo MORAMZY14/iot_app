@@ -46,14 +46,14 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
     super.initState();
     _introController = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 750),
+      duration: const Duration(milliseconds: 260),
     )..forward();
     _fadeAnimation = CurvedAnimation(
       parent: _introController,
       curve: Curves.easeOutCubic,
     );
     _slideAnimation = Tween<Offset>(
-      begin: const Offset(0, 0.05),
+      begin: const Offset(0, 0.018),
       end: Offset.zero,
     ).animate(CurvedAnimation(
       parent: _introController,
@@ -304,7 +304,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
         child: SafeArea(
           child: Center(
             child: SingleChildScrollView(
-              keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+              keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.manual,
               padding: EdgeInsets.symmetric(
                 horizontal: isWide ? 48 : 20,
                 vertical: 24,
@@ -398,13 +398,18 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
             _ModeSwitch(isLogin: _isLogin, onChanged: _toggleMode),
             const SizedBox(height: 22),
             AnimatedSwitcher(
-              duration: const Duration(milliseconds: 220),
+              duration: const Duration(milliseconds: 90),
+              reverseDuration: const Duration(milliseconds: 70),
               switchInCurve: Curves.easeOutCubic,
               switchOutCurve: Curves.easeOutCubic,
+              transitionBuilder: (child, animation) => FadeTransition(
+                opacity: animation,
+                child: child,
+              ),
               child: _isLogin ? _buildLoginFields() : _buildRegisterFields(),
             ),
             AnimatedSwitcher(
-              duration: const Duration(milliseconds: 180),
+              duration: const Duration(milliseconds: 90),
               child: _errorMessage == null
                   ? const SizedBox.shrink()
                   : Padding(
@@ -424,7 +429,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
                 ),
                 child: AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 180),
+                  duration: const Duration(milliseconds: 90),
                   child: _isLoading
                       ? const SizedBox(
                           key: ValueKey('loading'),
@@ -839,7 +844,7 @@ class _ModeButton extends StatelessWidget {
       onTap: onTap,
       borderRadius: BorderRadius.circular(14),
       child: AnimatedContainer(
-        duration: const Duration(milliseconds: 180),
+        duration: const Duration(milliseconds: 90),
         height: 42,
         alignment: Alignment.center,
         decoration: BoxDecoration(

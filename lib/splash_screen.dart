@@ -27,10 +27,10 @@ class _SplashScreenState extends ConsumerState<SplashScreen>
     super.initState();
     _controller = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 1100),
+      duration: const Duration(milliseconds: 520),
     )..forward();
     _fade = CurvedAnimation(parent: _controller, curve: Curves.easeOutCubic);
-    _scale = Tween<double>(begin: 0.92, end: 1).animate(
+    _scale = Tween<double>(begin: 0.96, end: 1).animate(
       CurvedAnimation(parent: _controller, curve: Curves.easeOutBack),
     );
   }
@@ -46,7 +46,7 @@ class _SplashScreenState extends ConsumerState<SplashScreen>
     _navigationStarted = true;
 
     // Keep the branding visible briefly, but do not force the user to wait 3 seconds.
-    await Future.delayed(const Duration(milliseconds: 1150));
+    await Future.delayed(const Duration(milliseconds: 380));
     if (!mounted) return;
 
     final user = authService.currentUser;
@@ -56,7 +56,7 @@ class _SplashScreenState extends ConsumerState<SplashScreen>
 
     Navigator.of(context).pushReplacement(
       PageRouteBuilder(
-        transitionDuration: const Duration(milliseconds: 420),
+        transitionDuration: const Duration(milliseconds: 160),
         pageBuilder: (_, __, ___) => destination,
         transitionsBuilder: (_, animation, __, child) => FadeTransition(
           opacity: CurvedAnimation(parent: animation, curve: Curves.easeOut),

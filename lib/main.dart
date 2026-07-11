@@ -4,9 +4,6 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:firebase_core/firebase_core.dart';
-
-import 'firebase_options.dart';
 import 'dashboard_page.dart';
 import 'provisioning_page.dart';
 import 'wifi_config_page.dart';
@@ -16,43 +13,12 @@ import 'app_constants.dart';
 
 const String appVersion = 'V2.0.2';
 
-void main() async {
+void main() {
   WidgetsFlutterBinding.ensureInitialized();
 
-  try {
-    await Firebase.initializeApp(
-      options: DefaultFirebaseOptions.currentPlatform,
-    );
-
-    debugPrint("✅ Firebase initialized successfully");
-  } catch (e, stackTrace) {
-    debugPrint("❌ Firebase initialization failed");
-    debugPrint(e.toString());
-    debugPrintStack(stackTrace: stackTrace);
-
-    runApp(
-      MaterialApp(
-        debugShowCheckedModeBanner: false,
-        home: Scaffold(
-          body: Center(
-            child: Padding(
-              padding: const EdgeInsets.all(24),
-              child: Text(
-                "Firebase Initialization Failed\n\n$e",
-                textAlign: TextAlign.center,
-                style: const TextStyle(
-                  fontSize: 18,
-                  color: Colors.red,
-                ),
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-    return;
-  }
-
+  // Run the Flutter UI immediately. Firebase is initialized by the providers
+  // while the SplashScreen is already visible, so the user no longer sees a
+  // blank white screen while Firebase starts.
   runApp(
     const ProviderScope(
       child: MyApp(),
