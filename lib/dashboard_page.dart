@@ -256,86 +256,174 @@ class ESP32DeviceService {
   // Read devices. When Bluetooth backup is connected, prefer the ESP32 local
   // BLE device list so rooms/devices still appear when the phone has no internet.
   Future<Map<String, dynamic>> getDevices() async {
+    Map<String, dynamic>? fastResult;
+
     final bleCached = _devicesFromBleCache();
-    if (bleCached != null && (bleCached['devices'] as List).isNotEmpty) return bleCached;
+    if (bleCached != null && (bleCached['devices'] as List).isNotEmpty) {
+      fastResult = bleCached;
+    }
 
-    final localResult = await _tryGetDevicesFromLocalHttp();
-    if (localResult != null) return localResult;
+    fastResult ??= await _tryGetDevicesFromLocalHttp();
+    fastResult ??= await _tryGetDevicesFromBle();
 
-    final bleResult = await _tryGetDevicesFromBle();
-    if (bleResult != null) return bleResult;
+    Map<String, dynamic> firebaseResult = {'devices': <Map<String, dynamic>>[]};
 
     try {
       final String databaseUrl = AppConfig.databaseUrl;
-      final String uid = FirebaseAuth.instance.currentUser!.uid;
+      final user = FirebaseAuth.instance.currentUser;
 
-      final response = await http.get(
-        Uri.parse('$databaseUrl/smartHome/$uid/devices.json'),
-        headers: {'Cache-Control': 'no-cache'},
-      ).timeout(AppConfig.mediumTimeout);
+      if (user != null) {
+        final response = await http.get(
+          Uri.parse('$databaseUrl/smartHome/${user.uid}/devices.json'),
+          headers: {'Cache-Control': 'no-cache'},
+        ).timeout(AppConfig.mediumTimeout);
 
-      if (response.statusCode == 200) {
-        final String responseBody = response.body;
-        if (responseBody.isEmpty || responseBody == 'null') {
-          return {'devices': []};
-        }
-
-        final dynamic data = jsonDecode(responseBody);
-        if (data == null) {
-          return {'devices': []};
-        }
-
-        final Map<String, dynamic> dataMap = data as Map<String, dynamic>;
-        final List<Map<String, dynamic>> devicesList = [];
-        dataMap.forEach((key, value) {
-          if (value is Map) {
-            devicesList.add(value.cast<String, dynamic>());
+        if (response.statusCode == 200 &&
+            response.body.isNotEmpty &&
+            response.body != 'null') {
+          final dynamic data = jsonDecode(response.body);
+          if (data is Map) {
+            final firebaseDevices = <Map<String, dynamic>>[];
+            data.forEach((key, value) {
+              if (value is Map) {
+                final device = value.cast<String, dynamic>();
+                device['id'] ??= key.toString();
+                firebaseDevices.add(device);
+              }
+            });
+            firebaseResult = {'devices': firebaseDevices};
           }
-        });
-        return {'devices': devicesList};
+        }
       }
-      return {'devices': []};
     } catch (e) {
-      logDebug('Error getting devices: $e');
-      return _devicesFromBleCache() ?? {'devices': []};
+      logDebug('Firebase device list unavailable: $e');
     }
+
+    if (fastResult == null) return firebaseResult;
+
+    // Merge Firebase metadata with the fast ESP/BLE state. This keeps legacy
+    // devices visible so the user can assign P0..P7, while local state wins.
+    final merged = <String, Map<String, dynamic>>{};
+
+    for (final raw in firebaseResult['devices'] as List? ?? const []) {
+      if (raw is! Map) continue;
+      final device = raw.cast<String, dynamic>();
+      final id = (device['id'] ?? '').toString();
+      if (id.isNotEmpty) merged[id] = Map<String, dynamic>.from(device);
+    }
+
+    for (final raw in fastResult['devices'] as List? ?? const []) {
+      if (raw is! Map) continue;
+      final device = raw.cast<String, dynamic>();
+      final id = (device['id'] ?? '').toString();
+      if (id.isEmpty) continue;
+      merged[id] = {
+        ...?merged[id],
+        ...device,
+      };
+    }
+
+    return {'devices': merged.values.toList()};
   }
 
-  // Add device via Firebase. GPIO uniqueness is GLOBAL across all rooms.
+  Future<List<Map<String, dynamic>>> getIoModules() async {
+    List<Map<String, dynamic>> parseModules(dynamic raw) {
+      final result = <Map<String, dynamic>>[];
+      if (raw is Map) {
+        raw.forEach((key, value) {
+          if (value is! Map) return;
+          final item = Map<String, dynamic>.from(value);
+          item['id'] ??= key.toString();
+          item['name'] ??= item['id'];
+          item['busId'] ??= 0;
+          item['address'] ??= 32;
+          item['channels'] ??= 8;
+          item['enabled'] ??= true;
+          result.add(item);
+        });
+      }
+      result.sort((a, b) => a['name'].toString().compareTo(b['name'].toString()));
+      return result.where((m) => m['enabled'] != false).toList();
+    }
+
+    try {
+      final response = await http.get(
+        Uri.parse('http://$esp32Ip/api/io/modules'),
+        headers: const {'Cache-Control': 'no-cache'},
+      ).timeout(AppConfig.shortTimeout);
+      if (response.statusCode == 200 && response.body.isNotEmpty) {
+        final decoded = jsonDecode(response.body);
+        if (decoded is Map) {
+          final modules = parseModules(decoded['ioModules']);
+          if (modules.isNotEmpty) return modules;
+        }
+      }
+    } catch (e) {
+      logDebug('Local I/O module list unavailable: $e');
+    }
+
+    try {
+      final uid = FirebaseAuth.instance.currentUser?.uid;
+      if (uid != null) {
+        final response = await http.get(
+          Uri.parse('${AppConfig.databaseUrl}/smartHome/$uid/hardware/ioModules.json'),
+          headers: const {'Cache-Control': 'no-cache'},
+        ).timeout(AppConfig.mediumTimeout);
+        if (response.statusCode == 200 && response.body != 'null') {
+          final modules = parseModules(jsonDecode(response.body));
+          if (modules.isNotEmpty) return modules;
+        }
+      }
+    } catch (e) {
+      logDebug('Cloud I/O module list unavailable: $e');
+    }
+
+    return <Map<String, dynamic>>[
+      {
+        'id': 'io_1',
+        'name': 'I/O Module 1',
+        'busId': 0,
+        'address': 32,
+        'channels': 8,
+        'enabled': true,
+      },
+    ];
+  }
+
+  // Add a device by assigning a channel inside a selected I/O module.
   Future<bool> addDevice({
     required String name,
     required int type,
-    required int gpio,
+    required String moduleId,
+    required int channel,
     required String room,
   }) async {
     try {
-      final usedGPIOs = await getUsedGPIOs();
-      if (usedGPIOs.contains(gpio)) {
-        logDebug('GPIO $gpio is already used by another device.');
+      final usedChannels = await getUsedChannels(moduleId: moduleId);
+      if (usedChannels.contains(channel)) {
+        logDebug('$moduleId/P$channel is already used by another device.');
         return false;
       }
 
-      final String databaseUrl = AppConfig.databaseUrl;
       final String uid = FirebaseAuth.instance.currentUser!.uid;
-
       final String id = 'dev_${DateTime.now().millisecondsSinceEpoch}';
-
       final deviceData = {
         'id': id,
         'name': name,
         'type': type,
-        'gpio': gpio,
+        'moduleId': moduleId,
+        'expanderId': moduleId,
+        'channel': channel,
         'room': room,
         'state': false,
         'enabled': true,
       };
 
       final response = await http.put(
-        Uri.parse('$databaseUrl/smartHome/$uid/devices/$id.json'),
-        headers: {'Content-Type': 'application/json'},
+        Uri.parse('${AppConfig.databaseUrl}/smartHome/$uid/devices/$id.json'),
+        headers: const {'Content-Type': 'application/json'},
         body: jsonEncode(deviceData),
       ).timeout(AppConfig.mediumTimeout);
-
       return response.statusCode == 200;
     } catch (e) {
       logDebug('Error adding device: $e');
@@ -343,30 +431,49 @@ class ESP32DeviceService {
     }
   }
 
-  // Edit GPIO via Firebase. The new GPIO must not be used by any other device.
-  Future<bool> editDeviceGPIO({
+  Future<bool> editDeviceOutput({
     required String id,
-    required int newGpio,
+    required String moduleId,
+    required int newChannel,
   }) async {
     try {
-      final usedGPIOs = await getUsedGPIOs(excludingDeviceId: id);
-      if (usedGPIOs.contains(newGpio)) {
-        logDebug('GPIO $newGpio is already used by another device.');
-        return false;
-      }
+      final usedChannels = await getUsedChannels(
+        moduleId: moduleId,
+        excludingDeviceId: id,
+      );
+      if (usedChannels.contains(newChannel)) return false;
 
-      final String databaseUrl = AppConfig.databaseUrl;
       final String uid = FirebaseAuth.instance.currentUser!.uid;
-
+      final body = {
+        'moduleId': moduleId,
+        'expanderId': moduleId,
+        'channel': newChannel,
+      };
       final response = await http.patch(
-        Uri.parse('$databaseUrl/smartHome/$uid/devices/$id.json'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'gpio': newGpio}),
+        Uri.parse('${AppConfig.databaseUrl}/smartHome/$uid/devices/$id.json'),
+        headers: const {'Content-Type': 'application/json'},
+        body: jsonEncode(body),
       ).timeout(AppConfig.mediumTimeout);
 
+      if (response.statusCode == 200) {
+        try {
+          await http.post(
+            Uri.parse('http://$esp32Ip/api/devices/output'),
+            body: {
+              'id': id,
+              'moduleId': moduleId,
+              'channel': '$newChannel',
+            },
+          ).timeout(AppConfig.shortTimeout);
+        } catch (_) {
+          if (bleService.isConnected) {
+            await bleService.editOutput(id, moduleId, newChannel).catchError((_) => false);
+          }
+        }
+      }
       return response.statusCode == 200;
     } catch (e) {
-      logDebug('Error editing GPIO: $e');
+      logDebug('Error editing I/O output: $e');
       return false;
     }
   }
@@ -641,92 +748,76 @@ class ESP32DeviceService {
     }
   }
 
-  Future<Set<int>> getUsedGPIOs({String? excludingDeviceId}) async {
+  Future<Set<int>> getUsedChannels({
+    required String moduleId,
+    String? excludingDeviceId,
+  }) async {
     final result = await getDevices();
     final devices = result['devices'] as List? ?? [];
     final used = <int>{};
-
     for (final device in devices) {
       if (device is! Map) continue;
-
       final id = device['id']?.toString();
       if (excludingDeviceId != null && id == excludingDeviceId) continue;
-
-      final gpioValue = device['gpio'];
-      final gpio = gpioValue is int ? gpioValue : int.tryParse(gpioValue?.toString() ?? '');
-      if (gpio != null) used.add(gpio);
+      final deviceModule = (device['moduleId'] ?? device['expanderId'] ?? 'io_1').toString();
+      if (deviceModule != moduleId) continue;
+      final raw = device['channel'];
+      final channel = raw is num ? raw.toInt() : int.tryParse(raw?.toString() ?? '');
+      if (channel != null) used.add(channel);
     }
-
     return used;
   }
 
-  // GPIOs shown in menus. This combines the ESP scan with Firebase devices,
-  // then removes every pin already used anywhere, even in another room.
-  Future<List<int>> getSelectableGPIOs({String? excludingDeviceId, int? currentGpio}) async {
-    List<int> scannedPins = const [];
-    Set<int> usedPins = const {};
-
+  Future<List<int>> getSelectableChannels({
+    required String moduleId,
+    String? excludingDeviceId,
+    int? currentChannel,
+  }) async {
+    List<int> scanned = const [];
+    Set<int> used = const {};
     try {
-      scannedPins = await getAvailableGPIOs();
-    } catch (e) {
-      logDebug('GPIO scan failed, using safe defaults: $e');
-    }
-
+      scanned = await getAvailableChannels(moduleId);
+    } catch (_) {}
     try {
-      usedPins = await getUsedGPIOs(excludingDeviceId: excludingDeviceId);
-    } catch (e) {
-      logDebug('Used GPIO lookup failed, using BLE cache only: $e');
-      usedPins = <int>{};
-      if (bleService.isConnected) {
-        for (final device in bleService.devices) {
-          final id = device['id']?.toString();
-          if (excludingDeviceId != null && id == excludingDeviceId) continue;
-          final raw = device['gpio'];
-          final gpio = raw is int ? raw : int.tryParse(raw?.toString() ?? '');
-          if (gpio != null) usedPins.add(gpio);
-        }
+      used = await getUsedChannels(moduleId: moduleId, excludingDeviceId: excludingDeviceId);
+    } catch (_) {
+      used = <int>{};
+      for (final device in bleService.devices) {
+        final id = device['id']?.toString();
+        if (excludingDeviceId != null && id == excludingDeviceId) continue;
+        final deviceModule = (device['moduleId'] ?? device['expanderId'] ?? 'io_1').toString();
+        if (deviceModule != moduleId) continue;
+        final raw = device['channel'];
+        final channel = raw is num ? raw.toInt() : int.tryParse(raw?.toString() ?? '');
+        if (channel != null) used.add(channel);
       }
     }
 
-    final pins = <int>{..._getDefaultGPIOs(), ...scannedPins};
-    if (currentGpio != null) pins.add(currentGpio);
-
-    var selectable = pins
-        .where((pin) => !usedPins.contains(pin) || pin == currentGpio)
+    final all = <int>{...List<int>.generate(8, (i) => i), ...scanned};
+    if (currentChannel != null && currentChannel >= 0 && currentChannel < 8) all.add(currentChannel);
+    return all
+        .where((channel) => !used.contains(channel) || channel == currentChannel)
         .toList()
       ..sort();
-
-    // Do not show a false “No free GPIO” just because scan/Firebase failed.
-    if (selectable.isEmpty && usedPins.length < _getDefaultGPIOs().length) {
-      selectable = _getDefaultGPIOs()
-          .where((pin) => !usedPins.contains(pin) || pin == currentGpio)
-          .toList()
-        ..sort();
-    }
-
-    return selectable;
   }
 
-  Future<List<int>> getAvailableGPIOs() async {
+  Future<List<int>> getAvailableChannels(String moduleId) async {
     try {
       final response = await http.get(
-        Uri.parse('http://$esp32Ip/api/gpio/scan'),
+        Uri.parse('http://$esp32Ip/api/channels?moduleId=${Uri.encodeQueryComponent(moduleId)}'),
       ).timeout(AppConfig.shortTimeout);
-
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body) as Map<String, dynamic>;
         final available = data['available'] as List? ?? [];
-        return available.map((e) => e['pin'] as int).toList();
+        return available
+            .whereType<Map>()
+            .map((e) => (e['channel'] as num).toInt())
+            .toList();
       }
-      return _getDefaultGPIOs();
     } catch (e) {
-      logDebug('Error getting GPIOs (using defaults): $e');
-      return _getDefaultGPIOs();
+      logDebug('I/O channel scan failed: $e');
     }
-  }
-
-  List<int> _getDefaultGPIOs() {
-    return [4, 5, 13, 14, 16, 17, 18, 19, 21, 22, 23, 25, 26, 27, 32, 33];
+    return List<int>.generate(8, (index) => index);
   }
 
   Future<List<Map<String, dynamic>>> getDeviceTypes() async {
@@ -1439,242 +1530,153 @@ class _PasswordDialogState extends State<_PasswordDialog> {
 }
 
 // ────────────────────────────────────────────────────────────
-// 12. EDIT GPIO DIALOG
+// 12. EDIT PCF8574 CHANNEL DIALOG
 // ────────────────────────────────────────────────────────────
-class _EditGPIODialog extends ConsumerStatefulWidget {
+class _EditChannelDialog extends ConsumerStatefulWidget {
   final String deviceId;
   final String deviceName;
-  final int currentGpio;
+  final String currentModuleId;
+  final int currentChannel;
 
-  const _EditGPIODialog({
+  const _EditChannelDialog({
     required this.deviceId,
     required this.deviceName,
-    required this.currentGpio,
+    required this.currentModuleId,
+    required this.currentChannel,
   });
 
   @override
-  ConsumerState<_EditGPIODialog> createState() => _EditGPIODialogState();
+  ConsumerState<_EditChannelDialog> createState() => _EditChannelDialogState();
 }
 
-class _EditGPIODialogState extends ConsumerState<_EditGPIODialog> {
-  late int _selectedGpio;
-  bool _isLoading = false;
-  List<int> _availableGPIOs = [];
+class _EditChannelDialogState extends ConsumerState<_EditChannelDialog> {
+  bool _loading = true;
+  bool _saving = false;
+  List<Map<String, dynamic>> _modules = const [];
+  List<int> _channels = const [];
+  late String _moduleId;
+  int? _channel;
 
   @override
   void initState() {
     super.initState();
-    _selectedGpio = widget.currentGpio;
-    _loadAvailableGPIOs();
+    _moduleId = widget.currentModuleId.isEmpty ? 'io_1' : widget.currentModuleId;
+    _channel = widget.currentChannel >= 0 ? widget.currentChannel : null;
+    _load();
   }
 
-  Future<void> _loadAvailableGPIOs() async {
-    try {
-      final service = await ref.read(esp32DeviceServiceProvider.future);
-      final gpios = await service.getSelectableGPIOs(
-        excludingDeviceId: widget.deviceId,
-        currentGpio: widget.currentGpio,
-      );
-      if (!mounted) return;
-      setState(() {
-        _availableGPIOs = gpios;
-        _selectedGpio = gpios.contains(widget.currentGpio)
-            ? widget.currentGpio
-            : (gpios.isNotEmpty ? gpios.first : widget.currentGpio);
-      });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _availableGPIOs = [widget.currentGpio];
-        _selectedGpio = widget.currentGpio;
-      });
+  Future<void> _load() async {
+    final service = await ref.read(esp32DeviceServiceProvider.future);
+    final modules = await service.getIoModules();
+    if (!modules.any((m) => m['id'].toString() == _moduleId) && modules.isNotEmpty) {
+      _moduleId = modules.first['id'].toString();
     }
+    final channels = await service.getSelectableChannels(
+      moduleId: _moduleId,
+      excludingDeviceId: widget.deviceId,
+      currentChannel: _moduleId == widget.currentModuleId ? widget.currentChannel : null,
+    );
+    if (!mounted) return;
+    setState(() {
+      _modules = modules;
+      _channels = channels;
+      if (!_channels.contains(_channel)) _channel = _channels.isEmpty ? null : _channels.first;
+      _loading = false;
+    });
   }
 
-  Future<void> _updateGPIO() async {
-    if (_selectedGpio == widget.currentGpio) {
-      if (mounted) {
-        _showSnack(context, 'No change in GPIO', color: Colors.orange);
-        Navigator.pop(context);
-      }
-      return;
-    }
-
-    setState(() => _isLoading = true);
-
-    try {
-      final service = await ref.read(esp32DeviceServiceProvider.future);
-      final success = await service.editDeviceGPIO(
-        id: widget.deviceId,
-        newGpio: _selectedGpio,
-      );
-
-      setState(() => _isLoading = false);
-
-      if (mounted) {
-        if (success) {
-          ref.read(dashboardRefreshTickProvider.notifier).state++;
-          Navigator.pop(context, true);
-          await _refreshDevices();
-          _showSnack(context, '✅ GPIO updated successfully!', color: _DT.green);
-        } else {
-          _showSnack(context, '❌ Failed to update GPIO - Check if pin is available', color: _DT.red);
-        }
-      }
-    } catch (e) {
-      setState(() => _isLoading = false);
-      if (mounted) {
-        _showSnack(context, '❌ Error: ${e.toString()}', color: _DT.red);
-      }
-    }
+  Future<void> _changeModule(String moduleId) async {
+    setState(() {
+      _moduleId = moduleId;
+      _loading = true;
+    });
+    final service = await ref.read(esp32DeviceServiceProvider.future);
+    final channels = await service.getSelectableChannels(
+      moduleId: moduleId,
+      excludingDeviceId: widget.deviceId,
+      currentChannel: moduleId == widget.currentModuleId ? widget.currentChannel : null,
+    );
+    if (!mounted) return;
+    setState(() {
+      _channels = channels;
+      _channel = channels.isEmpty ? null : channels.first;
+      _loading = false;
+    });
   }
 
-  Future<void> _refreshDevices() async {
-    try {
-      final service = await ref.read(esp32DeviceServiceProvider.future);
-      final result = await service.getDevices();
-      if (mounted) {
-        setState(() {});
-      }
-    } catch (e) {
-      logDebug('Error refreshing devices: $e');
+  Future<void> _save() async {
+    if (_channel == null) return;
+    setState(() => _saving = true);
+    final service = await ref.read(esp32DeviceServiceProvider.future);
+    final ok = await service.editDeviceOutput(
+      id: widget.deviceId,
+      moduleId: _moduleId,
+      newChannel: _channel!,
+    );
+    if (!mounted) return;
+    setState(() => _saving = false);
+    if (ok) {
+      ref.read(dashboardRefreshTickProvider.notifier).state++;
+      ref.invalidate(httpDataProvider);
+      Navigator.pop(context, true);
+      _showSnack(context, 'I/O output updated.', color: _DT.green);
+    } else {
+      _showSnack(context, 'That module output is already assigned.', color: _DT.red);
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    return Dialog(
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-      backgroundColor: Colors.transparent,
-      child: _GCard(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 60,
-              height: 60,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: _DT.purple.withValues(alpha: 0.15),
-              ),
-              child: const Icon(
-                Icons.edit_rounded,
-                color: _DT.purple,
-                size: 30,
-              ),
-            ),
-            const SizedBox(height: 16),
-            Text(
-              'Edit GPIO',
-              style: TextStyle(
-                fontSize: 20,
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              'Device: ${widget.deviceName}',
-              style: TextStyle(
-                fontSize: 14,
-                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
-              ),
-            ),
-            const SizedBox(height: 20),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(
-                  color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.1),
-                ),
-              ),
-              child: DropdownButtonHideUnderline(
-                child: DropdownButton<int>(
-                  value: _selectedGpio,
-                  isExpanded: true,
-                  items: _availableGPIOs.map((gpio) {
-                    return DropdownMenuItem(
-                      value: gpio,
-                      child: Row(
-                        children: [
-                          Text('GPIO $gpio'),
-                          if (gpio == widget.currentGpio) ...[
-                            const SizedBox(width: 8),
-                            Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                              decoration: BoxDecoration(
-                                borderRadius: BorderRadius.circular(10),
-                                color: _DT.purple.withValues(alpha: 0.15),
-                              ),
-                              child: const Text(
-                                'Current',
-                                style: TextStyle(
-                                  fontSize: 10,
-                                  color: _DT.purple,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                            ),
-                          ],
-                        ],
-                      ),
-                    );
-                  }).toList(),
-                  onChanged: _isLoading || _availableGPIOs.isEmpty
-                      ? null
-                      : (value) {
-                    if (value != null) {
-                      setState(() => _selectedGpio = value);
-                    }
-                  },
-                ),
-              ),
-            ),
-            const SizedBox(height: 20),
-            Row(
-              children: [
-                Expanded(
-                  child: TextButton(
-                    onPressed: _isLoading ? null : () => Navigator.pop(context),
-                    child: const Text('Cancel'),
+    return AlertDialog(
+      title: const Text('Assign I/O Output'),
+      content: SizedBox(
+        width: 420,
+        child: _loading
+            ? const Center(child: CircularProgressIndicator())
+            : Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(widget.deviceName, style: const TextStyle(fontWeight: FontWeight.w600)),
+                  const SizedBox(height: 18),
+                  DropdownButtonFormField<String>(
+                    value: _modules.any((m) => m['id'].toString() == _moduleId) ? _moduleId : null,
+                    decoration: const InputDecoration(labelText: 'I/O module'),
+                    items: _modules.map((module) {
+                      final id = module['id'].toString();
+                      final name = module['name']?.toString() ?? id;
+                      final bus = module['busId'] ?? 0;
+                      return DropdownMenuItem(value: id, child: Text('$name • Bus $bus'));
+                    }).toList(),
+                    onChanged: _saving ? null : (value) => value == null ? null : _changeModule(value),
                   ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: ElevatedButton(
-                    onPressed: _isLoading ? null : _updateGPIO,
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: _DT.purple,
-                      foregroundColor: Colors.white,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      padding: const EdgeInsets.symmetric(vertical: 14),
+                  const SizedBox(height: 14),
+                  DropdownButtonFormField<int>(
+                    value: _channels.contains(_channel) ? _channel : null,
+                    decoration: InputDecoration(
+                      labelText: 'Output channel',
+                      hintText: _channels.isEmpty ? 'No free outputs' : null,
                     ),
-                    child: _isLoading
-                        ? const SizedBox(
-                      width: 20,
-                      height: 20,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        color: Colors.white,
-                      ),
-                    )
-                        : const Text(
-                      'Update GPIO',
-                      style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
+                    items: _channels
+                        .map((channel) => DropdownMenuItem(
+                              value: channel,
+                              child: Text('P$channel / Relay ${channel + 1}'),
+                            ))
+                        .toList(),
+                    onChanged: _saving ? null : (value) => setState(() => _channel = value),
                   ),
-                ),
-              ],
-            ),
-          ],
-        ),
+                ],
+              ),
       ),
+      actions: [
+        TextButton(onPressed: _saving ? null : () => Navigator.pop(context), child: const Text('Cancel')),
+        FilledButton(
+          onPressed: _saving || _loading || _channel == null ? null : _save,
+          child: _saving
+              ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+              : const Text('Save'),
+        ),
+      ],
     );
   }
 }
@@ -1692,527 +1694,21 @@ class _QuickActionDialog extends ConsumerStatefulWidget {
 class _QuickActionDialogState extends ConsumerState<_QuickActionDialog> {
   final _formKey = GlobalKey<FormState>();
   final _nameController = TextEditingController();
-  int? _selectedGpio;
-
-  int _selectedType = 0;
-  String _selectedRoom = '';
-  bool _isLoading = false;
-
-  List<String> _rooms = [];
-  List<Map<String, dynamic>> _deviceTypes = [];
-  List<int> _availableGPIOs = [];
+  bool _loading = true;
+  bool _saving = false;
+  int _type = 0;
+  String _room = '';
+  String _moduleId = 'io_1';
+  int? _channel;
+  List<String> _rooms = const [];
+  List<Map<String, dynamic>> _types = const [];
+  List<Map<String, dynamic>> _modules = const [];
+  List<int> _channels = const [];
 
   @override
   void initState() {
     super.initState();
-    _loadData();
-  }
-
-  Future<void> _loadData() async {
-    if (mounted) setState(() => _isLoading = true);
-
-    final fallbackTypes = <Map<String, dynamic>>[
-      {'type': 0, 'name': 'Light', 'icon': 'lightbulb'},
-      {'type': 1, 'name': 'Fan', 'icon': 'fan'},
-      {'type': 2, 'name': 'Switch', 'icon': 'power'},
-      {'type': 3, 'name': 'Socket', 'icon': 'power_plug'},
-    ];
-
-    try {
-      final service = await ref.read(esp32DeviceServiceProvider.future);
-
-      final results = await Future.wait<dynamic>([
-        service.getSelectableGPIOs().timeout(AppConfig.mediumTimeout).catchError((e) {
-          logDebug('GPIO fetch failed: $e');
-          return <int>[];
-        }),
-        service.getRooms().timeout(AppConfig.shortTimeout).catchError((e) {
-          logDebug('Rooms fetch failed: $e');
-          return <String>[];
-        }),
-        service.getDeviceTypes().timeout(AppConfig.shortTimeout).catchError((e) {
-          logDebug('Types fetch failed: $e');
-          return fallbackTypes;
-        }),
-      ]);
-
-      var gpios = (results[0] as List).cast<int>();
-      final rooms = (results[1] as List).cast<String>();
-      var types = (results[2] as List).cast<Map<String, dynamic>>();
-
-      if (gpios.isEmpty) {
-        const defaultPins = [4, 5, 13, 14, 16, 17, 18, 19, 21, 22, 23, 25, 26, 27, 32, 33];
-        final ble = ref.read(bleServiceProvider);
-        final used = <int>{};
-        for (final device in ble.devices) {
-          final raw = device['gpio'];
-          final gpio = raw is int ? raw : int.tryParse(raw?.toString() ?? '');
-          if (gpio != null) used.add(gpio);
-        }
-        gpios = defaultPins.where((pin) => !used.contains(pin)).toList();
-      }
-
-      if (types.isEmpty) types = fallbackTypes;
-
-      if (!mounted) return;
-      setState(() {
-        _availableGPIOs = gpios;
-        _selectedGpio = gpios.isNotEmpty ? gpios.first : null;
-        _rooms = rooms;
-        _selectedRoom = rooms.isNotEmpty ? rooms.first : '';
-        _deviceTypes = types;
-        _isLoading = false;
-      });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _isLoading = false;
-        _availableGPIOs = [];
-        _selectedGpio = null;
-        _rooms = [];
-        _selectedRoom = '';
-        _deviceTypes = fallbackTypes;
-      });
-      _showSnack(context, '⚠️ Could not load GPIOs. Connect the ESP32 or refresh.', color: Colors.orange);
-    }
-  }
-
-  Future<void> _showRoomManagementDialog() async {
-    final updatedRooms = await showDialog<List<String>>(
-      context: context,
-      builder: (context) => _RoomManagementDialog(
-        rooms: _rooms,
-        onRoomsUpdated: (updatedRooms) async {
-          if (!mounted) return;
-          setState(() {
-            _rooms = updatedRooms;
-            _selectedRoom = _rooms.contains(_selectedRoom)
-                ? _selectedRoom
-                : (_rooms.isNotEmpty ? _rooms.first : '');
-          });
-          ref.read(dashboardRefreshTickProvider.notifier).state++;
-        },
-      ),
-    );
-
-    if (updatedRooms != null && mounted) {
-      setState(() {
-        _rooms = updatedRooms;
-        _selectedRoom = _rooms.contains(_selectedRoom)
-            ? _selectedRoom
-            : (_rooms.isNotEmpty ? _rooms.first : '');
-      });
-    }
-  }
-
-  Future<void> _addDevice() async {
-    if (_rooms.isEmpty || _selectedRoom.isEmpty) {
-      _showSnack(context, 'Add a room first, then add devices inside it.', color: Colors.orange);
-      await _showRoomManagementDialog();
-      return;
-    }
-
-    if (_selectedGpio == null || !_availableGPIOs.contains(_selectedGpio)) {
-      _showSnack(context, 'No free GPIO is available. Edit or remove another device first.', color: Colors.orange);
-      return;
-    }
-
-    if (!_formKey.currentState!.validate()) return;
-
-    setState(() => _isLoading = true);
-
-    try {
-      final service = await ref.read(esp32DeviceServiceProvider.future);
-
-      // Re-check Firebase right before saving. This prevents duplicate GPIOs
-      // if another room/device was added before the dialog refreshed.
-      final latestFreeGPIOs = await service.getSelectableGPIOs();
-      // If the live lookup failed and returned empty, trust the GPIO list that
-      // was already loaded in the sheet instead of blocking with a false error.
-      if (latestFreeGPIOs.isNotEmpty && !latestFreeGPIOs.contains(_selectedGpio)) {
-        if (!mounted) return;
-        setState(() {
-          _availableGPIOs = latestFreeGPIOs;
-          _selectedGpio = latestFreeGPIOs.isNotEmpty ? latestFreeGPIOs.first : null;
-          _isLoading = false;
-        });
-        _showSnack(context, 'GPIO already used by another device. Choose another pin.', color: Colors.orange);
-        return;
-      }
-
-      final success = await service.addDevice(
-        name: _nameController.text.trim(),
-        type: _selectedType,
-        gpio: _selectedGpio!,
-        room: _selectedRoom,
-      );
-
-      if (!mounted) return;
-      setState(() => _isLoading = false);
-
-      if (success) {
-        ref.read(dashboardRefreshTickProvider.notifier).state++;
-        ref.invalidate(httpDataProvider);
-        Navigator.pop(context);
-        _showSnack(context, '✅ Device added successfully!', color: _DT.green);
-      } else {
-        _showSnack(context, '❌ Failed to add device', color: _DT.red);
-      }
-    } catch (e) {
-      if (!mounted) return;
-      setState(() => _isLoading = false);
-      _showSnack(context, '❌ Error: ${e.toString()}', color: _DT.red);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final bottomInset = MediaQuery.of(context).viewInsets.bottom;
-
-    return AnimatedPadding(
-      duration: const Duration(milliseconds: 220),
-      curve: Curves.easeOutCubic,
-      padding: EdgeInsets.only(bottom: bottomInset),
-      child: SafeArea(
-        top: false,
-        bottom: false,
-        child: Container(
-          constraints: BoxConstraints(
-            maxHeight: MediaQuery.of(context).size.height * 0.88,
-          ),
-          decoration: const BoxDecoration(color: Colors.transparent),
-          child: _GCard(
-            padding: const EdgeInsets.all(24),
-            borderRadius: const BorderRadius.vertical(top: Radius.circular(30)),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    const Text(
-                      'Add New Device',
-                      style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
-                    ),
-                    Row(
-                      children: [
-                        IconButton(
-                          icon: const Icon(Icons.meeting_room_rounded),
-                          onPressed: _isLoading ? null : _showRoomManagementDialog,
-                          tooltip: 'Manage Rooms',
-                        ),
-                        IconButton(
-                          onPressed: () => Navigator.pop(context),
-                          icon: Icon(
-                            Icons.close_rounded,
-                            color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  _rooms.isEmpty
-                      ? 'Create your first room before adding devices.'
-                      : 'Connect a new device to your ESP32',
-                  style: TextStyle(
-                    fontSize: 14,
-                    color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5),
-                  ),
-                ),
-                const SizedBox(height: 20),
-                Flexible(
-                  child: _isLoading && _deviceTypes.isEmpty
-                      ? const Center(child: CircularProgressIndicator(color: _DT.purple))
-                      : SingleChildScrollView(
-                    keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-                    child: Form(
-                      key: _formKey,
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          if (_rooms.isEmpty) ...[
-                            _GCard(
-                              padding: const EdgeInsets.all(16),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Row(
-                                    children: [
-                                      const Icon(Icons.info_outline_rounded, color: _DT.purple),
-                                      const SizedBox(width: 10),
-                                      Expanded(
-                                        child: Text(
-                                          'No rooms yet',
-                                          style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                                            fontWeight: FontWeight.w700,
-                                          ),
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                  const SizedBox(height: 8),
-                                  Text(
-                                    'Add a room first. After that, it will appear on the dashboard even before adding devices.',
-                                    style: TextStyle(
-                                      fontSize: 13,
-                                      color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6),
-                                    ),
-                                  ),
-                                  const SizedBox(height: 14),
-                                  SizedBox(
-                                    width: double.infinity,
-                                    child: ElevatedButton.icon(
-                                      onPressed: _showRoomManagementDialog,
-                                      icon: const Icon(Icons.add_rounded),
-                                      label: const Text('Add Room'),
-                                      style: ElevatedButton.styleFrom(
-                                        backgroundColor: _DT.purple,
-                                        foregroundColor: Colors.white,
-                                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                                        padding: const EdgeInsets.symmetric(vertical: 14),
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                            const SizedBox(height: 18),
-                          ],
-                          Text(
-                            'Device Name',
-                            style: TextStyle(
-                              fontSize: 14,
-                              fontWeight: FontWeight.w600,
-                              color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
-                            ),
-                          ),
-                          const SizedBox(height: 6),
-                          TextFormField(
-                            controller: _nameController,
-                            enabled: _rooms.isNotEmpty && !_isLoading,
-                            textInputAction: TextInputAction.next,
-                            decoration: InputDecoration(
-                              hintText: 'e.g. Living Room Lamp',
-                              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-                            ),
-                            validator: (value) {
-                              if (value == null || value.trim().isEmpty) {
-                                return 'Please enter a device name';
-                              }
-                              return null;
-                            },
-                          ),
-                          const SizedBox(height: 16),
-                          Text(
-                            'Device Type',
-                            style: TextStyle(
-                              fontSize: 14,
-                              fontWeight: FontWeight.w600,
-                              color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
-                            ),
-                          ),
-                          const SizedBox(height: 6),
-                          SizedBox(
-                            height: 48,
-                            child: ListView.separated(
-                              scrollDirection: Axis.horizontal,
-                              itemCount: _deviceTypes.length,
-                              separatorBuilder: (_, __) => const SizedBox(width: 8),
-                              itemBuilder: (context, index) {
-                                final type = _deviceTypes[index];
-                                final isSelected = _selectedType == type['type'];
-                                return GestureDetector(
-                                  onTap: _rooms.isEmpty || _isLoading
-                                      ? null
-                                      : () => setState(() => _selectedType = type['type'] as int),
-                                  child: AnimatedContainer(
-                                    duration: const Duration(milliseconds: 180),
-                                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                                    decoration: BoxDecoration(
-                                      borderRadius: BorderRadius.circular(20),
-                                      color: isSelected ? _DT.purple : Colors.transparent,
-                                      border: Border.all(
-                                        color: isSelected
-                                            ? _DT.purple
-                                            : Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.1),
-                                        width: 1.5,
-                                      ),
-                                    ),
-                                    child: Row(
-                                      children: [
-                                        Icon(
-                                          _getIconForType(type['type'] as int),
-                                          size: 18,
-                                          color: isSelected ? Colors.white : _DT.purple,
-                                        ),
-                                        const SizedBox(width: 6),
-                                        Text(
-                                          type['name'] as String,
-                                          style: TextStyle(
-                                            fontSize: 13,
-                                            fontWeight: FontWeight.w500,
-                                            color: isSelected
-                                                ? Colors.white
-                                                : Theme.of(context).colorScheme.onSurface,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                );
-                              },
-                            ),
-                          ),
-                          const SizedBox(height: 16),
-                          Text(
-                            'GPIO Pin',
-                            style: TextStyle(
-                              fontSize: 14,
-                              fontWeight: FontWeight.w600,
-                              color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
-                            ),
-                          ),
-                          const SizedBox(height: 6),
-                          DropdownButtonFormField<int>(
-                            value: _availableGPIOs.contains(_selectedGpio) ? _selectedGpio : null,
-                            isExpanded: true,
-                            decoration: InputDecoration(
-                              hintText: _availableGPIOs.isEmpty
-                                  ? 'No free GPIOs available'
-                                  : 'Select GPIO',
-                              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-                            ),
-                            items: _availableGPIOs.map((gpio) {
-                              return DropdownMenuItem<int>(
-                                value: gpio,
-                                child: Text('GPIO $gpio'),
-                              );
-                            }).toList(),
-                            onChanged: _rooms.isEmpty || _isLoading || _availableGPIOs.isEmpty
-                                ? null
-                                : (value) => setState(() => _selectedGpio = value),
-                            validator: (value) {
-                              if (value == null) return 'Choose a free GPIO';
-                              if (!_availableGPIOs.contains(value)) return 'GPIO $value is already used';
-                              return null;
-                            },
-                          ),
-                          const SizedBox(height: 16),
-                          Text(
-                            'Room',
-                            style: TextStyle(
-                              fontSize: 14,
-                              fontWeight: FontWeight.w600,
-                              color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
-                            ),
-                          ),
-                          const SizedBox(height: 6),
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 12),
-                            decoration: BoxDecoration(
-                              borderRadius: BorderRadius.circular(12),
-                              border: Border.all(
-                                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.1),
-                              ),
-                            ),
-                            child: DropdownButtonHideUnderline(
-                              child: DropdownButton<String>(
-                                value: _rooms.contains(_selectedRoom) ? _selectedRoom : null,
-                                isExpanded: true,
-                                hint: const Text('Select Room'),
-                                items: _rooms.map((room) {
-                                  return DropdownMenuItem(value: room, child: Text(room));
-                                }).toList(),
-                                onChanged: _rooms.isEmpty || _isLoading
-                                    ? null
-                                    : (value) {
-                                  if (value != null) setState(() => _selectedRoom = value);
-                                },
-                              ),
-                            ),
-                          ),
-                          const SizedBox(height: 16),
-                          Container(
-                            padding: const EdgeInsets.all(12),
-                            decoration: BoxDecoration(
-                              borderRadius: BorderRadius.circular(12),
-                              color: _DT.purple.withValues(alpha: 0.08),
-                              border: Border.all(color: _DT.purple.withValues(alpha: 0.15)),
-                            ),
-                            child: Row(
-                              children: [
-                                const Icon(Icons.info_outline_rounded, color: _DT.purple, size: 18),
-                                const SizedBox(width: 10),
-                                Expanded(
-                                  child: Text(
-                                    _availableGPIOs.isEmpty
-                                        ? 'No free GPIOs available. Remove a device or change its GPIO first.'
-                                        : 'Free GPIOs: ${_availableGPIOs.join(", ")}',
-                                    style: TextStyle(
-                                      fontSize: 12,
-                                      color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                          const SizedBox(height: 24),
-                          SizedBox(
-                            width: double.infinity,
-                            height: 52,
-                            child: ElevatedButton(
-                              onPressed: _isLoading ? null : _addDevice,
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: _DT.purple,
-                                foregroundColor: Colors.white,
-                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                                elevation: 0,
-                              ),
-                              child: _isLoading
-                                  ? const SizedBox(
-                                width: 24,
-                                height: 24,
-                                child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                              )
-                                  : const Text(
-                                'Add Device',
-                                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  IconData _getIconForType(int type) {
-    switch (type) {
-      case 0:
-        return Icons.lightbulb_rounded;
-      case 1:
-        return Icons.air_rounded;
-      case 2:
-        return Icons.power_settings_new_rounded;
-      case 3:
-        return Icons.electrical_services_rounded;
-      default:
-        return Icons.devices_rounded;
-    }
+    _load();
   }
 
   @override
@@ -2220,7 +1716,208 @@ class _QuickActionDialogState extends ConsumerState<_QuickActionDialog> {
     _nameController.dispose();
     super.dispose();
   }
+
+  Future<void> _load() async {
+    final service = await ref.read(esp32DeviceServiceProvider.future);
+    final results = await Future.wait<dynamic>([
+      service.getRooms().catchError((_) => <String>[]),
+      service.getDeviceTypes().catchError((_) => <Map<String, dynamic>>[]),
+      service.getIoModules().catchError((_) => <Map<String, dynamic>>[]),
+    ]);
+    final rooms = (results[0] as List).cast<String>();
+    var types = (results[1] as List).cast<Map<String, dynamic>>();
+    final modules = (results[2] as List).cast<Map<String, dynamic>>();
+    if (types.isEmpty) {
+      types = [
+        {'type': 0, 'name': 'Light'},
+        {'type': 1, 'name': 'Fan'},
+        {'type': 2, 'name': 'Switch'},
+        {'type': 3, 'name': 'Socket'},
+      ];
+    }
+    final moduleId = modules.isEmpty ? 'io_1' : modules.first['id'].toString();
+    final channels = await service.getSelectableChannels(moduleId: moduleId);
+    if (!mounted) return;
+    setState(() {
+      _rooms = rooms;
+      _room = rooms.isEmpty ? '' : rooms.first;
+      _types = types;
+      _modules = modules;
+      _moduleId = moduleId;
+      _channels = channels;
+      _channel = channels.isEmpty ? null : channels.first;
+      _loading = false;
+    });
+  }
+
+  Future<void> _selectModule(String moduleId) async {
+    setState(() {
+      _moduleId = moduleId;
+      _loading = true;
+    });
+    final service = await ref.read(esp32DeviceServiceProvider.future);
+    final channels = await service.getSelectableChannels(moduleId: moduleId);
+    if (!mounted) return;
+    setState(() {
+      _channels = channels;
+      _channel = channels.isEmpty ? null : channels.first;
+      _loading = false;
+    });
+  }
+
+  Future<void> _manageRooms() async {
+    final updated = await showDialog<List<String>>(
+      context: context,
+      builder: (_) => _RoomManagementDialog(
+        rooms: _rooms,
+        onRoomsUpdated: (_) async {},
+      ),
+    );
+    if (updated == null || !mounted) return;
+    setState(() {
+      _rooms = updated;
+      _room = updated.contains(_room) ? _room : (updated.isEmpty ? '' : updated.first);
+    });
+  }
+
+  Future<void> _add() async {
+    if (_rooms.isEmpty || _room.isEmpty) {
+      _showSnack(context, 'Add a room first.', color: Colors.orange);
+      await _manageRooms();
+      return;
+    }
+    if (_channel == null) {
+      _showSnack(context, 'This I/O module has no free channels.', color: Colors.orange);
+      return;
+    }
+    if (!_formKey.currentState!.validate()) return;
+    setState(() => _saving = true);
+    final service = await ref.read(esp32DeviceServiceProvider.future);
+    final free = await service.getSelectableChannels(moduleId: _moduleId);
+    if (!free.contains(_channel)) {
+      if (mounted) {
+        setState(() {
+          _channels = free;
+          _channel = free.isEmpty ? null : free.first;
+          _saving = false;
+        });
+        _showSnack(context, 'That output was just assigned. Choose another.', color: Colors.orange);
+      }
+      return;
+    }
+    final ok = await service.addDevice(
+      name: _nameController.text.trim(),
+      type: _type,
+      moduleId: _moduleId,
+      channel: _channel!,
+      room: _room,
+    );
+    if (!mounted) return;
+    setState(() => _saving = false);
+    if (ok) {
+      ref.read(dashboardRefreshTickProvider.notifier).state++;
+      ref.invalidate(httpDataProvider);
+      Navigator.pop(context);
+      _showSnack(context, 'Device added.', color: _DT.green);
+    } else {
+      _showSnack(context, 'Could not add the device.', color: _DT.red);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final inset = MediaQuery.of(context).viewInsets.bottom;
+    return AnimatedPadding(
+      duration: const Duration(milliseconds: 120),
+      padding: EdgeInsets.only(bottom: inset),
+      child: SafeArea(
+        top: false,
+        child: _GCard(
+          padding: const EdgeInsets.all(22),
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
+          child: SingleChildScrollView(
+            keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.manual,
+            child: Form(
+              key: _formKey,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      const Expanded(child: Text('Add New Device', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700))),
+                      IconButton(onPressed: _manageRooms, icon: const Icon(Icons.meeting_room_rounded)),
+                      IconButton(onPressed: () => Navigator.pop(context), icon: const Icon(Icons.close_rounded)),
+                    ],
+                  ),
+                  if (_loading) const LinearProgressIndicator(),
+                  const SizedBox(height: 14),
+                  TextFormField(
+                    controller: _nameController,
+                    decoration: const InputDecoration(labelText: 'Device name'),
+                    validator: (v) => v == null || v.trim().isEmpty ? 'Enter a device name' : null,
+                  ),
+                  const SizedBox(height: 14),
+                  DropdownButtonFormField<int>(
+                    value: _type,
+                    decoration: const InputDecoration(labelText: 'Device type'),
+                    items: _types.map((type) => DropdownMenuItem(
+                      value: (type['type'] as num).toInt(),
+                      child: Text(type['name'].toString()),
+                    )).toList(),
+                    onChanged: _saving ? null : (value) => setState(() => _type = value ?? 0),
+                  ),
+                  const SizedBox(height: 14),
+                  DropdownButtonFormField<String>(
+                    value: _modules.any((m) => m['id'].toString() == _moduleId) ? _moduleId : null,
+                    decoration: const InputDecoration(labelText: 'I/O module'),
+                    items: _modules.map((module) {
+                      final id = module['id'].toString();
+                      return DropdownMenuItem(
+                        value: id,
+                        child: Text('${module['name'] ?? id} • Bus ${module['busId'] ?? 0}'),
+                      );
+                    }).toList(),
+                    onChanged: _saving || _loading ? null : (value) => value == null ? null : _selectModule(value),
+                  ),
+                  const SizedBox(height: 14),
+                  DropdownButtonFormField<int>(
+                    value: _channels.contains(_channel) ? _channel : null,
+                    decoration: InputDecoration(
+                      labelText: 'Module output channel',
+                      hintText: _channels.isEmpty ? 'No free outputs' : null,
+                    ),
+                    items: _channels.map((c) => DropdownMenuItem(value: c, child: Text('P$c / Relay ${c + 1}'))).toList(),
+                    onChanged: _saving || _loading ? null : (value) => setState(() => _channel = value),
+                  ),
+                  const SizedBox(height: 14),
+                  DropdownButtonFormField<String>(
+                    value: _rooms.contains(_room) ? _room : null,
+                    decoration: const InputDecoration(labelText: 'Room'),
+                    items: _rooms.map((room) => DropdownMenuItem(value: room, child: Text(room))).toList(),
+                    onChanged: _saving ? null : (value) => setState(() => _room = value ?? ''),
+                  ),
+                  const SizedBox(height: 22),
+                  SizedBox(
+                    width: double.infinity,
+                    height: 52,
+                    child: FilledButton(
+                      onPressed: _saving || _loading ? null : _add,
+                      child: _saving
+                          ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
+                          : const Text('Add Device'),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }
+
 // ────────────────────────────────────────────────────────────
 // 14. ROOM MANAGEMENT DIALOG
 // ────────────────────────────────────────────────────────────
@@ -3130,7 +2827,7 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
     await widget.onRefresh();
   }
 
-  void _showDeviceOptions(String deviceId, String deviceName, int currentGpio) {
+  void _showDeviceOptions(String deviceId, String deviceName, String currentModuleId, int currentChannel) {
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.transparent,
@@ -3156,7 +2853,9 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
             ),
             const SizedBox(height: 8),
             Text(
-              'Current GPIO: $currentGpio',
+              currentChannel >= 0
+                  ? 'Current output: $currentModuleId/P$currentChannel / Relay ${currentChannel + 1}'
+                  : 'Output not assigned — choose P0 to P7',
               style: TextStyle(
                 fontSize: 14,
                 color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5),
@@ -3165,16 +2864,17 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
             const SizedBox(height: 20),
             _OptionTile(
               icon: Icons.edit_rounded,
-              title: 'Edit GPIO',
-              subtitle: 'Change the GPIO pin',
+              title: 'Assign PCF8574 Output',
+              subtitle: 'Choose an I/O module and output P0 to P7',
               onTap: () {
                 Navigator.pop(context);
                 showDialog(
                   context: context,
-                  builder: (context) => _EditGPIODialog(
+                  builder: (context) => _EditChannelDialog(
                     deviceId: deviceId,
                     deviceName: deviceName,
-                    currentGpio: currentGpio,
+                    currentModuleId: currentModuleId,
+                    currentChannel: currentChannel,
                   ),
                 ).then((refreshed) {
                   if (refreshed == true) _loadDashboardState();
@@ -3322,7 +3022,7 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
       ref.read(appNotificationsProvider.notifier).push(
         key: 'device_${id}_state',
         title: '$deviceName ${state ? 'turned on' : 'turned off'}',
-        message: 'GPIO command was accepted by the active control path.',
+        message: 'PCF8574 channel command was accepted by the active control path.',
         icon: state ? Icons.power_rounded : Icons.power_off_rounded,
         color: state ? _DT.green : Colors.grey,
         suppressFor: const Duration(seconds: 2),
@@ -3476,7 +3176,11 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
                       final name = map['name'] as String? ?? 'Unknown';
                       final type = map['type'] as int? ?? 0;
                       final state = map['state'] as bool? ?? false;
-                      final gpio = map['gpio'] as int? ?? 0;
+                      final moduleId = (map['moduleId'] ?? map['expanderId'] ?? 'io_1').toString();
+                      final rawChannel = map['channel'];
+                      final channel = rawChannel is num
+                          ? rawChannel.toInt()
+                          : int.tryParse(rawChannel?.toString() ?? '') ?? -1;
                       final room = map['room'] as String? ?? '';
                       final id = map['id'] as String? ?? '';
 
@@ -3487,12 +3191,13 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
                         width: cardWidth,
                         child: GestureDetector(
                           onTap: id.isEmpty ? null : () => _controlDevice(id, !state),
-                          onLongPress: id.isEmpty ? null : () => _showDeviceOptions(id, name, gpio),
+                          onLongPress: id.isEmpty ? null : () => _showDeviceOptions(id, name, moduleId, channel),
                           child: _DynamicDeviceCard(
                             name: name,
                             type: type,
                             state: state,
-                            gpio: gpio,
+                            moduleId: moduleId,
+                            channel: channel,
                             room: room,
                           ),
                         ),
@@ -3542,14 +3247,16 @@ class _DynamicDeviceCard extends StatelessWidget {
   final String name;
   final int type;
   final bool state;
-  final int gpio;
+  final String moduleId;
+  final int channel;
   final String room;
 
   const _DynamicDeviceCard({
     required this.name,
     required this.type,
     required this.state,
-    required this.gpio,
+    required this.moduleId,
+    required this.channel,
     required this.room,
   });
 
@@ -3678,7 +3385,9 @@ class _DynamicDeviceCard extends StatelessWidget {
             ),
             const SizedBox(height: 3),
             Text(
-              '${_getStatus()} • GPIO $gpio',
+              channel >= 0
+                  ? '${_getStatus()} • $moduleId/P$channel / Relay ${channel + 1}'
+                  : '${_getStatus()} • Output not assigned',
               style: TextStyle(
                 fontSize: 11,
                 fontWeight: FontWeight.w500,
@@ -5724,6 +5433,21 @@ class _SettingsScreen extends ConsumerWidget {
                         .withValues(alpha: 0.35)),
                 onTap: () {
                   Navigator.pushNamed(context, '/wifiConfig');
+                },
+              ),
+              const _SDivider(),
+              _STile(
+                icon: Icons.hub_rounded,
+                title: 'I/O Modules',
+                subtitle: 'Configure I²C buses and PCF8574 boards',
+                trailing: Icon(Icons.chevron_right_rounded,
+                    size: 20,
+                    color: Theme.of(context)
+                        .colorScheme
+                        .onSurface
+                        .withValues(alpha: 0.35)),
+                onTap: () {
+                  Navigator.pushNamed(context, '/ioModules');
                 },
               ),
               const _SDivider(),

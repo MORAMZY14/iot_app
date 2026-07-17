@@ -256,7 +256,10 @@ class BleService {
       if (rawDevices is List) {
         devices = rawDevices
             .whereType<Map>()
-            .map((e) => e.cast<String, dynamic>())
+            .map((e) {
+              final map = e.cast<String, dynamic>();
+              return map;
+            })
             .toList();
         lights = <String, bool>{};
         for (final d in devices) {
@@ -309,14 +312,17 @@ class BleService {
     }
   }
 
-  Future<bool> editGpio(String id, int gpio) async {
+  Future<bool> editOutput(String id, String moduleId, int channel) async {
     final response = await sendCommand({
-      'cmd': 'edit_gpio',
+      'cmd': 'edit_output',
       'id': id,
-      'gpio': gpio,
+      'moduleId': moduleId,
+      'channel': channel,
     }, timeout: AppConfig.mediumTimeout);
     return response['ok'] == true;
   }
+
+  Future<bool> editChannel(String id, int channel) => editOutput(id, 'io_1', channel);
 
   Future<bool> connectWifi(String ssid, String password) async {
     final response = await sendCommand({

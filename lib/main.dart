@@ -7,6 +7,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'dashboard_page.dart';
 import 'provisioning_page.dart';
 import 'wifi_config_page.dart';
+import 'io_modules_page.dart';
 import 'splash_screen.dart';  // 🔥 NEW: Import your splash screen
 import 'login_screen.dart';
 import 'app_constants.dart';
@@ -62,6 +63,7 @@ class MyApp extends ConsumerWidget {
         '/login': (context) => const LoginScreen(),
         '/provision': (context) => const ProvisionPage(),
         '/wifiConfig': (context) => const WifiConfigPage(),
+        '/ioModules': (context) => const IoModulesPage(),
       },
     );
   }
