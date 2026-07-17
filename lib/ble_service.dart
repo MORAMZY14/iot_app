@@ -263,7 +263,9 @@ class BleService {
             .toList();
         lights = <String, bool>{};
         for (final d in devices) {
-          final key = (d['room'] ?? d['id'] ?? '').toString();
+          // Device ID is unique; room is not. Using room as the key caused two
+          // relays in the same room to overwrite each other's displayed state.
+          final key = (d['id'] ?? '').toString();
           if (key.isNotEmpty) lights[key] = d['state'] == true;
         }
       }
@@ -290,8 +292,8 @@ class BleService {
       for (final d in devices) {
         if ((d['id'] ?? '').toString() == id) {
           d['state'] = state;
-          final room = (d['room'] ?? '').toString();
-          if (room.isNotEmpty) lights[room] = state;
+          final deviceId = (d['id'] ?? '').toString();
+          if (deviceId.isNotEmpty) lights[deviceId] = state;
         }
       }
       _updateStatus(BleStatus.dataUpdated);
@@ -323,6 +325,13 @@ class BleService {
   }
 
   Future<bool> editChannel(String id, int channel) => editOutput(id, 'io_1', channel);
+
+  Future<bool> requestDeviceSync() async {
+    final response = await sendCommand({
+      'cmd': 'sync_devices',
+    }, timeout: AppConfig.mediumTimeout);
+    return response['ok'] == true;
+  }
 
   Future<bool> connectWifi(String ssid, String password) async {
     final response = await sendCommand({

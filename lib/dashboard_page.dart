@@ -256,15 +256,18 @@ class ESP32DeviceService {
   // Read devices. When Bluetooth backup is connected, prefer the ESP32 local
   // BLE device list so rooms/devices still appear when the phone has no internet.
   Future<Map<String, dynamic>> getDevices() async {
-    Map<String, dynamic>? fastResult;
+    // The ESP32 local API is the authoritative live state whenever it is
+    // reachable. A previously cached BLE list can be stale and was causing the
+    // dashboard to jump back to the old value after a successful toggle.
+    Map<String, dynamic>? fastResult = await _tryGetDevicesFromLocalHttp();
+    fastResult ??= await _tryGetDevicesFromBle();
 
     final bleCached = _devicesFromBleCache();
-    if (bleCached != null && (bleCached['devices'] as List).isNotEmpty) {
+    if (fastResult == null &&
+        bleCached != null &&
+        (bleCached['devices'] as List).isNotEmpty) {
       fastResult = bleCached;
     }
-
-    fastResult ??= await _tryGetDevicesFromLocalHttp();
-    fastResult ??= await _tryGetDevicesFromBle();
 
     Map<String, dynamic> firebaseResult = {'devices': <Map<String, dynamic>>[]};
 
@@ -407,7 +410,7 @@ class ESP32DeviceService {
 
       final String uid = FirebaseAuth.instance.currentUser!.uid;
       final String id = 'dev_${DateTime.now().millisecondsSinceEpoch}';
-      final deviceData = {
+      final deviceData = <String, dynamic>{
         'id': id,
         'name': name,
         'type': type,
@@ -419,12 +422,67 @@ class ESP32DeviceService {
         'enabled': true,
       };
 
+      // Save to Firebase first so cloud state remains the source of truth.
       final response = await http.put(
         Uri.parse('${AppConfig.databaseUrl}/smartHome/$uid/devices/$id.json'),
         headers: const {'Content-Type': 'application/json'},
         body: jsonEncode(deviceData),
       ).timeout(AppConfig.mediumTimeout);
-      return response.statusCode == 200;
+
+      if (response.statusCode != 200) return false;
+
+      // Apply the new device directly to the running ESP32. Previously the app
+      // only wrote Firebase and depended on a later SSE/full sync, so the new
+      // PCF8574 output sometimes did not exist locally until an ESP32 restart.
+      bool appliedLocally = false;
+      try {
+        final localResponse = await http.post(
+          Uri.parse('http://$esp32Ip/api/devices/add'),
+          body: {
+            'id': id,
+            'name': name,
+            'type': '$type',
+            'moduleId': moduleId,
+            'channel': '$channel',
+            'room': room,
+          },
+        ).timeout(AppConfig.mediumTimeout);
+        appliedLocally = localResponse.statusCode >= 200 && localResponse.statusCode < 300;
+      } catch (e) {
+        logDebug('Direct ESP32 device add unavailable: $e');
+      }
+
+      // Compatibility fallback for an ESP32 that has the sync endpoint but not
+      // the new ID-aware add endpoint.
+      if (!appliedLocally) {
+        try {
+          final syncResponse = await http.get(
+            Uri.parse('http://$esp32Ip/api/sync'),
+            headers: const {'Cache-Control': 'no-cache'},
+          ).timeout(AppConfig.mediumTimeout);
+          appliedLocally = syncResponse.statusCode >= 200 && syncResponse.statusCode < 300;
+        } catch (e) {
+          logDebug('Local ESP32 sync unavailable: $e');
+        }
+      }
+
+      // BLE can ask the ESP32 to pull the newly-created Firebase device when the
+      // phone is not on the same LAN.
+      if (!appliedLocally && bleService.isConnected) {
+        try {
+          appliedLocally = await bleService.requestDeviceSync();
+        } catch (e) {
+          logDebug('BLE device sync unavailable: $e');
+        }
+      }
+
+      if (bleService.isConnected) {
+        await Future.delayed(const Duration(milliseconds: 120));
+        await bleService.refreshDevices().catchError((_) {});
+      }
+
+      CacheService().clear();
+      return true;
     } catch (e) {
       logDebug('Error adding device: $e');
       return false;
@@ -478,26 +536,18 @@ class ESP32DeviceService {
     }
   }
 
-  // Control device quickly. Local Wi-Fi and BLE race each other; the first
-  // successful path wins. Firebase is only used when fast local paths fail.
+  // Use exactly one command path. Racing local HTTP and BLE sent duplicate
+  // commands and let one path keep a stale cache, which made the UI bounce and
+  // could replay old cloud state. Prefer local Wi-Fi, then BLE, then Firebase.
   Future<bool> controlDevice({
     required String id,
     required bool state,
   }) async {
-    final fastAttempts = <Future<bool>>[
-      _tryLocalControl(id: id, state: state),
-    ];
-
-    if (bleService.isConnected) {
-      fastAttempts.add(_tryBleControl(id: id, state: state));
+    if (await _tryLocalControl(id: id, state: state)) return true;
+    if (bleService.isConnected &&
+        await _tryBleControl(id: id, state: state)) {
+      return true;
     }
-
-    final fastSuccess = await _firstSuccessful(
-      fastAttempts,
-      timeout: const Duration(milliseconds: 780),
-    );
-    if (fastSuccess) return true;
-
     return _controlDeviceViaFirebase(id: id, state: state);
   }
 
@@ -935,98 +985,109 @@ final esp32DeviceServiceProvider = FutureProvider<ESP32DeviceService>((ref) asyn
 final databaseUrlProvider = Provider((ref) =>
 AppConfig.databaseUrl);
 
+int _asEpochSeconds(dynamic value) {
+  int parsed = 0;
+  if (value is int) {
+    parsed = value;
+  } else if (value is num) {
+    parsed = value.toInt();
+  } else {
+    parsed = int.tryParse(value?.toString() ?? '') ?? 0;
+  }
+  // Accept either seconds or milliseconds from older database records.
+  if (parsed > 100000000000) parsed ~/= 1000;
+  return parsed;
+}
+
 final httpDataProvider = FutureProvider<Map<String, dynamic>>((ref) async {
   final url = ref.watch(databaseUrlProvider);
   final authService = await ref.watch(authServiceProvider.future);
   final user = authService.currentUser;
   final cache = CacheService();
 
-  if (user == null) {
-    return {
-      'sensors': {'temperature': 0.0, 'humidity': 0.0, 'flame': false},
-      'lights': {},
-      'status': {'online': false},
-    };
-  }
+  final processedData = <String, dynamic>{
+    'sensors': <String, dynamic>{
+      'temperature': 0.0,
+      'humidity': 0.0,
+      'flame': false,
+    },
+    'lights': <String, dynamic>{},
+    'status': <String, dynamic>{'online': false},
+  };
+
+  if (user == null) return processedData;
 
   final cacheKey = 'smartHome_${user.uid}';
   final cached = cache.get(cacheKey);
-  if (cached != null) {
-    return cached as Map<String, dynamic>;
-  }
+  if (cached != null) return Map<String, dynamic>.from(cached as Map);
 
-  int retryCount = 0;
-  final maxRetries = 1;
+  // Read cloud data, but do not let a Firebase timeout automatically mean that
+  // the ESP32 is offline. Local HTTP and BLE are independent control paths.
+  try {
+    final response = await http.get(
+      Uri.parse('$url/smartHome/${user.uid}.json'),
+      headers: const {'Cache-Control': 'no-cache'},
+    ).timeout(AppConfig.mediumTimeout);
 
-  while (retryCount < maxRetries) {
-    try {
-      final response = await http.get(
-        Uri.parse('$url/smartHome/${user.uid}.json'),
-        headers: {'Cache-Control': 'no-cache'},
-      ).timeout(AppConfig.mediumTimeout);
-
-      if (response.statusCode == 200) {
-        final jsonData = jsonDecode(response.body);
-        if (jsonData != null) {
-          Map<String, dynamic> processedData = {};
-
-          if (jsonData.containsKey('temperature') || jsonData.containsKey('flame')) {
-            processedData['sensors'] = {
-              'temperature': jsonData['temperature'] ?? 0.0,
-              'humidity': jsonData['humidity'] ?? 0.0,
-              'flame': jsonData['flame'] ?? false,
-            };
-
-            if (jsonData.containsKey('lights')) {
-              processedData['lights'] = jsonData['lights'];
-            }
-            if (jsonData.containsKey('status')) {
-              processedData['status'] = jsonData['status'];
-            }
-          } else {
-            processedData = jsonData;
-          }
-
-          if (!processedData.containsKey('sensors')) {
-            processedData['sensors'] = {
-              'temperature': 0.0,
-              'humidity': 0.0,
-              'flame': false,
-            };
-          }
-
-          if (!processedData.containsKey('lights')) {
-            processedData['lights'] = {};
-          }
-
-          if (!processedData.containsKey('status')) {
-            processedData['status'] = {'online': false};
-          }
-
-          final status = processedData['status'] as Map? ?? {};
-          int lastSeen = status['lastSeen'] as int? ?? 0;
-          final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
-          // ESP heartbeat is every 30 seconds, so a 10-second online window
-          // makes the UI falsely show Offline between heartbeats.
-          status['online'] = (now - lastSeen) < 90 && lastSeen > 0;
-          processedData['status'] = status;
-
-          cache.set(cacheKey, processedData);
-          return processedData;
+    if (response.statusCode == 200 && response.body.isNotEmpty && response.body != 'null') {
+      final dynamic decoded = jsonDecode(response.body);
+      if (decoded is Map) {
+        final jsonData = decoded.cast<String, dynamic>();
+        final sensorsNode = jsonData['sensors'];
+        if (sensorsNode is Map) {
+          processedData['sensors'] = Map<String, dynamic>.from(sensorsNode);
+        } else {
+          processedData['sensors'] = <String, dynamic>{
+            'temperature': jsonData['temperature'] ?? 0.0,
+            'humidity': jsonData['humidity'] ?? 0.0,
+            'flame': jsonData['flame'] ?? false,
+          };
+        }
+        if (jsonData['lights'] is Map) {
+          processedData['lights'] = Map<String, dynamic>.from(jsonData['lights'] as Map);
+        }
+        if (jsonData['status'] is Map) {
+          processedData['status'] = Map<String, dynamic>.from(jsonData['status'] as Map);
         }
       }
-    } catch (_) {
-      retryCount++;
-      if (retryCount < maxRetries) {
-        await Future.delayed(Duration(milliseconds: 250 * retryCount));
+    }
+  } catch (e) {
+    logDebug('Firebase dashboard read unavailable: $e');
+  }
+
+  final status = Map<String, dynamic>.from(processedData['status'] as Map? ?? const {});
+  final lastSeen = _asEpochSeconds(status['lastSeen']);
+  final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+  final heartbeatFresh = lastSeen > 0 && (now - lastSeen).abs() < 120;
+  status['online'] = status['online'] == true && heartbeatFresh;
+
+  // The local ESP32 status endpoint is the strongest proof that the board is
+  // actually running. It prevents a rejected/stale Firebase heartbeat from
+  // displaying “ESP offline” while physical control still works.
+  try {
+    final ip = await ref.watch(esp32IpProvider.future);
+    if (ip.isNotEmpty) {
+      final localResponse = await http.get(
+        Uri.parse('http://$ip/api/wifi/status'),
+        headers: const {'Cache-Control': 'no-cache'},
+      ).timeout(AppConfig.shortTimeout);
+      if (localResponse.statusCode == 200 && localResponse.body.isNotEmpty) {
+        final dynamic decoded = jsonDecode(localResponse.body);
+        if (decoded is Map) {
+          final local = decoded.cast<String, dynamic>();
+          status.addAll(local);
+          status['online'] = local['online'] == true || (local['ip']?.toString().isNotEmpty ?? false);
+          status['source'] = 'local';
+        }
       }
     }
+  } catch (e) {
+    logDebug('Local ESP32 status unavailable: $e');
   }
-  return {
-    'sensors': {'temperature': 0.0, 'humidity': 0.0, 'flame': false},
-    'lights': {},
-    'status': {'online': false},
-  };
+
+  processedData['status'] = status;
+  cache.set(cacheKey, processedData);
+  return processedData;
 });
 
 // ────────────────────────────────────────────────────────────
@@ -2568,7 +2629,7 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
   bool? _lastEspOnline;
   bool? _lastBleConnected;
 
-  static const Duration _pendingStateHold = Duration(seconds: 4);
+  static const Duration _pendingStateHold = Duration(seconds: 8);
 
   @override
   void initState() {
@@ -3028,13 +3089,13 @@ class _HomeContentState extends ConsumerState<_HomeContent> {
         suppressFor: const Duration(seconds: 2),
       );
 
-      Future.delayed(const Duration(milliseconds: 350), () {
+      // Unlock the button after the command completes, but keep the optimistic
+      // state until a fresh ESP32 read confirms it. Removing the pending state
+      // after only 350 ms allowed an older BLE/Firebase value to flash back ON.
+      _togglingDeviceIds.remove(id);
+      Future.delayed(const Duration(milliseconds: 180), () {
         if (!mounted) return;
-        if (_pendingDeviceStates[id] == state) {
-          _pendingDeviceStates.remove(id);
-          _pendingDeviceStateTimes.remove(id);
-          _togglingDeviceIds.remove(id);
-        }
+        unawaited(_loadDashboardStateSilently());
       });
     } catch (e) {
       if (!mounted) return;
