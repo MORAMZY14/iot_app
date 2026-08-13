@@ -1423,8 +1423,11 @@ class _DashboardPageState extends ConsumerState<DashboardPage>
         esp32BaseUri: Uri.parse('http://$esp32Ip'),
         cloudBaseUri: cloudBaseUri,
         bleService: ref.read(bleServiceProvider),
-        getIdentityToken: () =>
-            FirebaseAuth.instance.currentUser?.getIdToken(),
+        getIdentityToken: () async {
+          final user = FirebaseAuth.instance.currentUser;
+          if (user == null) return null;
+          return user.getIdToken();
+        },
       ),
     );
   }
