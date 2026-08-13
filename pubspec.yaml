@@ -2,7 +2,7 @@ name: iot
 description: "IoT-Smart-Home."
 publish_to: 'none'
 
-version: 2.0.9+79
+version: 2.0.0
 
 environment:
   sdk: '>=3.4.3 <4.0.0'
@@ -80,6 +80,10 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  # Keep the iOS lifecycle identical to the original working application.
+  # Revisit UIScene only after every native plugin in this project supports it.
+  config:
+    enable-uiscene-migration: false
   assets:
     - assets/images/   # <--- Fixed space after dash
 

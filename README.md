@@ -41,13 +41,14 @@ cd ios
 pod install --repo-update
 ```
 
-The included GitHub Actions workflow creates `iot-unsigned.ipa`. It deliberately
-sets `CODE_SIGNING_ALLOWED=NO` for the Xcode build, so no Apple Development Team
-or provisioning profile is needed in CI. The resulting IPA cannot be installed
-on an iPhone until it is signed later with a valid certificate and provisioning
-profile. CI pins Flutter 3.47.0 so a future stable-channel update cannot turn
-the current Gradle, Android Gradle Plugin, or Kotlin deprecation warnings into
-an unexpected build failure.
+The included GitHub Actions workflow creates `iot.ipa` without code signing,
+matching the external re-signing flow used by the original project. It pins
+Flutter 3.44.2, preserves the checked-in Podfile, validates the Firebase bundle
+ID, and checks the built Runner/Flutter/App frameworks before packaging. The
+iOS target temporarily keeps the original, known-working AppDelegate lifecycle;
+automatic UIScene migration is disabled until all native plugins in this app
+can be tested together after migration. The resulting IPA must still be signed
+by the same valid certificate/provisioning process used for the working build.
 
 Install English and Arabic speech-recognition/TTS voices in the phone's system
 settings for reliable offline phone commands. Auto mode starts with the phone's
