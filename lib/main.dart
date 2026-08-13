@@ -13,7 +13,7 @@ import 'login_screen.dart';
 import 'app_constants.dart';
 
 
-const String appVersion = 'V2.0.8';
+const String appVersion = 'V2.0.9';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
