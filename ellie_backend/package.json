@@ -1,0 +1,26 @@
+{
+  "name": "ellie-bilingual-backend",
+  "version": "1.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "check": "node --check server.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "express-rate-limit": "^8.6.2",
+    "firebase-admin": "^14.2.0",
+    "helmet": "^8.3.0",
+    "openai": "^7.4.0"
+  },
+  "overrides": {
+    "uuid": "^11.1.1"
+  }
+}

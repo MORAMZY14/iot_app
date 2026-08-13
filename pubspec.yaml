@@ -2,7 +2,7 @@ name: iot
 description: "IoT-Smart-Home."
 publish_to: 'none'
 
-version: 2.0.6+71
+version: 2.0.0
 
 environment:
   sdk: '>=3.4.3 <4.0.0'
@@ -22,6 +22,7 @@ dependencies:
   firebase_app_check: ^0.3.0+4
   firebase_messaging: ^15.0.4
   firebase_database: ^11.3.10
+
 
   # State Management
   provider: ^6.1.2
@@ -65,6 +66,10 @@ dependencies:
   # Communication
   mailer: ^6.1.2
   twilio_flutter: ^0.9.0
+
+  # Ellie bilingual voice assistant
+  speech_to_text: ^7.4.0
+  flutter_tts: ^4.2.5
 
 dev_dependencies:
   flutter_test:
