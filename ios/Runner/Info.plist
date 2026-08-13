@@ -80,10 +80,7 @@
 
 	<!-- MICROPHONE -->
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Ellie uses the microphone to understand your English and Arabic voice commands.</string>
-
-	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>Ellie converts your English and Arabic speech into commands and conversation text.</string>
+	<string>This app needs microphone access.</string>
 
 	<!-- LOCAL NETWORK -->
 	<key>NSLocalNetworkUsageDescription</key>
