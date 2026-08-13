@@ -12,7 +12,7 @@ import 'splash_screen.dart';  // 🔥 NEW: Import your splash screen
 import 'login_screen.dart';
 import 'app_constants.dart';
 
-const String appVersion = 'V2.0.8';
+const String appVersion = AppConfig.appVersion;
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -26,11 +26,18 @@ void main() {
     ),
   );
 
-  unawaited(_requestMobilePermissions());
+  // Never present native permission sheets while iOS is still attaching its
+  // UIScene/Flutter view. iOS features request their permission when used.
+  // Android keeps the existing convenience request, but only after Flutter
+  // has rendered a real first frame.
+  if (!kIsWeb && Platform.isAndroid) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(_requestAndroidPermissions());
+    });
+  }
 }
 
-Future<void> _requestMobilePermissions() async {
-  if (kIsWeb || !(Platform.isAndroid || Platform.isIOS)) return;
+Future<void> _requestAndroidPermissions() async {
   try {
     await [
       Permission.bluetoothScan,
