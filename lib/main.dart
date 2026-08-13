@@ -12,7 +12,7 @@ import 'splash_screen.dart';  // 🔥 NEW: Import your splash screen
 import 'login_screen.dart';
 import 'app_constants.dart';
 
-const String appVersion = 'V2.0.6';
+const String appVersion = AppConfig.appVersion;
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -36,6 +36,7 @@ Future<void> _requestMobilePermissions() async {
       Permission.bluetoothScan,
       Permission.bluetoothConnect,
       Permission.locationWhenInUse,
+      Permission.microphone,
     ].request();
   } catch (e) {
     debugPrint('Permission request skipped: $e');

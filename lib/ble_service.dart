@@ -277,6 +277,27 @@ class BleService {
 
   Future<void> readLightStates() => refreshDevices();
 
+  /// Sends a deterministic Ellie command through the ESP32's existing BLE
+  /// parser. Conversational cloud responses never use this hardware path.
+  Future<Map<String, dynamic>> sendEllieText(
+    String text, {
+    required bool speak,
+  }) {
+    return sendCommand({
+      'cmd': 'ellie',
+      'text': text,
+      'speak': speak,
+    }, timeout: AppConfig.longTimeout);
+  }
+
+  Future<bool> queueEllieSpeech(String text) async {
+    final response = await sendCommand({
+      'cmd': 'ellie_speak',
+      'text': text,
+    }, timeout: AppConfig.mediumTimeout);
+    return response['speakerQueued'] == true || response['ok'] == true;
+  }
+
   Future<void> disconnect() async {
     _disconnect(clearDevice: true);
     _updateStatus(BleStatus.disconnected);

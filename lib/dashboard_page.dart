@@ -11,6 +11,7 @@ import 'ble_service.dart';
 import 'auth_service.dart';
 import 'app_logger.dart';
 import 'app_constants.dart';
+import 'ellie/ellie_assistant_sheet.dart';
 
 // ────────────────────────────────────────────────────────────
 // 0. THEME MANAGEMENT
@@ -1395,6 +1396,39 @@ class _DashboardPageState extends ConsumerState<DashboardPage>
     );
   }
 
+  Future<void> _showEllieAssistant() async {
+    String esp32Ip = AppConfig.fallbackEsp32Ip;
+    try {
+      esp32Ip = await ref.read(esp32IpProvider.future);
+    } catch (_) {
+      // BLE and the configured fallback IP remain available when cloud IP
+      // discovery is temporarily offline.
+    }
+    if (!mounted) return;
+
+    final configuredBackend = AppConfig.ellieBackendBaseUrl.trim();
+    final parsedBackend = Uri.tryParse(configuredBackend);
+    final cloudBaseUri = configuredBackend.isNotEmpty &&
+            parsedBackend != null &&
+            (parsedBackend.scheme == 'https' || parsedBackend.scheme == 'http')
+        ? parsedBackend
+        : null;
+
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => EllieAssistantSheet(
+        esp32BaseUri: Uri.parse('http://$esp32Ip'),
+        cloudBaseUri: cloudBaseUri,
+        bleService: ref.read(bleServiceProvider),
+        getIdentityToken: () =>
+            FirebaseAuth.instance.currentUser?.getIdToken(),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final bleService = ref.watch(bleServiceProvider);
@@ -1409,6 +1443,7 @@ class _DashboardPageState extends ConsumerState<DashboardPage>
         onRefresh: _manualRefresh,
         bleStatus: bleService.currentStatus,
         onConnectBLE: () => unawaited(bleService.connect().catchError((_) {})),
+        onEllie: () => unawaited(_showEllieAssistant()),
       ),
       body: _WallpaperBackground(
         // Keep every tab alive. AnimatedSwitcher was destroying Home when moving
@@ -2349,11 +2384,13 @@ class _GlassAppBar extends ConsumerWidget implements PreferredSizeWidget {
   final Future<void> Function() onRefresh;
   final BleStatus bleStatus;
   final VoidCallback onConnectBLE;
+  final VoidCallback onEllie;
 
   const _GlassAppBar({
     required this.onRefresh,
     required this.bleStatus,
     required this.onConnectBLE,
+    required this.onEllie,
   });
 
   void _toggleTheme(WidgetRef ref) {
@@ -2423,6 +2460,29 @@ class _GlassAppBar extends ConsumerWidget implements PreferredSizeWidget {
               ],
             ),
             actions: [
+              _ABBtn(
+                onTap: onEllie,
+                child: Semantics(
+                  button: true,
+                  label: 'Talk to Ellie · تحدثي إلى إيلي',
+                  child: Container(
+                    width: 36,
+                    height: 36,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      gradient: LinearGradient(
+                        colors: [_DT.purple, _DT.blue],
+                      ),
+                    ),
+                    child: const Icon(
+                      Icons.graphic_eq_rounded,
+                      size: 19,
+                      color: Colors.white,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 6),
               _ABBtn(
                 onTap: () => _toggleTheme(ref),
                 child: Container(
