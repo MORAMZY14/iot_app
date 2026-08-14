@@ -9,7 +9,7 @@
 	<key>PLIST_VERSION</key>
 	<string>1</string>
 	<key>BUNDLE_ID</key>
-	<string>com.example.iotApp</string>
+	<string>IoT.Smart.Home.iot</string>
 	<key>PROJECT_ID</key>
 	<string>iot-smart-home-81abd</string>
 	<key>STORAGE_BUCKET</key>
@@ -25,7 +25,7 @@
 	<key>IS_SIGNIN_ENABLED</key>
 	<true></true>
 	<key>GOOGLE_APP_ID</key>
-	<string>1:899142789545:ios:73c057966234df4de2fcb8</string>
+	<string>1:899142789545:ios:2d3fcf81c112eb73e2fcb8</string>
 	<key>DATABASE_URL</key>
 	<string>https://iot-smart-home-81abd-default-rtdb.europe-west1.firebasedatabase.app</string>
 </dict>
