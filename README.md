@@ -29,9 +29,10 @@ Use a current Flutter installation, then run:
 flutter pub get
 ```
 
-The added packages are `speech_to_text` 7.4.0 and `flutter_tts` 4.2.5. This
-project targets iOS 15.0 consistently in the Podfile, Runner project, and
-Flutter framework metadata. On iOS, regenerate configuration and install pods:
+The added packages are pinned to `speech_to_text` 7.4.0 and `flutter_tts`
+4.2.5. The project preserves the working app's iOS 13.0 deployment target and
+legacy AppDelegate/CocoaPods launch path. On iOS, regenerate configuration and
+install pods:
 
 ```bash
 flutter clean
@@ -43,12 +44,18 @@ pod install --repo-update
 
 The included GitHub Actions workflow creates `iot.ipa` without code signing,
 matching the external re-signing flow used by the original project. It pins
-Flutter 3.44.2, preserves the checked-in Podfile, validates the Firebase bundle
-ID, and checks the built Runner/Flutter/App frameworks before packaging. The
-iOS target temporarily keeps the original, known-working AppDelegate lifecycle;
-automatic UIScene migration is disabled until all native plugins in this app
-can be tested together after migration. The resulting IPA must still be signed
-by the same valid certificate/provisioning process used for the working build.
+Flutter 3.44.2, keeps Swift Package Manager disabled, preserves the checked-in
+Podfile, and validates Runner plus the required embedded frameworks before
+packaging. The iOS target uses the original, known-working AppDelegate and
+storyboards. `GoogleService-Info.plist` is not embedded, matching the working
+app; Firebase starts from the explicit values in `lib/firebase_options.dart`.
+The resulting IPA must still be signed by the same valid
+certificate/provisioning process used for the working build.
+
+The Android 12 splash resource no longer references the invalid
+`android:postSplashScreenTheme` attribute that caused
+`:app:processReleaseResources` to fail. The same workflow builds the release
+APK after running the Flutter tests.
 
 Install English and Arabic speech-recognition/TTS voices in the phone's system
 settings for reliable offline phone commands. Auto mode starts with the phone's

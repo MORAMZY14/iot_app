@@ -2,7 +2,7 @@ name: iot
 description: "IoT-Smart-Home."
 publish_to: 'none'
 
-version: 2.0.10+80
+version: 2.0.6+71
 
 environment:
   sdk: '>=3.4.3 <4.0.0'
@@ -68,8 +68,10 @@ dependencies:
   twilio_flutter: ^0.9.0
 
   # Ellie bilingual voice assistant
-  speech_to_text: ^7.4.0
-  flutter_tts: ^4.2.5
+  # Pin the two native voice plugins so GitHub builds cannot silently change
+  # Ellie's iOS frameworks between releases.
+  speech_to_text: 7.4.0
+  flutter_tts: 4.2.5
 
 dev_dependencies:
   flutter_test:
@@ -80,10 +82,6 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
-  # Keep the iOS lifecycle identical to the original working application.
-  # Revisit UIScene only after every native plugin in this project supports it.
-  config:
-    enable-uiscene-migration: false
   assets:
     - assets/images/   # <--- Fixed space after dash
 

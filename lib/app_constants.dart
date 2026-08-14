@@ -3,7 +3,7 @@ class AppConfig {
       'https://iot-smart-home-81abd-default-rtdb.europe-west1.firebasedatabase.app';
   static const String esp32ApBaseUrl = 'http://192.168.4.1';
   static const String fallbackEsp32Ip = '192.168.1.9';
-  static const String appVersion = '2.0.0';
+  static const String appVersion = 'V2.0.6';
 
   // Keep the OpenAI key on the server. Pass only the deployed HTTPS backend
   // URL to Flutter, for example:
