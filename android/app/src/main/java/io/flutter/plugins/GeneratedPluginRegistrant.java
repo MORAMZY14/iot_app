@@ -76,6 +76,11 @@ public final class GeneratedPluginRegistrant {
       Log.e(TAG, "Error registering plugin flutter_plugin_android_lifecycle, io.flutter.plugins.flutter_plugin_android_lifecycle.FlutterAndroidLifecyclePlugin", e);
     }
     try {
+      flutterEngine.getPlugins().add(new com.eyedeadevelopment.fluttertts.FlutterTtsPlugin());
+    } catch (Exception e) {
+      Log.e(TAG, "Error registering plugin flutter_tts, com.eyedeadevelopment.fluttertts.FlutterTtsPlugin", e);
+    }
+    try {
       flutterEngine.getPlugins().add(new io.achim.haptic_feedback.HapticFeedbackPlugin());
     } catch (Exception e) {
       Log.e(TAG, "Error registering plugin haptic_feedback, io.achim.haptic_feedback.HapticFeedbackPlugin", e);
@@ -109,6 +114,11 @@ public final class GeneratedPluginRegistrant {
       flutterEngine.getPlugins().add(new io.flutter.plugins.sharedpreferences.SharedPreferencesPlugin());
     } catch (Exception e) {
       Log.e(TAG, "Error registering plugin shared_preferences_android, io.flutter.plugins.sharedpreferences.SharedPreferencesPlugin", e);
+    }
+    try {
+      flutterEngine.getPlugins().add(new com.csdcorp.speech_to_text.SpeechToTextPlugin());
+    } catch (Exception e) {
+      Log.e(TAG, "Error registering plugin speech_to_text, com.csdcorp.speech_to_text.SpeechToTextPlugin", e);
     }
     try {
       flutterEngine.getPlugins().add(new com.tekartik.sqflite.SqflitePlugin());
